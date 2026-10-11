@@ -1,5 +1,6 @@
 [
  {
+  "errors": [],
   "file": "1-01. PRST Academy.flac",
   "path": "<MUSIC>\\BA OST\\[2026.01.18] Blue Archive Original Soundtrack Vol.8　～Dreaming for the Melody of Revolution～\\1-01. PRST Academy.flac",
   "sr": 44100,
@@ -9,17 +10,38 @@
   "seconds": 107.7,
   "size_mb": 13.1,
   "kbps": 975,
+  "deep": true,
+  "meta": {
+   "fields": {
+    "title": "PRST Academy",
+    "artist": "ミツキヨ",
+    "album": "Blue Archive Original Soundtrack Vol.8　～Dreaming for the Melody of Revolution～",
+    "albumartist": "ミツキヨ; KARUT; Nor; EmoCosine; Airuei; Aiobahn +81",
+    "date": "2026-01-18",
+    "track": "1",
+    "disc": "1",
+    "label": "株式会社Yostar",
+    "isrc": "JPR502513917",
+    "copyright": "℗ NEXON Games Co., Ltd. © 2026 NEXON Games Co., Ltd. & Yostar, Inc. All Rights Reserved.",
+    "encoder": "Lavf58.76.100",
+    "comment": "downloaded from lucida.to: <URL>"
+   },
+   "vendor": "reference libFLAC 1.5.0 20250211",
+   "pictures": 0,
+   "tags_total": 12
+  },
+  "vendor": "reference libFLAC 1.5.0 20250211",
   "peak_dbfs": 0.0,
   "rms_dbfs": -9.72,
-  "crest_db": 9.7,
   "clip_pct": 0.051,
+  "crest_db": 9.7,
   "dr_db": 8.7,
-  "phase_corr": 0.632,
   "lr_level_diff_db": 0.91,
-  "cutoff_hz": 19644.3,
-  "cutoff_khz": 19.64,
-  "cutoff_ratio": 0.891,
-  "brickwall_db_per_oct": 7.9,
+  "_corr": 0.631952352983401,
+  "cutoff_hz": 22050.0,
+  "cutoff_khz": 22.05,
+  "cutoff_ratio": 1.0,
+  "brickwall_db_per_oct": null,
   "bands_pct": {
    "sub": 8.5,
    "bass": 68.8,
@@ -29,9 +51,29 @@
    "high": 1.2,
    "air": 0.0
   },
-  "verdict": "轻微带限（≈320kbps 有损，或母带本身如此）",
-  "level": "warn",
-  "advice": "内容止于 19.6kHz → 评估耳机「高频延伸」不可靠：信息在源头就没了。 低频能量占 77% → 适合试低频下潜 / 控制力。 存在削波 → 大动态段落本身有失真，别算到耳机头上。",
+  "centroid_hz": 457.4,
+  "rolloff85_hz": 417.2,
+  "rolloff95_hz": 2064.5,
+  "flatness": 0.01078,
+  "noise_floor_db": -96.4,
+  "lufs": -7.4,
+  "lra": 1.7,
+  "st_max": -6.6,
+  "st_min": -90.2,
+  "true_peak_dbfs": 0.31,
+  "plr": 7.7,
+  "dc_offset": [
+   0.0,
+   0.0
+  ],
+  "dc_max_dbfs": -127.2,
+  "width_db": -6.4,
+  "corr": 0.629,
+  "mono_compat": "良好",
+  "verdict": "CD 级满带宽｜削波 0.051%｜采样间过载 +0.3 dBTP｜响度战 -7.4 LUFS｜动态压平 LRA 1.7",
+  "level": "ok",
+  "level_cn": "合格",
+  "advice": "高频内容充足（到 22.1kHz）→ 可用于评估耳机的高频延伸/空气感。 低频能量占 77% → 适合试低频下潜 / 控制力。 真峰值 +0.31 dBTP（超满刻度）→ DAC 重建时可能削顶，别把这点失真算到耳机头上。 集成响度 -7.4 LUFS（响度战极重）→ 对比时必须先按响度对齐，否则「更响」会被误判成「更好」。 LRA 仅 1.7 LU（动态被压平）→ 不适合用来判断耳机的动态/微动态表现。 存在削波 → 大动态段落本身有失真，别算到耳机头上。",
   "curve": [
    [
     2.7,
@@ -3289,9 +3331,245 @@
     22050.0,
     -123.41
    ]
+  ],
+  "metrics": {
+   "sr": {
+    "label": "采样率",
+    "unit": " Hz",
+    "digits": 0,
+    "group": "容器",
+    "primary": true
+   },
+   "bits": {
+    "label": "位深",
+    "unit": "",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "format": {
+    "label": "容器格式",
+    "unit": "",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "channels": {
+    "label": "声道数",
+    "unit": "",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "seconds": {
+    "label": "时长",
+    "unit": " s",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "size_mb": {
+    "label": "体积",
+    "unit": " MB",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "kbps": {
+    "label": "估算码率",
+    "unit": " kbps",
+    "digits": 0,
+    "group": "容器",
+    "primary": true
+   },
+   "peak_dbfs": {
+    "label": "峰值",
+    "unit": " dBFS",
+    "digits": 2,
+    "group": "电平",
+    "primary": true
+   },
+   "rms_dbfs": {
+    "label": "RMS",
+    "unit": " dBFS",
+    "digits": 2,
+    "group": "电平",
+    "primary": true
+   },
+   "crest_db": {
+    "label": "波峰因数",
+    "unit": " dB",
+    "digits": 1,
+    "group": "电平",
+    "primary": false
+   },
+   "dr_db": {
+    "label": "动态范围 DR",
+    "unit": " dB",
+    "digits": 1,
+    "group": "电平",
+    "primary": true
+   },
+   "clip_pct": {
+    "label": "削波样本",
+    "unit": " %",
+    "digits": 4,
+    "group": "电平",
+    "primary": true
+   },
+   "dc_max_dbfs": {
+    "label": "直流偏移",
+    "unit": " dBFS",
+    "digits": 1,
+    "group": "电平",
+    "primary": false
+   },
+   "lufs": {
+    "label": "集成响度",
+    "unit": " LUFS",
+    "digits": 1,
+    "group": "响度",
+    "primary": true
+   },
+   "lra": {
+    "label": "响度范围 LRA",
+    "unit": " LU",
+    "digits": 1,
+    "group": "响度",
+    "primary": true
+   },
+   "true_peak_dbfs": {
+    "label": "真峰值",
+    "unit": " dBTP",
+    "digits": 2,
+    "group": "响度",
+    "primary": true
+   },
+   "plr": {
+    "label": "Peak-to-Loudness",
+    "unit": " dB",
+    "digits": 1,
+    "group": "响度",
+    "primary": true
+   },
+   "st_max": {
+    "label": "短时最大响度",
+    "unit": " LUFS",
+    "digits": 1,
+    "group": "响度",
+    "primary": false
+   },
+   "st_min": {
+    "label": "短时最小响度",
+    "unit": " LUFS",
+    "digits": 1,
+    "group": "响度",
+    "primary": false
+   },
+   "cutoff_hz": {
+    "label": "真实截止",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "带宽",
+    "primary": true
+   },
+   "cutoff_ratio": {
+    "label": "占奈奎斯特",
+    "unit": "",
+    "digits": 3,
+    "group": "带宽",
+    "primary": false
+   },
+   "brickwall_db_per_oct": {
+    "label": "砖墙陡度",
+    "unit": " dB/oct",
+    "digits": 1,
+    "group": "带宽",
+    "primary": false
+   },
+   "centroid_hz": {
+    "label": "频谱重心",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "rolloff85_hz": {
+    "label": "85% 滚降",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "rolloff95_hz": {
+    "label": "95% 滚降",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "flatness": {
+    "label": "谱平坦度",
+    "unit": "",
+    "digits": 5,
+    "group": "频谱",
+    "primary": false
+   },
+   "noise_floor_db": {
+    "label": "噪声底",
+    "unit": " dB",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "corr": {
+    "label": "相位相关",
+    "unit": "",
+    "digits": 3,
+    "group": "立体声",
+    "primary": true
+   },
+   "width_db": {
+    "label": "声道宽度",
+    "unit": " dB",
+    "digits": 1,
+    "group": "立体声",
+    "primary": true
+   },
+   "mono_compat": {
+    "label": "单声道兼容",
+    "unit": "",
+    "digits": 1,
+    "group": "立体声",
+    "primary": false
+   },
+   "lr_level_diff_db": {
+    "label": "L/R 电平差",
+    "unit": " dB",
+    "digits": 2,
+    "group": "立体声",
+    "primary": false
+   },
+   "vendor": {
+    "label": "编码器串",
+    "unit": "",
+    "digits": 1,
+    "group": "元数据",
+    "primary": true
+   }
+  },
+  "analyzers": [
+   "basic",
+   "loudness",
+   "dc_offset",
+   "metadata",
+   "spectrum",
+   "stereo",
+   "verdict"
   ]
  },
  {
+  "errors": [],
   "file": "1-02. PRST Marching.flac",
   "path": "<MUSIC>\\BA OST\\[2026.01.18] Blue Archive Original Soundtrack Vol.8　～Dreaming for the Melody of Revolution～\\1-02. PRST Marching.flac",
   "sr": 44100,
@@ -3301,17 +3579,38 @@
   "seconds": 140.2,
   "size_mb": 18.6,
   "kbps": 1063,
+  "deep": true,
+  "meta": {
+   "fields": {
+    "title": "PRST Marching",
+    "artist": "ミツキヨ",
+    "album": "Blue Archive Original Soundtrack Vol.8　～Dreaming for the Melody of Revolution～",
+    "albumartist": "ミツキヨ; KARUT; Nor; EmoCosine; Airuei; Aiobahn +81",
+    "date": "2026-01-18",
+    "track": "2",
+    "disc": "1",
+    "label": "株式会社Yostar",
+    "isrc": "JPR502513918",
+    "copyright": "℗ NEXON Games Co., Ltd. © 2026 NEXON Games Co., Ltd. & Yostar, Inc. All Rights Reserved.",
+    "encoder": "Lavf58.76.100",
+    "comment": "downloaded from lucida.to: <URL>"
+   },
+   "vendor": "reference libFLAC 1.5.0 20250211",
+   "pictures": 0,
+   "tags_total": 12
+  },
+  "vendor": "reference libFLAC 1.5.0 20250211",
   "peak_dbfs": 0.0,
   "rms_dbfs": -9.07,
-  "crest_db": 9.1,
   "clip_pct": 0.0295,
+  "crest_db": 9.1,
   "dr_db": 8.0,
-  "phase_corr": 0.723,
   "lr_level_diff_db": 0.68,
-  "cutoff_hz": 19644.3,
-  "cutoff_khz": 19.64,
-  "cutoff_ratio": 0.891,
-  "brickwall_db_per_oct": 8.3,
+  "_corr": 0.7230194535230228,
+  "cutoff_hz": 22050.0,
+  "cutoff_khz": 22.05,
+  "cutoff_ratio": 1.0,
+  "brickwall_db_per_oct": null,
   "bands_pct": {
    "sub": 21.5,
    "bass": 58.8,
@@ -3321,9 +3620,29 @@
    "high": 1.8,
    "air": 0.1
   },
-  "verdict": "轻微带限（≈320kbps 有损，或母带本身如此）",
-  "level": "warn",
-  "advice": "内容止于 19.6kHz → 评估耳机「高频延伸」不可靠：信息在源头就没了。 低频能量占 80% → 适合试低频下潜 / 控制力。 存在削波 → 大动态段落本身有失真，别算到耳机头上。",
+  "centroid_hz": 463.5,
+  "rolloff85_hz": 358.0,
+  "rolloff95_hz": 2053.7,
+  "flatness": 0.01911,
+  "noise_floor_db": -89.2,
+  "lufs": -7.2,
+  "lra": 1.7,
+  "st_max": -5.5,
+  "st_min": -90.2,
+  "true_peak_dbfs": 0.95,
+  "plr": 8.2,
+  "dc_offset": [
+   -1e-06,
+   -1e-06
+  ],
+  "dc_max_dbfs": -124.1,
+  "width_db": -8.1,
+  "corr": 0.735,
+  "mono_compat": "良好",
+  "verdict": "CD 级满带宽｜削波 0.029%｜采样间过载 +0.9 dBTP｜响度战 -7.2 LUFS｜动态压平 LRA 1.7",
+  "level": "ok",
+  "level_cn": "合格",
+  "advice": "高频内容充足（到 22.1kHz）→ 可用于评估耳机的高频延伸/空气感。 低频能量占 80% → 适合试低频下潜 / 控制力。 真峰值 +0.95 dBTP（超满刻度）→ DAC 重建时可能削顶，别把这点失真算到耳机头上。 集成响度 -7.2 LUFS（响度战极重）→ 对比时必须先按响度对齐，否则「更响」会被误判成「更好」。 LRA 仅 1.7 LU（动态被压平）→ 不适合用来判断耳机的动态/微动态表现。 存在削波 → 大动态段落本身有失真，别算到耳机头上。",
   "curve": [
    [
     2.7,
@@ -6581,213 +6900,245 @@
     22050.0,
     -119.71
    ]
+  ],
+  "metrics": {
+   "sr": {
+    "label": "采样率",
+    "unit": " Hz",
+    "digits": 0,
+    "group": "容器",
+    "primary": true
+   },
+   "bits": {
+    "label": "位深",
+    "unit": "",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "format": {
+    "label": "容器格式",
+    "unit": "",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "channels": {
+    "label": "声道数",
+    "unit": "",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "seconds": {
+    "label": "时长",
+    "unit": " s",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "size_mb": {
+    "label": "体积",
+    "unit": " MB",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "kbps": {
+    "label": "估算码率",
+    "unit": " kbps",
+    "digits": 0,
+    "group": "容器",
+    "primary": true
+   },
+   "peak_dbfs": {
+    "label": "峰值",
+    "unit": " dBFS",
+    "digits": 2,
+    "group": "电平",
+    "primary": true
+   },
+   "rms_dbfs": {
+    "label": "RMS",
+    "unit": " dBFS",
+    "digits": 2,
+    "group": "电平",
+    "primary": true
+   },
+   "crest_db": {
+    "label": "波峰因数",
+    "unit": " dB",
+    "digits": 1,
+    "group": "电平",
+    "primary": false
+   },
+   "dr_db": {
+    "label": "动态范围 DR",
+    "unit": " dB",
+    "digits": 1,
+    "group": "电平",
+    "primary": true
+   },
+   "clip_pct": {
+    "label": "削波样本",
+    "unit": " %",
+    "digits": 4,
+    "group": "电平",
+    "primary": true
+   },
+   "dc_max_dbfs": {
+    "label": "直流偏移",
+    "unit": " dBFS",
+    "digits": 1,
+    "group": "电平",
+    "primary": false
+   },
+   "lufs": {
+    "label": "集成响度",
+    "unit": " LUFS",
+    "digits": 1,
+    "group": "响度",
+    "primary": true
+   },
+   "lra": {
+    "label": "响度范围 LRA",
+    "unit": " LU",
+    "digits": 1,
+    "group": "响度",
+    "primary": true
+   },
+   "true_peak_dbfs": {
+    "label": "真峰值",
+    "unit": " dBTP",
+    "digits": 2,
+    "group": "响度",
+    "primary": true
+   },
+   "plr": {
+    "label": "Peak-to-Loudness",
+    "unit": " dB",
+    "digits": 1,
+    "group": "响度",
+    "primary": true
+   },
+   "st_max": {
+    "label": "短时最大响度",
+    "unit": " LUFS",
+    "digits": 1,
+    "group": "响度",
+    "primary": false
+   },
+   "st_min": {
+    "label": "短时最小响度",
+    "unit": " LUFS",
+    "digits": 1,
+    "group": "响度",
+    "primary": false
+   },
+   "cutoff_hz": {
+    "label": "真实截止",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "带宽",
+    "primary": true
+   },
+   "cutoff_ratio": {
+    "label": "占奈奎斯特",
+    "unit": "",
+    "digits": 3,
+    "group": "带宽",
+    "primary": false
+   },
+   "brickwall_db_per_oct": {
+    "label": "砖墙陡度",
+    "unit": " dB/oct",
+    "digits": 1,
+    "group": "带宽",
+    "primary": false
+   },
+   "centroid_hz": {
+    "label": "频谱重心",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "rolloff85_hz": {
+    "label": "85% 滚降",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "rolloff95_hz": {
+    "label": "95% 滚降",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "flatness": {
+    "label": "谱平坦度",
+    "unit": "",
+    "digits": 5,
+    "group": "频谱",
+    "primary": false
+   },
+   "noise_floor_db": {
+    "label": "噪声底",
+    "unit": " dB",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "corr": {
+    "label": "相位相关",
+    "unit": "",
+    "digits": 3,
+    "group": "立体声",
+    "primary": true
+   },
+   "width_db": {
+    "label": "声道宽度",
+    "unit": " dB",
+    "digits": 1,
+    "group": "立体声",
+    "primary": true
+   },
+   "mono_compat": {
+    "label": "单声道兼容",
+    "unit": "",
+    "digits": 1,
+    "group": "立体声",
+    "primary": false
+   },
+   "lr_level_diff_db": {
+    "label": "L/R 电平差",
+    "unit": " dB",
+    "digits": 2,
+    "group": "立体声",
+    "primary": false
+   },
+   "vendor": {
+    "label": "编码器串",
+    "unit": "",
+    "digits": 1,
+    "group": "元数据",
+    "primary": true
+   }
+  },
+  "analyzers": [
+   "basic",
+   "loudness",
+   "dc_offset",
+   "metadata",
+   "spectrum",
+   "stereo",
+   "verdict"
   ]
  },
  {
-  "file": "1-04. nesno wons.flac",
-  "path": "<MUSIC>\\BA OST\\[2026.01.18] Blue Archive Original Soundtrack Vol.8　～Dreaming for the Melody of Revolution～\\1-04. nesno wons.flac",
-  "sr": 44100,
-  "bits": "PCM_16",
-  "channels": 2,
-  "format": "FLAC",
-  "seconds": 120.6,
-  "size_mb": 13.9,
-  "kbps": 924,
-  "peak_dbfs": 0.0,
-  "rms_dbfs": -9.89,
-  "crest_db": 9.9,
-  "clip_pct": 0.0001,
-  "dr_db": 8.2,
-  "phase_corr": 0.791,
-  "lr_level_diff_db": 0.39,
-  "cutoff_hz": 19644.3,
-  "cutoff_khz": 19.64,
-  "cutoff_ratio": 0.891,
-  "brickwall_db_per_oct": 3.4,
-  "bands_pct": {
-   "sub": 17.6,
-   "bass": 42.3,
-   "low_mid": 20.7,
-   "mid": 15.7,
-   "upper_mid": 2.5,
-   "high": 1.2,
-   "air": 0.0
-  },
-  "verdict": "轻微带限（≈320kbps 有损，或母带本身如此）",
-  "level": "warn",
-  "advice": "内容止于 19.6kHz → 评估耳机「高频延伸」不可靠：信息在源头就没了。"
- },
- {
-  "file": "1-05. OTKPARA!.flac",
-  "path": "<MUSIC>\\BA OST\\[2026.01.18] Blue Archive Original Soundtrack Vol.8　～Dreaming for the Melody of Revolution～\\1-05. OTKPARA!.flac",
-  "sr": 44100,
-  "bits": "PCM_16",
-  "channels": 2,
-  "format": "FLAC",
-  "seconds": 123.4,
-  "size_mb": 17.7,
-  "kbps": 1145,
-  "peak_dbfs": 0.0,
-  "rms_dbfs": -9.54,
-  "crest_db": 9.5,
-  "clip_pct": 0.0156,
-  "dr_db": 8.5,
-  "phase_corr": 0.686,
-  "lr_level_diff_db": 0.12,
-  "cutoff_hz": 19644.3,
-  "cutoff_khz": 19.64,
-  "cutoff_ratio": 0.891,
-  "brickwall_db_per_oct": 7.6,
-  "bands_pct": {
-   "sub": 9.0,
-   "bass": 55.5,
-   "low_mid": 5.3,
-   "mid": 12.8,
-   "upper_mid": 12.8,
-   "high": 4.3,
-   "air": 0.3
-  },
-  "verdict": "轻微带限（≈320kbps 有损，或母带本身如此）",
-  "level": "warn",
-  "advice": "内容止于 19.6kHz → 评估耳机「高频延伸」不可靠：信息在源头就没了。 低频能量占 64% → 适合试低频下潜 / 控制力。 存在削波 → 大动态段落本身有失真，别算到耳机头上。"
- },
- {
-  "file": "1-06. Scarlet Chrysanthemum.flac",
-  "path": "<MUSIC>\\BA OST\\[2026.01.18] Blue Archive Original Soundtrack Vol.8　～Dreaming for the Melody of Revolution～\\1-06. Scarlet Chrysanthemum.flac",
-  "sr": 44100,
-  "bits": "PCM_16",
-  "channels": 2,
-  "format": "FLAC",
-  "seconds": 148.4,
-  "size_mb": 21.4,
-  "kbps": 1156,
-  "peak_dbfs": 0.0,
-  "rms_dbfs": -9.5,
-  "crest_db": 9.5,
-  "clip_pct": 0.0012,
-  "dr_db": 8.2,
-  "phase_corr": 0.8,
-  "lr_level_diff_db": 0.04,
-  "cutoff_hz": 19644.3,
-  "cutoff_khz": 19.64,
-  "cutoff_ratio": 0.891,
-  "brickwall_db_per_oct": 3.1,
-  "bands_pct": {
-   "sub": 10.6,
-   "bass": 28.9,
-   "low_mid": 12.8,
-   "mid": 25.5,
-   "upper_mid": 12.2,
-   "high": 9.4,
-   "air": 0.6
-  },
-  "verdict": "轻微带限（≈320kbps 有损，或母带本身如此）",
-  "level": "warn",
-  "advice": "内容止于 19.6kHz → 评估耳机「高频延伸」不可靠：信息在源头就没了。"
- },
- {
-  "file": "1-07. Sugary Holiday.flac",
-  "path": "<MUSIC>\\BA OST\\[2026.01.18] Blue Archive Original Soundtrack Vol.8　～Dreaming for the Melody of Revolution～\\1-07. Sugary Holiday.flac",
-  "sr": 44100,
-  "bits": "PCM_16",
-  "channels": 2,
-  "format": "FLAC",
-  "seconds": 148.1,
-  "size_mb": 22.0,
-  "kbps": 1187,
-  "peak_dbfs": 0.0,
-  "rms_dbfs": -8.32,
-  "crest_db": 8.3,
-  "clip_pct": 0.113,
-  "dr_db": 7.1,
-  "phase_corr": 0.632,
-  "lr_level_diff_db": 0.02,
-  "cutoff_hz": 19644.3,
-  "cutoff_khz": 19.64,
-  "cutoff_ratio": 0.891,
-  "brickwall_db_per_oct": 4.1,
-  "bands_pct": {
-   "sub": 29.4,
-   "bass": 31.8,
-   "low_mid": 5.0,
-   "mid": 17.1,
-   "upper_mid": 10.2,
-   "high": 6.1,
-   "air": 0.4
-  },
-  "verdict": "轻微带限（≈320kbps 有损，或母带本身如此）",
-  "level": "warn",
-  "advice": "内容止于 19.6kHz → 评估耳机「高频延伸」不可靠：信息在源头就没了。 低频能量占 61% → 适合试低频下潜 / 控制力。 存在削波 → 大动态段落本身有失真，别算到耳机头上。"
- },
- {
-  "file": "1-08. DAN! DAN!! INVADER!!!.flac",
-  "path": "<MUSIC>\\BA OST\\[2026.01.18] Blue Archive Original Soundtrack Vol.8　～Dreaming for the Melody of Revolution～\\1-08. DAN! DAN!! INVADER!!!.flac",
-  "sr": 44100,
-  "bits": "PCM_16",
-  "channels": 2,
-  "format": "FLAC",
-  "seconds": 117.8,
-  "size_mb": 16.3,
-  "kbps": 1104,
-  "peak_dbfs": 0.0,
-  "rms_dbfs": -10.04,
-  "crest_db": 10.0,
-  "clip_pct": 0.0001,
-  "dr_db": 8.3,
-  "phase_corr": 0.544,
-  "lr_level_diff_db": 0.12,
-  "cutoff_hz": 19644.3,
-  "cutoff_khz": 19.64,
-  "cutoff_ratio": 0.891,
-  "brickwall_db_per_oct": 4.9,
-  "bands_pct": {
-   "sub": 19.5,
-   "bass": 23.5,
-   "low_mid": 10.5,
-   "mid": 24.4,
-   "upper_mid": 18.1,
-   "high": 4.0,
-   "air": 0.0
-  },
-  "verdict": "轻微带限（≈320kbps 有损，或母带本身如此）",
-  "level": "warn",
-  "advice": "内容止于 19.6kHz → 评估耳机「高频延伸」不可靠：信息在源头就没了。 中高频占比偏高 → 适合试齿音 / 刺耳度。"
- },
- {
-  "file": "1-09. Mission Possible.flac",
-  "path": "<MUSIC>\\BA OST\\[2026.01.18] Blue Archive Original Soundtrack Vol.8　～Dreaming for the Melody of Revolution～\\1-09. Mission Possible.flac",
-  "sr": 44100,
-  "bits": "PCM_16",
-  "channels": 2,
-  "format": "FLAC",
-  "seconds": 130.0,
-  "size_mb": 15.9,
-  "kbps": 977,
-  "peak_dbfs": 0.0,
-  "rms_dbfs": -10.29,
-  "crest_db": 10.3,
-  "clip_pct": 0.0006,
-  "dr_db": 8.4,
-  "phase_corr": 0.812,
-  "lr_level_diff_db": 0.01,
-  "cutoff_hz": 19644.3,
-  "cutoff_khz": 19.64,
-  "cutoff_ratio": 0.891,
-  "brickwall_db_per_oct": 8.3,
-  "bands_pct": {
-   "sub": 6.0,
-   "bass": 70.7,
-   "low_mid": 6.4,
-   "mid": 10.4,
-   "upper_mid": 5.4,
-   "high": 1.2,
-   "air": 0.0
-  },
-  "verdict": "轻微带限（≈320kbps 有损，或母带本身如此）",
-  "level": "warn",
-  "advice": "内容止于 19.6kHz → 评估耳机「高频延伸」不可靠：信息在源头就没了。 低频能量占 77% → 适合试低频下潜 / 控制力。"
- },
- {
+  "errors": [],
   "file": "1-03. Merry blue.flac",
   "path": "<MUSIC>\\BA OST\\[2026.01.18] Blue Archive Original Soundtrack Vol.8　～Dreaming for the Melody of Revolution～\\1-03. Merry blue.flac",
   "sr": 44100,
@@ -6797,17 +7148,38 @@
   "seconds": 133.3,
   "size_mb": 15.8,
   "kbps": 947,
+  "deep": true,
+  "meta": {
+   "fields": {
+    "title": "Merry blue",
+    "artist": "ミツキヨ",
+    "album": "Blue Archive Original Soundtrack Vol.8　～Dreaming for the Melody of Revolution～",
+    "albumartist": "ミツキヨ; KARUT; Nor; EmoCosine; Airuei; Aiobahn +81",
+    "date": "2026-01-18",
+    "track": "3",
+    "disc": "1",
+    "label": "株式会社Yostar",
+    "isrc": "JPR502513919",
+    "copyright": "℗ NEXON Games Co., Ltd. © 2026 NEXON Games Co., Ltd. & Yostar, Inc. All Rights Reserved.",
+    "encoder": "Lavf58.76.100",
+    "comment": "downloaded from lucida.to: <URL>"
+   },
+   "vendor": "reference libFLAC 1.5.0 20250211",
+   "pictures": 0,
+   "tags_total": 12
+  },
+  "vendor": "reference libFLAC 1.5.0 20250211",
   "peak_dbfs": 0.0,
   "rms_dbfs": -10.54,
-  "crest_db": 10.5,
   "clip_pct": 0.0018,
+  "crest_db": 10.5,
   "dr_db": 9.0,
-  "phase_corr": 0.755,
   "lr_level_diff_db": 0.13,
-  "cutoff_hz": 18541.8,
-  "cutoff_khz": 18.54,
-  "cutoff_ratio": 0.841,
-  "brickwall_db_per_oct": 16.8,
+  "_corr": 0.7553559586781187,
+  "cutoff_hz": 22050.0,
+  "cutoff_khz": 22.05,
+  "cutoff_ratio": 1.0,
+  "brickwall_db_per_oct": null,
   "bands_pct": {
    "sub": 29.1,
    "bass": 32.3,
@@ -6817,246 +7189,2413 @@
    "high": 3.3,
    "air": 0.1
   },
-  "verdict": "有损溯源（≈192–256kbps 转码）",
-  "level": "bad",
-  "advice": "内容止于 18.5kHz → 评估耳机「高频延伸」不可靠：信息在源头就没了。 低频能量占 61% → 适合试低频下潜 / 控制力。"
+  "centroid_hz": 842.6,
+  "rolloff85_hz": 1327.0,
+  "rolloff95_hz": 3151.9,
+  "flatness": 0.01516,
+  "noise_floor_db": -99.5,
+  "lufs": -7.9,
+  "lra": 3.4,
+  "st_max": -5.9,
+  "st_min": -68.4,
+  "true_peak_dbfs": 0.3,
+  "plr": 8.2,
+  "dc_offset": [
+   -0.0,
+   -0.0
+  ],
+  "dc_max_dbfs": -138.0,
+  "width_db": -8.5,
+  "corr": 0.755,
+  "mono_compat": "良好",
+  "verdict": "CD 级满带宽｜采样间过载 +0.3 dBTP｜响度战 -7.9 LUFS",
+  "level": "ok",
+  "level_cn": "合格",
+  "advice": "高频内容充足（到 22.1kHz）→ 可用于评估耳机的高频延伸/空气感。 低频能量占 61% → 适合试低频下潜 / 控制力。 真峰值 +0.30 dBTP（超满刻度）→ DAC 重建时可能削顶，别把这点失真算到耳机头上。 集成响度 -7.9 LUFS（响度战极重）→ 对比时必须先按响度对齐，否则「更响」会被误判成「更好」。",
+  "metrics": {
+   "sr": {
+    "label": "采样率",
+    "unit": " Hz",
+    "digits": 0,
+    "group": "容器",
+    "primary": true
+   },
+   "bits": {
+    "label": "位深",
+    "unit": "",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "format": {
+    "label": "容器格式",
+    "unit": "",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "channels": {
+    "label": "声道数",
+    "unit": "",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "seconds": {
+    "label": "时长",
+    "unit": " s",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "size_mb": {
+    "label": "体积",
+    "unit": " MB",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "kbps": {
+    "label": "估算码率",
+    "unit": " kbps",
+    "digits": 0,
+    "group": "容器",
+    "primary": true
+   },
+   "peak_dbfs": {
+    "label": "峰值",
+    "unit": " dBFS",
+    "digits": 2,
+    "group": "电平",
+    "primary": true
+   },
+   "rms_dbfs": {
+    "label": "RMS",
+    "unit": " dBFS",
+    "digits": 2,
+    "group": "电平",
+    "primary": true
+   },
+   "crest_db": {
+    "label": "波峰因数",
+    "unit": " dB",
+    "digits": 1,
+    "group": "电平",
+    "primary": false
+   },
+   "dr_db": {
+    "label": "动态范围 DR",
+    "unit": " dB",
+    "digits": 1,
+    "group": "电平",
+    "primary": true
+   },
+   "clip_pct": {
+    "label": "削波样本",
+    "unit": " %",
+    "digits": 4,
+    "group": "电平",
+    "primary": true
+   },
+   "dc_max_dbfs": {
+    "label": "直流偏移",
+    "unit": " dBFS",
+    "digits": 1,
+    "group": "电平",
+    "primary": false
+   },
+   "lufs": {
+    "label": "集成响度",
+    "unit": " LUFS",
+    "digits": 1,
+    "group": "响度",
+    "primary": true
+   },
+   "lra": {
+    "label": "响度范围 LRA",
+    "unit": " LU",
+    "digits": 1,
+    "group": "响度",
+    "primary": true
+   },
+   "true_peak_dbfs": {
+    "label": "真峰值",
+    "unit": " dBTP",
+    "digits": 2,
+    "group": "响度",
+    "primary": true
+   },
+   "plr": {
+    "label": "Peak-to-Loudness",
+    "unit": " dB",
+    "digits": 1,
+    "group": "响度",
+    "primary": true
+   },
+   "st_max": {
+    "label": "短时最大响度",
+    "unit": " LUFS",
+    "digits": 1,
+    "group": "响度",
+    "primary": false
+   },
+   "st_min": {
+    "label": "短时最小响度",
+    "unit": " LUFS",
+    "digits": 1,
+    "group": "响度",
+    "primary": false
+   },
+   "cutoff_hz": {
+    "label": "真实截止",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "带宽",
+    "primary": true
+   },
+   "cutoff_ratio": {
+    "label": "占奈奎斯特",
+    "unit": "",
+    "digits": 3,
+    "group": "带宽",
+    "primary": false
+   },
+   "brickwall_db_per_oct": {
+    "label": "砖墙陡度",
+    "unit": " dB/oct",
+    "digits": 1,
+    "group": "带宽",
+    "primary": false
+   },
+   "centroid_hz": {
+    "label": "频谱重心",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "rolloff85_hz": {
+    "label": "85% 滚降",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "rolloff95_hz": {
+    "label": "95% 滚降",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "flatness": {
+    "label": "谱平坦度",
+    "unit": "",
+    "digits": 5,
+    "group": "频谱",
+    "primary": false
+   },
+   "noise_floor_db": {
+    "label": "噪声底",
+    "unit": " dB",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "corr": {
+    "label": "相位相关",
+    "unit": "",
+    "digits": 3,
+    "group": "立体声",
+    "primary": true
+   },
+   "width_db": {
+    "label": "声道宽度",
+    "unit": " dB",
+    "digits": 1,
+    "group": "立体声",
+    "primary": true
+   },
+   "mono_compat": {
+    "label": "单声道兼容",
+    "unit": "",
+    "digits": 1,
+    "group": "立体声",
+    "primary": false
+   },
+   "lr_level_diff_db": {
+    "label": "L/R 电平差",
+    "unit": " dB",
+    "digits": 2,
+    "group": "立体声",
+    "primary": false
+   },
+   "vendor": {
+    "label": "编码器串",
+    "unit": "",
+    "digits": 1,
+    "group": "元数据",
+    "primary": true
+   }
+  },
+  "analyzers": [
+   "basic",
+   "loudness",
+   "dc_offset",
+   "metadata",
+   "spectrum",
+   "stereo",
+   "verdict"
+  ]
  },
  {
-  "file": "1-12. Music for Your Soul.flac",
-  "path": "<MUSIC>\\BA OST\\[2026.01.18] Blue Archive Original Soundtrack Vol.8　～Dreaming for the Melody of Revolution～\\1-12. Music for Your Soul.flac",
-  "sr": 44100,
-  "bits": "PCM_16",
+  "errors": [],
+  "file": "01.青春のアーカイブ.flac",
+  "path": "<MUSIC>\\BA OST\\[Hi-Res]TVアニメ『ブルーアーカイブ The Animation』テーマソング「青春のアーカイブ／真昼の空の月」[96kHz／24bit][FLAC]\\01.青春のアーカイブ.flac",
+  "sr": 96000,
+  "bits": "PCM_24",
   "channels": 2,
   "format": "FLAC",
-  "seconds": 121.5,
-  "size_mb": 13.7,
-  "kbps": 899,
-  "peak_dbfs": 0.0,
-  "rms_dbfs": -10.9,
-  "crest_db": 10.9,
-  "clip_pct": 0.0005,
-  "dr_db": 9.2,
-  "phase_corr": 0.804,
-  "lr_level_diff_db": 0.51,
-  "cutoff_hz": 16518.8,
-  "cutoff_khz": 16.52,
-  "cutoff_ratio": 0.749,
-  "brickwall_db_per_oct": 45.5,
+  "seconds": 263.3,
+  "size_mb": 113.7,
+  "kbps": 3453,
+  "deep": true,
+  "meta": {
+   "fields": {
+    "title": "青春のアーカイブ (feat. ホシノ (CV:花守ゆみり), シロコ (CV:小倉唯), ノノミ (CV:三浦千幸), セリカ (CV:大橋彩香) & アヤネ (CV:原田彩楓))",
+    "artist": "アビドス高等学校対策委員会",
+    "album": "TVアニメ「ブルーアーカイブ The Animation」テーマソング「青春のアーカイブ/真昼の空の月」",
+    "albumartist": "アビドス高等学校対策委員会",
+    "track": "1",
+    "disc": "01",
+    "composer": "40mP",
+    "lyrics": "[ti:青春のアーカイブ (feat. ホシノ (CV:花守ゆみり), シロコ (CV:小倉唯), ノノミ (CV:三浦千幸), セリカ (CV:大橋彩香) & アヤネ (CV:原田彩楓)) (《碧蓝档案 The Animation》TV动画片头曲)]\n[ar:アビドス高等学校対策委員会]\n[al:TVアニメ「ブルーアーカイブ The Animation」テーマソング「青春のアーカイブ／真昼の空の月」]\n[00:00.00]青春のアーカイブ (feat. ホシノ (CV:花守ゆみり), シロコ (CV:小倉唯), ノノミ (CV:三浦千幸), セリカ (CV:大橋彩香) & アヤネ (CV:原田彩楓)) - アビドス高等学校対策委員会\n[00:00.00]TME享有本翻译作品的著作权\n[00:00.54]词：40mP 曲：40mP The sky blue archive\n[00:00.54]蔚蓝档案\n[00:13.03]新しい景色が見たくて\n[00:13.03]想要见证焕然一新的景色\n[00:15.13]自転車を漕いだ\n[00:15.13]竭力踩着自行车\n[00:17.27]ただ同じ場所で止まっている\n[00:17.27]只为从总在同个地方停驻的时光\n[00:19.62]日々から抜け出して\n[00:19.62]就这样挣脱出来\n[00:21.61]屋上 サボって寝転んで\n[00:21.61]在屋顶上懒散地躺着\n[00:23.69]青空を見下ろした\n[00:23.69]俯瞰这片蓝天\n[00:25.85]クジラみたいな雲が\n[00:25.85]那朵好似鲸鱼般的白云\n[00:27.80]形を変えていく\n[00:27.80]不断地变幻着形状\n[00:29.54]返せないほどの過去を抱えたまま\n[00:29.54]仍旧背负着那段不复回寰的过去\n[00:33.83]砂だらけの世界で\n[00:33.83]在尘沙飞扬的世界\n[00:36.42]分け合うジュースの味\n[00:36.42]与彼此共享果汁的滋味\n[00:39.32]一人きりじゃきっと\n[00:39.32]如果只有我孑然一身\n[00:41.47]皆がいなきゃきっと\n[00:41.47]如果没有大家在的话\n[00:43.15]笑うことも泣くこともできない\n[00:43.15]我一定不可能经历这一路的欢笑泪水\n[00:46.93]運命共同体\n[00:46.93]我们皆是命运共同体\n[00:49.37]世界中の記憶がいつか\n[00:49.37]哪怕关于全世界的记忆\n[00:53.49]砂のように消えてしまっても\n[00:53.49]终有一天将如沙粒般消失不见\n[00:57.55]空と海と風と君がそこにあれば\n[00:57.55]只要天空 大海 微风与你仍守在原地\n[01:04.06]青春は終わんない\n[01:04.06]青春便不会落下帷幕\n[01:06.28]守るべき理由はいつも単純明快\n[01:06.28]理应守护的理由始终简单明了\n[01:12.26]この場所が私たちの\n[01:12.26]因为这个地方\n[01:15.86]たったひとつの居場所だから\n[01:15.86]是属于我们独一无二的归所\n[01:31.61]強がってみても全部バレていた\n[01:31.61]哪怕固执逞强最后依然会被看透\n[01:36.01]バイト帰り\n[01:36.01]打工回家的路上\n[01:37.33]星たちが夜空で寄り添って\n[01:37.33]繁星在夜空与彼此相依相偎\n[01:40.05]ねえもう少し お願い\n[01:40.05]呐 哪怕只有片刻 拜托你\n[01:42.25]真剣に考えてよ\n[01:42.25]认真地思考一下吧\n[01:44.98]進まない会議 山積みの問題\n[01:44.98]会议毫无进展 问题堆积如山\n[01:48.20]写真フォルダ 増えてく思い出たち\n[01:48.20]相册夹里装载的回忆在与日俱增着\n[01:52.48]お揃いで買ったオブジェ\n[01:52.48]大家一起买的那件艺术品\n[01:55.04]指先で揺らしてみる\n[01:55.04]挂在指尖轻轻地摇晃着\n[01:57.97]あくびしちゃうほど\n[01:57.97]哪怕是忙碌到会让人\n[01:59.98]忙しない日々だって\n[01:59.98]忍不住打哈欠的日子\n[02:01.79]君となら乗り越えてゆけるんだ\n[02:01.79]只要与你相伴就能够克服万难\n[02:05.83]全戦全勝で\n[02:05.83]全战全胜\n[02:07.86]明日なんてわかりっこないし\n[02:07.86]明天会发生什么仍旧未知\n[02:12.07]昨日なんて変えられないけど\n[02:12.07]虽然昨天已经不可能改变\n[02:16.17]今日の君とつないだ手を\n[02:16.17]只要不放开今天与你\n[02:20.10]はなさなければ青春は終わんない\n[02:20.10]相牵的双手 青春便不会落下帷幕\n[02:24.86]それぞれの想いはいつも奇想天外\n[02:24.86]哪怕各自的想法总是如此天马行空\n[02:30.79]でも向かう先はたぶん\n[02:30.79]但是我们即将面对的\n[02:34.38]きっと同じ未来だよね\n[02:34.38]大概会是同个未来吧\n[02:46.11]自分より大切なもの\n[02:46.11]因为想竭力守护比自己\n[02:50.27]守りたくて旅に出たけど\n[02:50.27]更加重要的事物而踏上旅程\n[02:54.09](The sky blue) でも君の笑顔も\n[02:54.09](蔚蓝) 可不论是你的笑容\n[02:58.55](Archive) 砂の一粒さえ\n[02:58.55](档案) 还是一粒沙\n[03:02.62]何ひとつ失いたくないんだ\n[03:02.62]我丝毫都不愿经历失去\n[03:08.22]それがそれ全部が\n[03:08.22]因为那一切\n[03:11.69]私たちの青春だから\n[03:11.69]都是我们的青春\n[03:15.76]誰にも渡さない\n[03:15.76]不会让给他人\n[03:17.91]さあ一緒に帰ろう\n[03:17.91]让我们一起回去吧\n[03:22.09]世界中の記憶がいつか\n[03:22.09]哪怕关于全世界的记忆\n[03:26.39]砂のように消えてしまっても\n[03:26.39]终有一天将如沙粒般消失不见\n[03:30.44]空と海と風と君がそこにあれば\n[03:30.44]只要天空 大海 微风 与你仍守在原地\n[03:36.94]青春は終わんない\n[03:36.94]青春便不会落下帷幕\n[03:39.20]守るべき理由はいつも単純明快\n[03:39.20]理应守护的理由始终简单明了\n[03:45.08]この場所が私たちの\n[03:45.08]这里就是我们\n[03:48.71]決して手放したくない\n[03:48.71]绝不会放手的地方\n[03:52.90]お金じゃ買えやしない\n[03:52.90]因为这个地方\n[03:57.14]たったひとつの居場所だから\n[03:57.14]是金钱无法购买的唯一归所"
+   },
+   "vendor": "reference libFLAC git-9b7ca112 20221202",
+   "pictures": 1,
+   "tags_total": 8
+  },
+  "vendor": "reference libFLAC git-9b7ca112 20221202",
+  "peak_dbfs": -0.27,
+  "rms_dbfs": -9.79,
+  "clip_pct": 0.0,
+  "crest_db": 9.5,
+  "dr_db": 8.1,
+  "lr_level_diff_db": 0.07,
+  "_corr": 0.7720391774732805,
+  "cutoff_hz": 6785.2,
+  "cutoff_khz": 6.79,
+  "cutoff_ratio": 0.141,
+  "brickwall_db_per_oct": null,
   "bands_pct": {
-   "sub": 9.6,
-   "bass": 51.9,
-   "low_mid": 11.4,
-   "mid": 22.1,
-   "upper_mid": 3.4,
-   "high": 1.5,
+   "sub": 16.0,
+   "bass": 40.3,
+   "low_mid": 10.1,
+   "mid": 21.8,
+   "upper_mid": 10.4,
+   "high": 1.4,
    "air": 0.0
   },
-  "verdict": "有损溯源（≈192–256kbps 转码）",
+  "centroid_hz": 796.2,
+  "rolloff85_hz": 1664.1,
+  "rolloff95_hz": 3316.4,
+  "flatness": 0.0,
+  "noise_floor_db": -193.0,
+  "lufs": -7.0,
+  "lra": 4.2,
+  "st_max": -5.0,
+  "st_min": -81.6,
+  "true_peak_dbfs": -0.27,
+  "plr": 6.7,
+  "dc_offset": [
+   -0.000216,
+   -0.000189
+  ],
+  "dc_max_dbfs": -73.3,
+  "width_db": -9.5,
+  "corr": 0.8,
+  "mono_compat": "良好",
+  "verdict": "伪 Hi-Res（容器 96.0kHz，内容仅到 6.8kHz）｜响度战 -7.0 LUFS",
   "level": "bad",
-  "advice": "内容止于 16.5kHz → 评估耳机「高频延伸」不可靠：信息在源头就没了。 低频能量占 62% → 适合试低频下潜 / 控制力。"
- },
- {
-  "file": "2-01. Starry Night.flac",
-  "path": "<MUSIC>\\BA OST\\[2026.01.18] Blue Archive Original Soundtrack Vol.8　～Dreaming for the Melody of Revolution～\\2-01. Starry Night.flac",
-  "sr": 44100,
-  "bits": "PCM_16",
-  "channels": 2,
-  "format": "FLAC",
-  "seconds": 58.3,
-  "size_mb": 3.9,
-  "kbps": 535,
-  "peak_dbfs": 0.0,
-  "rms_dbfs": -12.53,
-  "crest_db": 12.5,
-  "clip_pct": 0.0078,
-  "dr_db": 9.9,
-  "phase_corr": 0.839,
-  "lr_level_diff_db": 0.55,
-  "cutoff_hz": 15591.7,
-  "cutoff_khz": 15.59,
-  "cutoff_ratio": 0.707,
-  "brickwall_db_per_oct": 22.1,
-  "bands_pct": {
-   "sub": 19.0,
-   "bass": 53.8,
-   "low_mid": 15.3,
-   "mid": 11.1,
-   "upper_mid": 0.5,
-   "high": 0.2,
-   "air": 0.0
+  "level_cn": "不达标",
+  "advice": "内容止于 6.8kHz → 只够评估中频/齿音区，不足以判断高频。 集成响度 -7.0 LUFS（响度战极重）→ 对比时必须先按响度对齐，否则「更响」会被误判成「更好」。",
+  "metrics": {
+   "sr": {
+    "label": "采样率",
+    "unit": " Hz",
+    "digits": 0,
+    "group": "容器",
+    "primary": true
+   },
+   "bits": {
+    "label": "位深",
+    "unit": "",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "format": {
+    "label": "容器格式",
+    "unit": "",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "channels": {
+    "label": "声道数",
+    "unit": "",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "seconds": {
+    "label": "时长",
+    "unit": " s",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "size_mb": {
+    "label": "体积",
+    "unit": " MB",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "kbps": {
+    "label": "估算码率",
+    "unit": " kbps",
+    "digits": 0,
+    "group": "容器",
+    "primary": true
+   },
+   "peak_dbfs": {
+    "label": "峰值",
+    "unit": " dBFS",
+    "digits": 2,
+    "group": "电平",
+    "primary": true
+   },
+   "rms_dbfs": {
+    "label": "RMS",
+    "unit": " dBFS",
+    "digits": 2,
+    "group": "电平",
+    "primary": true
+   },
+   "crest_db": {
+    "label": "波峰因数",
+    "unit": " dB",
+    "digits": 1,
+    "group": "电平",
+    "primary": false
+   },
+   "dr_db": {
+    "label": "动态范围 DR",
+    "unit": " dB",
+    "digits": 1,
+    "group": "电平",
+    "primary": true
+   },
+   "clip_pct": {
+    "label": "削波样本",
+    "unit": " %",
+    "digits": 4,
+    "group": "电平",
+    "primary": true
+   },
+   "dc_max_dbfs": {
+    "label": "直流偏移",
+    "unit": " dBFS",
+    "digits": 1,
+    "group": "电平",
+    "primary": false
+   },
+   "lufs": {
+    "label": "集成响度",
+    "unit": " LUFS",
+    "digits": 1,
+    "group": "响度",
+    "primary": true
+   },
+   "lra": {
+    "label": "响度范围 LRA",
+    "unit": " LU",
+    "digits": 1,
+    "group": "响度",
+    "primary": true
+   },
+   "true_peak_dbfs": {
+    "label": "真峰值",
+    "unit": " dBTP",
+    "digits": 2,
+    "group": "响度",
+    "primary": true
+   },
+   "plr": {
+    "label": "Peak-to-Loudness",
+    "unit": " dB",
+    "digits": 1,
+    "group": "响度",
+    "primary": true
+   },
+   "st_max": {
+    "label": "短时最大响度",
+    "unit": " LUFS",
+    "digits": 1,
+    "group": "响度",
+    "primary": false
+   },
+   "st_min": {
+    "label": "短时最小响度",
+    "unit": " LUFS",
+    "digits": 1,
+    "group": "响度",
+    "primary": false
+   },
+   "cutoff_hz": {
+    "label": "真实截止",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "带宽",
+    "primary": true
+   },
+   "cutoff_ratio": {
+    "label": "占奈奎斯特",
+    "unit": "",
+    "digits": 3,
+    "group": "带宽",
+    "primary": false
+   },
+   "brickwall_db_per_oct": {
+    "label": "砖墙陡度",
+    "unit": " dB/oct",
+    "digits": 1,
+    "group": "带宽",
+    "primary": false
+   },
+   "centroid_hz": {
+    "label": "频谱重心",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "rolloff85_hz": {
+    "label": "85% 滚降",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "rolloff95_hz": {
+    "label": "95% 滚降",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "flatness": {
+    "label": "谱平坦度",
+    "unit": "",
+    "digits": 5,
+    "group": "频谱",
+    "primary": false
+   },
+   "noise_floor_db": {
+    "label": "噪声底",
+    "unit": " dB",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "corr": {
+    "label": "相位相关",
+    "unit": "",
+    "digits": 3,
+    "group": "立体声",
+    "primary": true
+   },
+   "width_db": {
+    "label": "声道宽度",
+    "unit": " dB",
+    "digits": 1,
+    "group": "立体声",
+    "primary": true
+   },
+   "mono_compat": {
+    "label": "单声道兼容",
+    "unit": "",
+    "digits": 1,
+    "group": "立体声",
+    "primary": false
+   },
+   "lr_level_diff_db": {
+    "label": "L/R 电平差",
+    "unit": " dB",
+    "digits": 2,
+    "group": "立体声",
+    "primary": false
+   },
+   "vendor": {
+    "label": "编码器串",
+    "unit": "",
+    "digits": 1,
+    "group": "元数据",
+    "primary": true
+   }
   },
-  "verdict": "强有损溯源（≤128kbps）",
-  "level": "bad",
-  "advice": "内容止于 15.6kHz → 只够评估中频/齿音区，不足以判断高频。 低频能量占 73% → 适合试低频下潜 / 控制力。"
+  "analyzers": [
+   "basic",
+   "loudness",
+   "dc_offset",
+   "metadata",
+   "spectrum",
+   "stereo",
+   "verdict"
+  ]
  },
  {
-  "file": "2-05. OHAYOU Daily morning.flac",
-  "path": "<MUSIC>\\BA OST\\[2026.01.18] Blue Archive Original Soundtrack Vol.8　～Dreaming for the Melody of Revolution～\\2-05. OHAYOU Daily morning.flac",
-  "sr": 44100,
-  "bits": "PCM_16",
+  "errors": [],
+  "file": "02.真昼の空の月.flac",
+  "path": "<MUSIC>\\BA OST\\[Hi-Res]TVアニメ『ブルーアーカイブ The Animation』テーマソング「青春のアーカイブ／真昼の空の月」[96kHz／24bit][FLAC]\\02.真昼の空の月.flac",
+  "sr": 96000,
+  "bits": "PCM_24",
   "channels": 2,
   "format": "FLAC",
-  "seconds": 76.1,
-  "size_mb": 8.4,
-  "kbps": 882,
-  "peak_dbfs": 0.0,
-  "rms_dbfs": -10.71,
-  "crest_db": 10.7,
-  "clip_pct": 0.0003,
-  "dr_db": 9.0,
-  "phase_corr": 0.805,
-  "lr_level_diff_db": 0.47,
-  "cutoff_hz": 18541.8,
-  "cutoff_khz": 18.54,
-  "cutoff_ratio": 0.841,
-  "brickwall_db_per_oct": 19.8,
-  "bands_pct": {
-   "sub": 21.8,
-   "bass": 45.0,
-   "low_mid": 11.8,
-   "mid": 18.6,
-   "upper_mid": 1.9,
-   "high": 0.9,
-   "air": 0.0
+  "seconds": 260.4,
+  "size_mb": 107.5,
+  "kbps": 3304,
+  "deep": true,
+  "meta": {
+   "fields": {
+    "title": "真昼の空の月 (feat. ホシノ (CV:花守ゆみり), シロコ (CV:小倉唯), ノノミ (CV:三浦千幸), セリカ (CV:大橋彩香) & アヤネ (CV:原田彩楓))",
+    "artist": "アビドス高等学校対策委員会",
+    "album": "TVアニメ「ブルーアーカイブ The Animation」テーマソング「青春のアーカイブ/真昼の空の月」",
+    "albumartist": "アビドス高等学校対策委員会",
+    "track": "2",
+    "disc": "01",
+    "composer": "RED",
+    "lyrics": "[ti:真昼の空の月 (feat. ホシノ (CV:花守ゆみり), シロコ (CV:小倉唯), ノノミ (CV:三浦千幸), セリカ (CV:大橋彩香) & アヤネ (CV:原田彩楓)) (《碧蓝档案 The Animation》TV动画片尾曲)]\n[ar:アビドス高等学校対策委員会]\n[al:TVアニメ「ブルーアーカイブ The Animation」テーマソング「青春のアーカイブ／真昼の空の月」]\n[00:00.17]真昼の空の月 (feat. ホシノ (CV:花守ゆみり), シロコ (CV:小倉唯), ノノミ (CV:三浦千幸), セリカ (CV:大橋彩香) & アヤネ (CV:原田彩楓)) - アビドス高等学校対策委員会\n[00:00.17]TME享有本翻译作品的著作权\n[00:09.18]词：RED\n[00:09.50]曲：RED\n[00:14.47]窓際の席で移ろう気持ちの\n[00:14.47]坐在靠窗的位置为流转的心情\n[00:18.24]置き場を探している\n[00:18.24]找寻着属于它的归所\n[00:22.97]悲しみに覆われないように\n[00:22.97]切忌被悲伤的情绪笼罩其中\n[00:29.03]訳もわからず時を忘れて\n[00:29.03]毫无缘由地便忘却了时间\n[00:32.70]おどけて笑い合った\n[00:32.70]我们欢闹嬉戏笑作一团\n[00:35.83]それが ありふれた群像だとしても\n[00:35.83]就算那是如此平淡无奇的群像写照\n[00:42.40]そんな日々を\n[00:42.40]但我很清楚\n[00:43.90]もう1回もう1回なんて\n[00:43.90]那段时光只要逝去之后\n[00:47.46]叶わないってわかってる\n[00:47.46]就再没有重新经历的可能\n[00:51.08]真昼の空の月のように\n[00:51.08]恍若正午白昼的皎月般\n[00:54.55]強く美しくいられたら\n[00:54.55]若能维持强大美丽之姿\n[00:58.27]あの日の過ちも後悔も\n[00:58.27]或许曾经的过错与悔恨\n[01:01.91]全部綺麗に許せたかな\n[01:01.91]我统统都能选择宽恕吧\n[01:05.81]大事なことはいつだって\n[01:05.81]重要的事情不论任何时候\n[01:08.66]過ぎ去ってから\n[01:08.66]都会在沦为过往后\n[01:10.25]ようやく気が付くんだ\n[01:10.25]才后知后觉察觉到\n[01:12.76]真昼の空の月に向かって\n[01:12.76]不论朝着正午白昼的皎月\n[01:16.32]手を伸ばしたって触れないけれど\n[01:16.32]如何竭力地伸出手去它都遥不可及\n[01:21.05]忘れはしない愛しい日々よ\n[01:21.05]但我不会忘记那段美好的时光\n[01:38.51]繰り返す日々を見つめて\n[01:38.51]注视着循环往复的这段日子\n[01:41.92]何かを探していた\n[01:41.92]竭力地探寻着什么\n[01:46.40]それが何かはまだわからないけど\n[01:46.40]虽然我依旧不清楚那到底是什么\n[01:52.78]目まぐるしく変わる景色を\n[01:52.78]如果能将瞬息万变的景色\n[01:56.46]覚えていられるなら\n[01:56.46]铭刻在心中的话\n[02:00.94]あの日の空も思い出せるのかな\n[02:00.94]应该也可以忆起那天的天空吧\n[02:05.85]そんな風に\n[02:05.85]就像那样\n[02:07.51]たらればを繰り返していれば\n[02:07.51]若能无数次重复假设的情况\n[02:11.22]永遠に無傷だけど\n[02:11.22]应该永远都不会受伤\n[02:14.73]人生にやり直しなんて\n[02:14.73]其实我心里也相当清楚\n[02:18.33]あり得ないってわかってる\n[02:18.33]人生根本就没有重来的机会\n[02:22.08]真昼の空の月のように\n[02:22.08]恍若正午白昼的皎月般\n[02:25.49]いつも自分らしくいられたら\n[02:25.49]如果我能一直做我自己的话\n[02:29.17]あの日の迷いも失敗も\n[02:29.17]那么当初的迷茫与失败\n[02:32.78]初めからなかったのかな\n[02:32.78]从最开始就是不存在的吧\n[02:36.57]どんなに時が過ぎたって\n[02:36.57]不论时光如何流逝而去\n[02:39.58]この気持ちは形容できないんだ\n[02:39.58]此刻的心情都难以用话语形容\n[02:43.76]真昼の空の月はいつも\n[02:43.76]正午白昼的皎月不论何时\n[02:47.35]憧れるほどに美しいけれど\n[02:47.35]都美好到让我心生无限憧憬\n[02:52.08]そろそろ行かなくちゃ\n[02:52.08]差不多也该启程前行了\n[02:55.76]時の流れの残酷さに\n[02:55.76]时光的洪流如此残酷\n[03:02.91]今はまだ気付けずにいるんだ\n[03:02.91]事到如今我依旧没能察觉到这点\n[03:10.29]いつかくる未来の私にとって\n[03:10.29]希望我终有一天能成为让未来的自己\n[03:17.44]誇れる私でいたい\n[03:17.44]感到无比骄傲的存在\n[03:23.59]真昼の空の月のように\n[03:23.59]恍若正午白昼的皎月般\n[03:27.27]いつも強くはいられないけど\n[03:27.27]虽然无法时时刻刻都那般坚强\n[03:30.94]あの日の過ちも後悔も\n[03:30.94]但是曾经的过错与悔恨\n[03:34.62]全部全部私なんだよ\n[03:34.62]都是属于我的一部分\n[03:38.24]真冬の夜の冷たい心も\n[03:38.24]不论是寒冬之夜冰冷的心\n[03:41.88]真夏の朝の気だるさも\n[03:41.88]还是盛夏清晨的那份倦怠\n[03:45.51]悲しみに暮れた君の涙も\n[03:45.51]亦或是你沉溺于悲伤的泪水\n[03:49.13]無駄なことはひとつもないよ\n[03:49.13]这些统统都不会沦为一场徒劳\n[03:53.01]大事なことはいつだって\n[03:53.01]重要的事情不论任何时候\n[03:56.00]目を離した隙に消えてしまうんだ\n[03:56.00]都会在注意不到的时候消失不见\n[04:00.07]もう過ぎ去ったあの日に向かって\n[04:00.07]不论朝着已流转而去的那段时光\n[04:03.75]手を伸ばしたって触れないけれど\n[04:03.75]如何竭力地伸出手它都遥不可及\n[04:08.26]ありがとう全ての日々よ\n[04:08.26]但我仍感谢所有的时光"
+   },
+   "vendor": "reference libFLAC git-9b7ca112 20221202",
+   "pictures": 1,
+   "tags_total": 8
   },
-  "verdict": "有损溯源（≈192–256kbps 转码）",
-  "level": "bad",
-  "advice": "内容止于 18.5kHz → 评估耳机「高频延伸」不可靠：信息在源头就没了。 低频能量占 67% → 适合试低频下潜 / 控制力。"
- },
- {
-  "file": "2-06. Starry Sky.flac",
-  "path": "<MUSIC>\\BA OST\\[2026.01.18] Blue Archive Original Soundtrack Vol.8　～Dreaming for the Melody of Revolution～\\2-06. Starry Sky.flac",
-  "sr": 44100,
-  "bits": "PCM_16",
-  "channels": 2,
-  "format": "FLAC",
-  "seconds": 69.2,
-  "size_mb": 5.8,
-  "kbps": 674,
-  "peak_dbfs": 0.0,
-  "rms_dbfs": -10.67,
-  "crest_db": 10.7,
-  "clip_pct": 0.0018,
+  "vendor": "reference libFLAC git-9b7ca112 20221202",
+  "peak_dbfs": -0.3,
+  "rms_dbfs": -9.98,
+  "clip_pct": 0.0,
+  "crest_db": 9.7,
   "dr_db": 8.6,
-  "phase_corr": 0.818,
-  "lr_level_diff_db": 0.12,
-  "cutoff_hz": 16518.8,
-  "cutoff_khz": 16.52,
-  "cutoff_ratio": 0.749,
-  "brickwall_db_per_oct": 30.1,
+  "lr_level_diff_db": 0.3,
+  "_corr": 0.5558148503360125,
+  "cutoff_hz": 5841.8,
+  "cutoff_khz": 5.84,
+  "cutoff_ratio": 0.122,
+  "brickwall_db_per_oct": null,
   "bands_pct": {
-   "sub": 20.6,
-   "bass": 42.1,
-   "low_mid": 11.3,
-   "mid": 19.3,
-   "upper_mid": 6.0,
+   "sub": 9.5,
+   "bass": 47.8,
+   "low_mid": 12.4,
+   "mid": 23.6,
+   "upper_mid": 6.1,
    "high": 0.6,
    "air": 0.0
   },
-  "verdict": "有损溯源（≈192–256kbps 转码）",
+  "centroid_hz": 598.1,
+  "rolloff85_hz": 1054.7,
+  "rolloff95_hz": 2337.9,
+  "flatness": 0.0,
+  "noise_floor_db": -193.1,
+  "lufs": -7.4,
+  "lra": 3.6,
+  "st_max": -5.8,
+  "st_min": -78.4,
+  "true_peak_dbfs": -0.29,
+  "plr": 7.1,
+  "dc_offset": [
+   -0.000387,
+   -0.000465
+  ],
+  "dc_max_dbfs": -66.6,
+  "width_db": -7.4,
+  "corr": 0.693,
+  "mono_compat": "良好",
+  "verdict": "伪 Hi-Res（容器 96.0kHz，内容仅到 5.8kHz）｜响度战 -7.4 LUFS",
   "level": "bad",
-  "advice": "内容止于 16.5kHz → 评估耳机「高频延伸」不可靠：信息在源头就没了。 低频能量占 63% → 适合试低频下潜 / 控制力。"
+  "level_cn": "不达标",
+  "advice": "内容止于 5.8kHz → 只够评估中频/齿音区，不足以判断高频。 集成响度 -7.4 LUFS（响度战极重）→ 对比时必须先按响度对齐，否则「更响」会被误判成「更好」。",
+  "metrics": {
+   "sr": {
+    "label": "采样率",
+    "unit": " Hz",
+    "digits": 0,
+    "group": "容器",
+    "primary": true
+   },
+   "bits": {
+    "label": "位深",
+    "unit": "",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "format": {
+    "label": "容器格式",
+    "unit": "",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "channels": {
+    "label": "声道数",
+    "unit": "",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "seconds": {
+    "label": "时长",
+    "unit": " s",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "size_mb": {
+    "label": "体积",
+    "unit": " MB",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "kbps": {
+    "label": "估算码率",
+    "unit": " kbps",
+    "digits": 0,
+    "group": "容器",
+    "primary": true
+   },
+   "peak_dbfs": {
+    "label": "峰值",
+    "unit": " dBFS",
+    "digits": 2,
+    "group": "电平",
+    "primary": true
+   },
+   "rms_dbfs": {
+    "label": "RMS",
+    "unit": " dBFS",
+    "digits": 2,
+    "group": "电平",
+    "primary": true
+   },
+   "crest_db": {
+    "label": "波峰因数",
+    "unit": " dB",
+    "digits": 1,
+    "group": "电平",
+    "primary": false
+   },
+   "dr_db": {
+    "label": "动态范围 DR",
+    "unit": " dB",
+    "digits": 1,
+    "group": "电平",
+    "primary": true
+   },
+   "clip_pct": {
+    "label": "削波样本",
+    "unit": " %",
+    "digits": 4,
+    "group": "电平",
+    "primary": true
+   },
+   "dc_max_dbfs": {
+    "label": "直流偏移",
+    "unit": " dBFS",
+    "digits": 1,
+    "group": "电平",
+    "primary": false
+   },
+   "lufs": {
+    "label": "集成响度",
+    "unit": " LUFS",
+    "digits": 1,
+    "group": "响度",
+    "primary": true
+   },
+   "lra": {
+    "label": "响度范围 LRA",
+    "unit": " LU",
+    "digits": 1,
+    "group": "响度",
+    "primary": true
+   },
+   "true_peak_dbfs": {
+    "label": "真峰值",
+    "unit": " dBTP",
+    "digits": 2,
+    "group": "响度",
+    "primary": true
+   },
+   "plr": {
+    "label": "Peak-to-Loudness",
+    "unit": " dB",
+    "digits": 1,
+    "group": "响度",
+    "primary": true
+   },
+   "st_max": {
+    "label": "短时最大响度",
+    "unit": " LUFS",
+    "digits": 1,
+    "group": "响度",
+    "primary": false
+   },
+   "st_min": {
+    "label": "短时最小响度",
+    "unit": " LUFS",
+    "digits": 1,
+    "group": "响度",
+    "primary": false
+   },
+   "cutoff_hz": {
+    "label": "真实截止",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "带宽",
+    "primary": true
+   },
+   "cutoff_ratio": {
+    "label": "占奈奎斯特",
+    "unit": "",
+    "digits": 3,
+    "group": "带宽",
+    "primary": false
+   },
+   "brickwall_db_per_oct": {
+    "label": "砖墙陡度",
+    "unit": " dB/oct",
+    "digits": 1,
+    "group": "带宽",
+    "primary": false
+   },
+   "centroid_hz": {
+    "label": "频谱重心",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "rolloff85_hz": {
+    "label": "85% 滚降",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "rolloff95_hz": {
+    "label": "95% 滚降",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "flatness": {
+    "label": "谱平坦度",
+    "unit": "",
+    "digits": 5,
+    "group": "频谱",
+    "primary": false
+   },
+   "noise_floor_db": {
+    "label": "噪声底",
+    "unit": " dB",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "corr": {
+    "label": "相位相关",
+    "unit": "",
+    "digits": 3,
+    "group": "立体声",
+    "primary": true
+   },
+   "width_db": {
+    "label": "声道宽度",
+    "unit": " dB",
+    "digits": 1,
+    "group": "立体声",
+    "primary": true
+   },
+   "mono_compat": {
+    "label": "单声道兼容",
+    "unit": "",
+    "digits": 1,
+    "group": "立体声",
+    "primary": false
+   },
+   "lr_level_diff_db": {
+    "label": "L/R 电平差",
+    "unit": " dB",
+    "digits": 2,
+    "group": "立体声",
+    "primary": false
+   },
+   "vendor": {
+    "label": "编码器串",
+    "unit": "",
+    "digits": 1,
+    "group": "元数据",
+    "primary": true
+   }
+  },
+  "analyzers": [
+   "basic",
+   "loudness",
+   "dc_offset",
+   "metadata",
+   "spectrum",
+   "stereo",
+   "verdict"
+  ]
  },
  {
-  "file": "2-09. NekoTime.flac",
-  "path": "<MUSIC>\\BA OST\\[2026.01.18] Blue Archive Original Soundtrack Vol.8　～Dreaming for the Melody of Revolution～\\2-09. NekoTime.flac",
+  "errors": [],
+  "file": "01-Usagi Flap.flac",
+  "path": "<MUSIC>\\BA OST\\[Vol.6] Blue Archive Original Soundtrack Vol.6～Keeping for the abiding belief～[48kHz／24bit][FLAC]\\01-Usagi Flap.flac",
+  "sr": 48000,
+  "bits": "PCM_24",
+  "channels": 2,
+  "format": "FLAC",
+  "seconds": 126.6,
+  "size_mb": 38.0,
+  "kbps": 2400,
+  "deep": true,
+  "meta": {
+   "fields": {
+    "title": "Usagi Flap",
+    "artist": "Nor",
+    "album": "Blue Archive Original Soundtrack Vol.6～Keeping for the abiding belief～",
+    "albumartist": "ミツキヨ 、 KARUT 、 Nor、YUC'e、EmoCosine、Aiobahn、Synthion、7mai",
+    "track": "1",
+    "disc": "1",
+    "composer": "Nor",
+    "label": "JASRAC / 株式会社Yostar",
+    "copyright": "NEXON Games Co., Ltd.",
+    "comment": "JASRAC / 株式会社Yostar"
+   },
+   "vendor": "reference libFLAC 1.3.1 20141125",
+   "pictures": 1,
+   "tags_total": 22
+  },
+  "vendor": "reference libFLAC 1.3.1 20141125",
+  "peak_dbfs": -0.0,
+  "rms_dbfs": -9.76,
+  "clip_pct": 0.5159,
+  "crest_db": 9.8,
+  "dr_db": 8.1,
+  "lr_level_diff_db": 0.06,
+  "_corr": 0.4078822447504567,
+  "cutoff_hz": 24000.0,
+  "cutoff_khz": 24.0,
+  "cutoff_ratio": 1.0,
+  "brickwall_db_per_oct": null,
+  "bands_pct": {
+   "sub": 5.6,
+   "bass": 46.5,
+   "low_mid": 9.2,
+   "mid": 22.6,
+   "upper_mid": 9.1,
+   "high": 6.8,
+   "air": 0.2
+  },
+  "centroid_hz": 1333.9,
+  "rolloff85_hz": 2255.9,
+  "rolloff95_hz": 7333.0,
+  "flatness": 0.04976,
+  "noise_floor_db": -89.7,
+  "lufs": -6.3,
+  "lra": 4.5,
+  "st_max": -4.1,
+  "st_min": -25.0,
+  "true_peak_dbfs": 2.76,
+  "plr": 9.1,
+  "dc_offset": [
+   -0.0,
+   -0.0
+  ],
+  "dc_max_dbfs": -138.6,
+  "width_db": -3.4,
+  "corr": 0.377,
+  "mono_compat": "良好",
+  "verdict": "真 48kHz 带宽｜削波 0.516%｜采样间过载 +2.8 dBTP｜响度战 -6.3 LUFS",
+  "level": "ok",
+  "level_cn": "合格",
+  "advice": "高频内容充足（到 24.0kHz）→ 可用于评估耳机的高频延伸/空气感。 真峰值 +2.76 dBTP（超满刻度）→ DAC 重建时可能削顶，别把这点失真算到耳机头上。 集成响度 -6.3 LUFS（响度战极重）→ 对比时必须先按响度对齐，否则「更响」会被误判成「更好」。 存在削波 → 大动态段落本身有失真，别算到耳机头上。",
+  "metrics": {
+   "sr": {
+    "label": "采样率",
+    "unit": " Hz",
+    "digits": 0,
+    "group": "容器",
+    "primary": true
+   },
+   "bits": {
+    "label": "位深",
+    "unit": "",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "format": {
+    "label": "容器格式",
+    "unit": "",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "channels": {
+    "label": "声道数",
+    "unit": "",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "seconds": {
+    "label": "时长",
+    "unit": " s",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "size_mb": {
+    "label": "体积",
+    "unit": " MB",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "kbps": {
+    "label": "估算码率",
+    "unit": " kbps",
+    "digits": 0,
+    "group": "容器",
+    "primary": true
+   },
+   "peak_dbfs": {
+    "label": "峰值",
+    "unit": " dBFS",
+    "digits": 2,
+    "group": "电平",
+    "primary": true
+   },
+   "rms_dbfs": {
+    "label": "RMS",
+    "unit": " dBFS",
+    "digits": 2,
+    "group": "电平",
+    "primary": true
+   },
+   "crest_db": {
+    "label": "波峰因数",
+    "unit": " dB",
+    "digits": 1,
+    "group": "电平",
+    "primary": false
+   },
+   "dr_db": {
+    "label": "动态范围 DR",
+    "unit": " dB",
+    "digits": 1,
+    "group": "电平",
+    "primary": true
+   },
+   "clip_pct": {
+    "label": "削波样本",
+    "unit": " %",
+    "digits": 4,
+    "group": "电平",
+    "primary": true
+   },
+   "dc_max_dbfs": {
+    "label": "直流偏移",
+    "unit": " dBFS",
+    "digits": 1,
+    "group": "电平",
+    "primary": false
+   },
+   "lufs": {
+    "label": "集成响度",
+    "unit": " LUFS",
+    "digits": 1,
+    "group": "响度",
+    "primary": true
+   },
+   "lra": {
+    "label": "响度范围 LRA",
+    "unit": " LU",
+    "digits": 1,
+    "group": "响度",
+    "primary": true
+   },
+   "true_peak_dbfs": {
+    "label": "真峰值",
+    "unit": " dBTP",
+    "digits": 2,
+    "group": "响度",
+    "primary": true
+   },
+   "plr": {
+    "label": "Peak-to-Loudness",
+    "unit": " dB",
+    "digits": 1,
+    "group": "响度",
+    "primary": true
+   },
+   "st_max": {
+    "label": "短时最大响度",
+    "unit": " LUFS",
+    "digits": 1,
+    "group": "响度",
+    "primary": false
+   },
+   "st_min": {
+    "label": "短时最小响度",
+    "unit": " LUFS",
+    "digits": 1,
+    "group": "响度",
+    "primary": false
+   },
+   "cutoff_hz": {
+    "label": "真实截止",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "带宽",
+    "primary": true
+   },
+   "cutoff_ratio": {
+    "label": "占奈奎斯特",
+    "unit": "",
+    "digits": 3,
+    "group": "带宽",
+    "primary": false
+   },
+   "brickwall_db_per_oct": {
+    "label": "砖墙陡度",
+    "unit": " dB/oct",
+    "digits": 1,
+    "group": "带宽",
+    "primary": false
+   },
+   "centroid_hz": {
+    "label": "频谱重心",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "rolloff85_hz": {
+    "label": "85% 滚降",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "rolloff95_hz": {
+    "label": "95% 滚降",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "flatness": {
+    "label": "谱平坦度",
+    "unit": "",
+    "digits": 5,
+    "group": "频谱",
+    "primary": false
+   },
+   "noise_floor_db": {
+    "label": "噪声底",
+    "unit": " dB",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "corr": {
+    "label": "相位相关",
+    "unit": "",
+    "digits": 3,
+    "group": "立体声",
+    "primary": true
+   },
+   "width_db": {
+    "label": "声道宽度",
+    "unit": " dB",
+    "digits": 1,
+    "group": "立体声",
+    "primary": true
+   },
+   "mono_compat": {
+    "label": "单声道兼容",
+    "unit": "",
+    "digits": 1,
+    "group": "立体声",
+    "primary": false
+   },
+   "lr_level_diff_db": {
+    "label": "L/R 电平差",
+    "unit": " dB",
+    "digits": 2,
+    "group": "立体声",
+    "primary": false
+   },
+   "vendor": {
+    "label": "编码器串",
+    "unit": "",
+    "digits": 1,
+    "group": "元数据",
+    "primary": true
+   }
+  },
+  "analyzers": [
+   "basic",
+   "loudness",
+   "dc_offset",
+   "metadata",
+   "spectrum",
+   "stereo",
+   "verdict"
+  ]
+ },
+ {
+  "errors": [],
+  "file": "02-Unwelcome Guest.flac",
+  "path": "<MUSIC>\\BA OST\\[Vol.6] Blue Archive Original Soundtrack Vol.6～Keeping for the abiding belief～[48kHz／24bit][FLAC]\\02-Unwelcome Guest.flac",
+  "sr": 48000,
+  "bits": "PCM_24",
+  "channels": 2,
+  "format": "FLAC",
+  "seconds": 126.5,
+  "size_mb": 37.9,
+  "kbps": 2400,
+  "deep": true,
+  "meta": {
+   "fields": {
+    "title": "Unwelcome Guest",
+    "artist": "ミツキヨ",
+    "album": "Blue Archive Original Soundtrack Vol.6～Keeping for the abiding belief～",
+    "albumartist": "ミツキヨ 、 KARUT 、 Nor、YUC'e、EmoCosine、Aiobahn、Synthion、7mai",
+    "track": "2",
+    "disc": "1",
+    "composer": "ミツキヨ",
+    "label": "JASRAC / 株式会社Yostar",
+    "copyright": "NEXON Games Co., Ltd.",
+    "comment": "JASRAC / 株式会社Yostar"
+   },
+   "vendor": "reference libFLAC 1.3.1 20141125",
+   "pictures": 1,
+   "tags_total": 22
+  },
+  "vendor": "reference libFLAC 1.3.1 20141125",
+  "peak_dbfs": -0.0,
+  "rms_dbfs": -10.78,
+  "clip_pct": 0.1577,
+  "crest_db": 10.8,
+  "dr_db": 8.9,
+  "lr_level_diff_db": 0.17,
+  "_corr": 0.8301562399723924,
+  "cutoff_hz": 24000.0,
+  "cutoff_khz": 24.0,
+  "cutoff_ratio": 1.0,
+  "brickwall_db_per_oct": null,
+  "bands_pct": {
+   "sub": 25.4,
+   "bass": 47.3,
+   "low_mid": 4.2,
+   "mid": 10.2,
+   "upper_mid": 9.7,
+   "high": 3.2,
+   "air": 0.0
+  },
+  "centroid_hz": 818.6,
+  "rolloff85_hz": 1626.0,
+  "rolloff95_hz": 4406.2,
+  "flatness": 0.01753,
+  "noise_floor_db": -99.6,
+  "lufs": -8.2,
+  "lra": 5.6,
+  "st_max": -6.5,
+  "st_min": -24.1,
+  "true_peak_dbfs": 1.39,
+  "plr": 9.6,
+  "dc_offset": [
+   -0.0,
+   -0.0
+  ],
+  "dc_max_dbfs": -141.8,
+  "width_db": -11.1,
+  "corr": 0.858,
+  "mono_compat": "良好",
+  "verdict": "真 48kHz 带宽｜削波 0.158%｜采样间过载 +1.4 dBTP｜响度战 -8.2 LUFS",
+  "level": "ok",
+  "level_cn": "合格",
+  "advice": "高频内容充足（到 24.0kHz）→ 可用于评估耳机的高频延伸/空气感。 低频能量占 73% → 适合试低频下潜 / 控制力。 真峰值 +1.39 dBTP（超满刻度）→ DAC 重建时可能削顶，别把这点失真算到耳机头上。 集成响度 -8.2 LUFS（响度战极重）→ 对比时必须先按响度对齐，否则「更响」会被误判成「更好」。 存在削波 → 大动态段落本身有失真，别算到耳机头上。",
+  "metrics": {
+   "sr": {
+    "label": "采样率",
+    "unit": " Hz",
+    "digits": 0,
+    "group": "容器",
+    "primary": true
+   },
+   "bits": {
+    "label": "位深",
+    "unit": "",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "format": {
+    "label": "容器格式",
+    "unit": "",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "channels": {
+    "label": "声道数",
+    "unit": "",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "seconds": {
+    "label": "时长",
+    "unit": " s",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "size_mb": {
+    "label": "体积",
+    "unit": " MB",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "kbps": {
+    "label": "估算码率",
+    "unit": " kbps",
+    "digits": 0,
+    "group": "容器",
+    "primary": true
+   },
+   "peak_dbfs": {
+    "label": "峰值",
+    "unit": " dBFS",
+    "digits": 2,
+    "group": "电平",
+    "primary": true
+   },
+   "rms_dbfs": {
+    "label": "RMS",
+    "unit": " dBFS",
+    "digits": 2,
+    "group": "电平",
+    "primary": true
+   },
+   "crest_db": {
+    "label": "波峰因数",
+    "unit": " dB",
+    "digits": 1,
+    "group": "电平",
+    "primary": false
+   },
+   "dr_db": {
+    "label": "动态范围 DR",
+    "unit": " dB",
+    "digits": 1,
+    "group": "电平",
+    "primary": true
+   },
+   "clip_pct": {
+    "label": "削波样本",
+    "unit": " %",
+    "digits": 4,
+    "group": "电平",
+    "primary": true
+   },
+   "dc_max_dbfs": {
+    "label": "直流偏移",
+    "unit": " dBFS",
+    "digits": 1,
+    "group": "电平",
+    "primary": false
+   },
+   "lufs": {
+    "label": "集成响度",
+    "unit": " LUFS",
+    "digits": 1,
+    "group": "响度",
+    "primary": true
+   },
+   "lra": {
+    "label": "响度范围 LRA",
+    "unit": " LU",
+    "digits": 1,
+    "group": "响度",
+    "primary": true
+   },
+   "true_peak_dbfs": {
+    "label": "真峰值",
+    "unit": " dBTP",
+    "digits": 2,
+    "group": "响度",
+    "primary": true
+   },
+   "plr": {
+    "label": "Peak-to-Loudness",
+    "unit": " dB",
+    "digits": 1,
+    "group": "响度",
+    "primary": true
+   },
+   "st_max": {
+    "label": "短时最大响度",
+    "unit": " LUFS",
+    "digits": 1,
+    "group": "响度",
+    "primary": false
+   },
+   "st_min": {
+    "label": "短时最小响度",
+    "unit": " LUFS",
+    "digits": 1,
+    "group": "响度",
+    "primary": false
+   },
+   "cutoff_hz": {
+    "label": "真实截止",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "带宽",
+    "primary": true
+   },
+   "cutoff_ratio": {
+    "label": "占奈奎斯特",
+    "unit": "",
+    "digits": 3,
+    "group": "带宽",
+    "primary": false
+   },
+   "brickwall_db_per_oct": {
+    "label": "砖墙陡度",
+    "unit": " dB/oct",
+    "digits": 1,
+    "group": "带宽",
+    "primary": false
+   },
+   "centroid_hz": {
+    "label": "频谱重心",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "rolloff85_hz": {
+    "label": "85% 滚降",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "rolloff95_hz": {
+    "label": "95% 滚降",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "flatness": {
+    "label": "谱平坦度",
+    "unit": "",
+    "digits": 5,
+    "group": "频谱",
+    "primary": false
+   },
+   "noise_floor_db": {
+    "label": "噪声底",
+    "unit": " dB",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "corr": {
+    "label": "相位相关",
+    "unit": "",
+    "digits": 3,
+    "group": "立体声",
+    "primary": true
+   },
+   "width_db": {
+    "label": "声道宽度",
+    "unit": " dB",
+    "digits": 1,
+    "group": "立体声",
+    "primary": true
+   },
+   "mono_compat": {
+    "label": "单声道兼容",
+    "unit": "",
+    "digits": 1,
+    "group": "立体声",
+    "primary": false
+   },
+   "lr_level_diff_db": {
+    "label": "L/R 电平差",
+    "unit": " dB",
+    "digits": 2,
+    "group": "立体声",
+    "primary": false
+   },
+   "vendor": {
+    "label": "编码器串",
+    "unit": "",
+    "digits": 1,
+    "group": "元数据",
+    "primary": true
+   }
+  },
+  "analyzers": [
+   "basic",
+   "loudness",
+   "dc_offset",
+   "metadata",
+   "spectrum",
+   "stereo",
+   "verdict"
+  ]
+ },
+ {
+  "errors": [],
+  "file": "01 Intersection.flac",
+  "path": "<MUSIC>\\ELECTROCUTICA\\ELECTROCUTICA - AW2013 – CRYOHYDRATE\\01 Intersection.flac",
   "sr": 44100,
   "bits": "PCM_16",
   "channels": 2,
   "format": "FLAC",
-  "seconds": 67.5,
-  "size_mb": 6.2,
-  "kbps": 736,
-  "peak_dbfs": 0.0,
-  "rms_dbfs": -10.38,
-  "crest_db": 10.4,
-  "clip_pct": 0.001,
-  "dr_db": 8.2,
-  "phase_corr": 0.459,
-  "lr_level_diff_db": 0.01,
-  "cutoff_hz": 16518.8,
-  "cutoff_khz": 16.52,
-  "cutoff_ratio": 0.749,
-  "brickwall_db_per_oct": 27.7,
-  "bands_pct": {
-   "sub": 20.3,
-   "bass": 41.7,
-   "low_mid": 14.4,
-   "mid": 22.3,
-   "upper_mid": 1.1,
-   "high": 0.4,
-   "air": 0.0
+  "seconds": 179.0,
+  "size_mb": 21.1,
+  "kbps": 944,
+  "deep": true,
+  "meta": {
+   "fields": {
+    "title": "Intersection",
+    "artist": "ELECTROCUTICA",
+    "album": "AW2013 – CRYOHYDRATE",
+    "date": "2014",
+    "genre": "Electronic",
+    "track": "01",
+    "disc": "1"
+   },
+   "vendor": "reference libFLAC 1.4.3 20230623",
+   "pictures": 1,
+   "tags_total": 9
   },
-  "verdict": "有损溯源（≈192–256kbps 转码）",
-  "level": "bad",
-  "advice": "内容止于 16.5kHz → 评估耳机「高频延伸」不可靠：信息在源头就没了。 低频能量占 62% → 适合试低频下潜 / 控制力。"
+  "vendor": "reference libFLAC 1.4.3 20230623",
+  "peak_dbfs": -0.46,
+  "rms_dbfs": -12.19,
+  "clip_pct": 0.0,
+  "crest_db": 11.7,
+  "dr_db": 9.9,
+  "lr_level_diff_db": 0.38,
+  "_corr": 0.6975019724233268,
+  "cutoff_hz": 22050.0,
+  "cutoff_khz": 22.05,
+  "cutoff_ratio": 1.0,
+  "brickwall_db_per_oct": null,
+  "bands_pct": {
+   "sub": 2.0,
+   "bass": 41.9,
+   "low_mid": 21.5,
+   "mid": 28.1,
+   "upper_mid": 4.5,
+   "high": 1.9,
+   "air": 0.1
+  },
+  "centroid_hz": 742.9,
+  "rolloff85_hz": 1152.0,
+  "rolloff95_hz": 2613.6,
+  "flatness": 0.01989,
+  "noise_floor_db": -113.4,
+  "lufs": -9.3,
+  "lra": 5.7,
+  "st_max": -7.2,
+  "st_min": -20.3,
+  "true_peak_dbfs": 0.16,
+  "plr": 9.5,
+  "dc_offset": [
+   5.7e-05,
+   -4.6e-05
+  ],
+  "dc_max_dbfs": -84.8,
+  "width_db": -8.2,
+  "corr": 0.737,
+  "mono_compat": "良好",
+  "verdict": "CD 级满带宽｜采样间过载 +0.2 dBTP",
+  "level": "ok",
+  "level_cn": "合格",
+  "advice": "高频内容充足（到 22.1kHz）→ 可用于评估耳机的高频延伸/空气感。 真峰值 +0.16 dBTP（超满刻度）→ DAC 重建时可能削顶，别把这点失真算到耳机头上。",
+  "metrics": {
+   "sr": {
+    "label": "采样率",
+    "unit": " Hz",
+    "digits": 0,
+    "group": "容器",
+    "primary": true
+   },
+   "bits": {
+    "label": "位深",
+    "unit": "",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "format": {
+    "label": "容器格式",
+    "unit": "",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "channels": {
+    "label": "声道数",
+    "unit": "",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "seconds": {
+    "label": "时长",
+    "unit": " s",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "size_mb": {
+    "label": "体积",
+    "unit": " MB",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "kbps": {
+    "label": "估算码率",
+    "unit": " kbps",
+    "digits": 0,
+    "group": "容器",
+    "primary": true
+   },
+   "peak_dbfs": {
+    "label": "峰值",
+    "unit": " dBFS",
+    "digits": 2,
+    "group": "电平",
+    "primary": true
+   },
+   "rms_dbfs": {
+    "label": "RMS",
+    "unit": " dBFS",
+    "digits": 2,
+    "group": "电平",
+    "primary": true
+   },
+   "crest_db": {
+    "label": "波峰因数",
+    "unit": " dB",
+    "digits": 1,
+    "group": "电平",
+    "primary": false
+   },
+   "dr_db": {
+    "label": "动态范围 DR",
+    "unit": " dB",
+    "digits": 1,
+    "group": "电平",
+    "primary": true
+   },
+   "clip_pct": {
+    "label": "削波样本",
+    "unit": " %",
+    "digits": 4,
+    "group": "电平",
+    "primary": true
+   },
+   "dc_max_dbfs": {
+    "label": "直流偏移",
+    "unit": " dBFS",
+    "digits": 1,
+    "group": "电平",
+    "primary": false
+   },
+   "lufs": {
+    "label": "集成响度",
+    "unit": " LUFS",
+    "digits": 1,
+    "group": "响度",
+    "primary": true
+   },
+   "lra": {
+    "label": "响度范围 LRA",
+    "unit": " LU",
+    "digits": 1,
+    "group": "响度",
+    "primary": true
+   },
+   "true_peak_dbfs": {
+    "label": "真峰值",
+    "unit": " dBTP",
+    "digits": 2,
+    "group": "响度",
+    "primary": true
+   },
+   "plr": {
+    "label": "Peak-to-Loudness",
+    "unit": " dB",
+    "digits": 1,
+    "group": "响度",
+    "primary": true
+   },
+   "st_max": {
+    "label": "短时最大响度",
+    "unit": " LUFS",
+    "digits": 1,
+    "group": "响度",
+    "primary": false
+   },
+   "st_min": {
+    "label": "短时最小响度",
+    "unit": " LUFS",
+    "digits": 1,
+    "group": "响度",
+    "primary": false
+   },
+   "cutoff_hz": {
+    "label": "真实截止",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "带宽",
+    "primary": true
+   },
+   "cutoff_ratio": {
+    "label": "占奈奎斯特",
+    "unit": "",
+    "digits": 3,
+    "group": "带宽",
+    "primary": false
+   },
+   "brickwall_db_per_oct": {
+    "label": "砖墙陡度",
+    "unit": " dB/oct",
+    "digits": 1,
+    "group": "带宽",
+    "primary": false
+   },
+   "centroid_hz": {
+    "label": "频谱重心",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "rolloff85_hz": {
+    "label": "85% 滚降",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "rolloff95_hz": {
+    "label": "95% 滚降",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "flatness": {
+    "label": "谱平坦度",
+    "unit": "",
+    "digits": 5,
+    "group": "频谱",
+    "primary": false
+   },
+   "noise_floor_db": {
+    "label": "噪声底",
+    "unit": " dB",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "corr": {
+    "label": "相位相关",
+    "unit": "",
+    "digits": 3,
+    "group": "立体声",
+    "primary": true
+   },
+   "width_db": {
+    "label": "声道宽度",
+    "unit": " dB",
+    "digits": 1,
+    "group": "立体声",
+    "primary": true
+   },
+   "mono_compat": {
+    "label": "单声道兼容",
+    "unit": "",
+    "digits": 1,
+    "group": "立体声",
+    "primary": false
+   },
+   "lr_level_diff_db": {
+    "label": "L/R 电平差",
+    "unit": " dB",
+    "digits": 2,
+    "group": "立体声",
+    "primary": false
+   },
+   "vendor": {
+    "label": "编码器串",
+    "unit": "",
+    "digits": 1,
+    "group": "元数据",
+    "primary": true
+   }
+  },
+  "analyzers": [
+   "basic",
+   "loudness",
+   "dc_offset",
+   "metadata",
+   "spectrum",
+   "stereo",
+   "verdict"
+  ]
  },
  {
-  "file": "2-10. InuTime.flac",
-  "path": "<MUSIC>\\BA OST\\[2026.01.18] Blue Archive Original Soundtrack Vol.8　～Dreaming for the Melody of Revolution～\\2-10. InuTime.flac",
+  "errors": [],
+  "file": "02 Khronotris.flac",
+  "path": "<MUSIC>\\ELECTROCUTICA\\ELECTROCUTICA - AW2013 – CRYOHYDRATE\\02 Khronotris.flac",
   "sr": 44100,
   "bits": "PCM_16",
   "channels": 2,
   "format": "FLAC",
-  "seconds": 66.5,
-  "size_mb": 7.3,
-  "kbps": 883,
-  "peak_dbfs": 0.0,
-  "rms_dbfs": -10.43,
-  "crest_db": 10.4,
-  "clip_pct": 0.0039,
-  "dr_db": 8.8,
-  "phase_corr": 0.821,
-  "lr_level_diff_db": 0.07,
-  "cutoff_hz": 18541.8,
-  "cutoff_khz": 18.54,
-  "cutoff_ratio": 0.841,
-  "brickwall_db_per_oct": 14.5,
-  "bands_pct": {
-   "sub": 13.6,
-   "bass": 60.5,
-   "low_mid": 10.5,
-   "mid": 10.1,
-   "upper_mid": 2.9,
-   "high": 2.4,
-   "air": 0.0
+  "seconds": 203.6,
+  "size_mb": 26.9,
+  "kbps": 1056,
+  "deep": true,
+  "meta": {
+   "fields": {
+    "title": "Khronotris",
+    "artist": "ELECTROCUTICA",
+    "album": "AW2013 – CRYOHYDRATE",
+    "date": "2014",
+    "genre": "Electronic",
+    "track": "02",
+    "disc": "1"
+   },
+   "vendor": "reference libFLAC 1.4.3 20230623",
+   "pictures": 1,
+   "tags_total": 9
   },
-  "verdict": "有损溯源（≈192–256kbps 转码）",
-  "level": "bad",
-  "advice": "内容止于 18.5kHz → 评估耳机「高频延伸」不可靠：信息在源头就没了。 低频能量占 74% → 适合试低频下潜 / 控制力。"
+  "vendor": "reference libFLAC 1.4.3 20230623",
+  "peak_dbfs": -0.71,
+  "rms_dbfs": -12.96,
+  "clip_pct": 0.0,
+  "crest_db": 12.2,
+  "dr_db": 10.2,
+  "lr_level_diff_db": 0.31,
+  "_corr": 0.6177227717328879,
+  "cutoff_hz": 22050.0,
+  "cutoff_khz": 22.05,
+  "cutoff_ratio": 1.0,
+  "brickwall_db_per_oct": null,
+  "bands_pct": {
+   "sub": 12.0,
+   "bass": 48.6,
+   "low_mid": 13.4,
+   "mid": 17.6,
+   "upper_mid": 5.1,
+   "high": 3.1,
+   "air": 0.1
+  },
+  "centroid_hz": 808.0,
+  "rolloff85_hz": 998.6,
+  "rolloff95_hz": 3843.7,
+  "flatness": 0.02968,
+  "noise_floor_db": -113.8,
+  "lufs": -10.4,
+  "lra": 8.0,
+  "st_max": -8.0,
+  "st_min": -19.2,
+  "true_peak_dbfs": 0.8,
+  "plr": 11.2,
+  "dc_offset": [
+   -1e-05,
+   -3.7e-05
+  ],
+  "dc_max_dbfs": -88.6,
+  "width_db": -9.4,
+  "corr": 0.794,
+  "mono_compat": "良好",
+  "verdict": "CD 级满带宽｜采样间过载 +0.8 dBTP",
+  "level": "ok",
+  "level_cn": "合格",
+  "advice": "高频内容充足（到 22.1kHz）→ 可用于评估耳机的高频延伸/空气感。 低频能量占 61% → 适合试低频下潜 / 控制力。 真峰值 +0.80 dBTP（超满刻度）→ DAC 重建时可能削顶，别把这点失真算到耳机头上。",
+  "metrics": {
+   "sr": {
+    "label": "采样率",
+    "unit": " Hz",
+    "digits": 0,
+    "group": "容器",
+    "primary": true
+   },
+   "bits": {
+    "label": "位深",
+    "unit": "",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "format": {
+    "label": "容器格式",
+    "unit": "",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "channels": {
+    "label": "声道数",
+    "unit": "",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "seconds": {
+    "label": "时长",
+    "unit": " s",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "size_mb": {
+    "label": "体积",
+    "unit": " MB",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "kbps": {
+    "label": "估算码率",
+    "unit": " kbps",
+    "digits": 0,
+    "group": "容器",
+    "primary": true
+   },
+   "peak_dbfs": {
+    "label": "峰值",
+    "unit": " dBFS",
+    "digits": 2,
+    "group": "电平",
+    "primary": true
+   },
+   "rms_dbfs": {
+    "label": "RMS",
+    "unit": " dBFS",
+    "digits": 2,
+    "group": "电平",
+    "primary": true
+   },
+   "crest_db": {
+    "label": "波峰因数",
+    "unit": " dB",
+    "digits": 1,
+    "group": "电平",
+    "primary": false
+   },
+   "dr_db": {
+    "label": "动态范围 DR",
+    "unit": " dB",
+    "digits": 1,
+    "group": "电平",
+    "primary": true
+   },
+   "clip_pct": {
+    "label": "削波样本",
+    "unit": " %",
+    "digits": 4,
+    "group": "电平",
+    "primary": true
+   },
+   "dc_max_dbfs": {
+    "label": "直流偏移",
+    "unit": " dBFS",
+    "digits": 1,
+    "group": "电平",
+    "primary": false
+   },
+   "lufs": {
+    "label": "集成响度",
+    "unit": " LUFS",
+    "digits": 1,
+    "group": "响度",
+    "primary": true
+   },
+   "lra": {
+    "label": "响度范围 LRA",
+    "unit": " LU",
+    "digits": 1,
+    "group": "响度",
+    "primary": true
+   },
+   "true_peak_dbfs": {
+    "label": "真峰值",
+    "unit": " dBTP",
+    "digits": 2,
+    "group": "响度",
+    "primary": true
+   },
+   "plr": {
+    "label": "Peak-to-Loudness",
+    "unit": " dB",
+    "digits": 1,
+    "group": "响度",
+    "primary": true
+   },
+   "st_max": {
+    "label": "短时最大响度",
+    "unit": " LUFS",
+    "digits": 1,
+    "group": "响度",
+    "primary": false
+   },
+   "st_min": {
+    "label": "短时最小响度",
+    "unit": " LUFS",
+    "digits": 1,
+    "group": "响度",
+    "primary": false
+   },
+   "cutoff_hz": {
+    "label": "真实截止",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "带宽",
+    "primary": true
+   },
+   "cutoff_ratio": {
+    "label": "占奈奎斯特",
+    "unit": "",
+    "digits": 3,
+    "group": "带宽",
+    "primary": false
+   },
+   "brickwall_db_per_oct": {
+    "label": "砖墙陡度",
+    "unit": " dB/oct",
+    "digits": 1,
+    "group": "带宽",
+    "primary": false
+   },
+   "centroid_hz": {
+    "label": "频谱重心",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "rolloff85_hz": {
+    "label": "85% 滚降",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "rolloff95_hz": {
+    "label": "95% 滚降",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "flatness": {
+    "label": "谱平坦度",
+    "unit": "",
+    "digits": 5,
+    "group": "频谱",
+    "primary": false
+   },
+   "noise_floor_db": {
+    "label": "噪声底",
+    "unit": " dB",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "corr": {
+    "label": "相位相关",
+    "unit": "",
+    "digits": 3,
+    "group": "立体声",
+    "primary": true
+   },
+   "width_db": {
+    "label": "声道宽度",
+    "unit": " dB",
+    "digits": 1,
+    "group": "立体声",
+    "primary": true
+   },
+   "mono_compat": {
+    "label": "单声道兼容",
+    "unit": "",
+    "digits": 1,
+    "group": "立体声",
+    "primary": false
+   },
+   "lr_level_diff_db": {
+    "label": "L/R 电平差",
+    "unit": " dB",
+    "digits": 2,
+    "group": "立体声",
+    "primary": false
+   },
+   "vendor": {
+    "label": "编码器串",
+    "unit": "",
+    "digits": 1,
+    "group": "元数据",
+    "primary": true
+   }
+  },
+  "analyzers": [
+   "basic",
+   "loudness",
+   "dc_offset",
+   "metadata",
+   "spectrum",
+   "stereo",
+   "verdict"
+  ]
  },
  {
-  "file": "2-11. Playful Maniac.flac",
-  "path": "<MUSIC>\\BA OST\\[2026.01.18] Blue Archive Original Soundtrack Vol.8　～Dreaming for the Melody of Revolution～\\2-11. Playful Maniac.flac",
+  "errors": [],
+  "file": "03 Contamination.flac",
+  "path": "<MUSIC>\\ELECTROCUTICA\\ELECTROCUTICA - AW2013 – CRYOHYDRATE\\03 Contamination.flac",
   "sr": 44100,
   "bits": "PCM_16",
   "channels": 2,
   "format": "FLAC",
-  "seconds": 118.1,
-  "size_mb": 13.7,
-  "kbps": 926,
-  "peak_dbfs": 0.0,
-  "rms_dbfs": -9.13,
-  "crest_db": 9.1,
-  "clip_pct": 0.0019,
-  "dr_db": 7.5,
-  "phase_corr": 0.903,
-  "lr_level_diff_db": 0.3,
-  "cutoff_hz": 16518.8,
-  "cutoff_khz": 16.52,
-  "cutoff_ratio": 0.749,
-  "brickwall_db_per_oct": 29.8,
-  "bands_pct": {
-   "sub": 9.6,
-   "bass": 54.5,
-   "low_mid": 8.4,
-   "mid": 16.1,
-   "upper_mid": 7.9,
-   "high": 3.4,
-   "air": 0.0
+  "seconds": 285.0,
+  "size_mb": 32.4,
+  "kbps": 908,
+  "deep": true,
+  "meta": {
+   "fields": {
+    "title": "Contamination",
+    "artist": "ELECTROCUTICA",
+    "album": "AW2013 – CRYOHYDRATE",
+    "date": "2014",
+    "genre": "Electronic",
+    "track": "03",
+    "disc": "1"
+   },
+   "vendor": "reference libFLAC 1.4.3 20230623",
+   "pictures": 1,
+   "tags_total": 9
   },
-  "verdict": "有损溯源（≈192–256kbps 转码）",
-  "level": "bad",
-  "advice": "内容止于 16.5kHz → 评估耳机「高频延伸」不可靠：信息在源头就没了。 低频能量占 64% → 适合试低频下潜 / 控制力。"
+  "vendor": "reference libFLAC 1.4.3 20230623",
+  "peak_dbfs": -0.79,
+  "rms_dbfs": -14.42,
+  "clip_pct": 0.0,
+  "crest_db": 13.6,
+  "dr_db": 10.9,
+  "lr_level_diff_db": 0.1,
+  "_corr": 0.7665184924677324,
+  "cutoff_hz": 22050.0,
+  "cutoff_khz": 22.05,
+  "cutoff_ratio": 1.0,
+  "brickwall_db_per_oct": null,
+  "bands_pct": {
+   "sub": 12.2,
+   "bass": 38.5,
+   "low_mid": 15.2,
+   "mid": 21.7,
+   "upper_mid": 7.4,
+   "high": 4.6,
+   "air": 0.4
+  },
+  "centroid_hz": 1103.5,
+  "rolloff85_hz": 1504.6,
+  "rolloff95_hz": 6096.6,
+  "flatness": 0.04719,
+  "noise_floor_db": -111.2,
+  "lufs": -11.4,
+  "lra": 8.8,
+  "st_max": -8.4,
+  "st_min": -22.1,
+  "true_peak_dbfs": -0.28,
+  "plr": 11.1,
+  "dc_offset": [
+   -2.7e-05,
+   -3.5e-05
+  ],
+  "dc_max_dbfs": -89.2,
+  "width_db": -10.0,
+  "corr": 0.817,
+  "mono_compat": "良好",
+  "verdict": "CD 级满带宽",
+  "level": "ok",
+  "level_cn": "合格",
+  "advice": "高频内容充足（到 22.1kHz）→ 可用于评估耳机的高频延伸/空气感。",
+  "metrics": {
+   "sr": {
+    "label": "采样率",
+    "unit": " Hz",
+    "digits": 0,
+    "group": "容器",
+    "primary": true
+   },
+   "bits": {
+    "label": "位深",
+    "unit": "",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "format": {
+    "label": "容器格式",
+    "unit": "",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "channels": {
+    "label": "声道数",
+    "unit": "",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "seconds": {
+    "label": "时长",
+    "unit": " s",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "size_mb": {
+    "label": "体积",
+    "unit": " MB",
+    "digits": 1,
+    "group": "容器",
+    "primary": false
+   },
+   "kbps": {
+    "label": "估算码率",
+    "unit": " kbps",
+    "digits": 0,
+    "group": "容器",
+    "primary": true
+   },
+   "peak_dbfs": {
+    "label": "峰值",
+    "unit": " dBFS",
+    "digits": 2,
+    "group": "电平",
+    "primary": true
+   },
+   "rms_dbfs": {
+    "label": "RMS",
+    "unit": " dBFS",
+    "digits": 2,
+    "group": "电平",
+    "primary": true
+   },
+   "crest_db": {
+    "label": "波峰因数",
+    "unit": " dB",
+    "digits": 1,
+    "group": "电平",
+    "primary": false
+   },
+   "dr_db": {
+    "label": "动态范围 DR",
+    "unit": " dB",
+    "digits": 1,
+    "group": "电平",
+    "primary": true
+   },
+   "clip_pct": {
+    "label": "削波样本",
+    "unit": " %",
+    "digits": 4,
+    "group": "电平",
+    "primary": true
+   },
+   "dc_max_dbfs": {
+    "label": "直流偏移",
+    "unit": " dBFS",
+    "digits": 1,
+    "group": "电平",
+    "primary": false
+   },
+   "lufs": {
+    "label": "集成响度",
+    "unit": " LUFS",
+    "digits": 1,
+    "group": "响度",
+    "primary": true
+   },
+   "lra": {
+    "label": "响度范围 LRA",
+    "unit": " LU",
+    "digits": 1,
+    "group": "响度",
+    "primary": true
+   },
+   "true_peak_dbfs": {
+    "label": "真峰值",
+    "unit": " dBTP",
+    "digits": 2,
+    "group": "响度",
+    "primary": true
+   },
+   "plr": {
+    "label": "Peak-to-Loudness",
+    "unit": " dB",
+    "digits": 1,
+    "group": "响度",
+    "primary": true
+   },
+   "st_max": {
+    "label": "短时最大响度",
+    "unit": " LUFS",
+    "digits": 1,
+    "group": "响度",
+    "primary": false
+   },
+   "st_min": {
+    "label": "短时最小响度",
+    "unit": " LUFS",
+    "digits": 1,
+    "group": "响度",
+    "primary": false
+   },
+   "cutoff_hz": {
+    "label": "真实截止",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "带宽",
+    "primary": true
+   },
+   "cutoff_ratio": {
+    "label": "占奈奎斯特",
+    "unit": "",
+    "digits": 3,
+    "group": "带宽",
+    "primary": false
+   },
+   "brickwall_db_per_oct": {
+    "label": "砖墙陡度",
+    "unit": " dB/oct",
+    "digits": 1,
+    "group": "带宽",
+    "primary": false
+   },
+   "centroid_hz": {
+    "label": "频谱重心",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "rolloff85_hz": {
+    "label": "85% 滚降",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "rolloff95_hz": {
+    "label": "95% 滚降",
+    "unit": " Hz",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "flatness": {
+    "label": "谱平坦度",
+    "unit": "",
+    "digits": 5,
+    "group": "频谱",
+    "primary": false
+   },
+   "noise_floor_db": {
+    "label": "噪声底",
+    "unit": " dB",
+    "digits": 1,
+    "group": "频谱",
+    "primary": false
+   },
+   "corr": {
+    "label": "相位相关",
+    "unit": "",
+    "digits": 3,
+    "group": "立体声",
+    "primary": true
+   },
+   "width_db": {
+    "label": "声道宽度",
+    "unit": " dB",
+    "digits": 1,
+    "group": "立体声",
+    "primary": true
+   },
+   "mono_compat": {
+    "label": "单声道兼容",
+    "unit": "",
+    "digits": 1,
+    "group": "立体声",
+    "primary": false
+   },
+   "lr_level_diff_db": {
+    "label": "L/R 电平差",
+    "unit": " dB",
+    "digits": 2,
+    "group": "立体声",
+    "primary": false
+   },
+   "vendor": {
+    "label": "编码器串",
+    "unit": "",
+    "digits": 1,
+    "group": "元数据",
+    "primary": true
+   }
+  },
+  "analyzers": [
+   "basic",
+   "loudness",
+   "dc_offset",
+   "metadata",
+   "spectrum",
+   "stereo",
+   "verdict"
+  ]
  }
 ]

@@ -46,7 +46,7 @@ def smooth_power(f: np.ndarray, db: np.ndarray, fraction: float = 6.0) -> np.nda
 
 
 def detect_cutoff(f: np.ndarray, db: np.ndarray, min_drop_db: float = 15.0,
-                  min_hz: float = 20.0):
+                  min_hz: float = 20.0, need: int = 3, min_stop_db: float = 20.0):
     """真实高频截止点与砖墙陡度。
 
     返回 (cutoff_hz, slope_db_per_oct)。slope 为**正值**：截止点往上一个倍频程掉了多少 dB。
@@ -66,43 +66,65 @@ def detect_cutoff(f: np.ndarray, db: np.ndarray, min_drop_db: float = 15.0,
     """
     if f is None or db is None or len(f) < 16:
         return None, 0.0
-    s = smooth_power(f, db)
+    raw, s = db, smooth_power(f, db)
     j_end = len(f) - 1
+    nyq = float(f[j_end])
 
-    # 通带参考：200Hz–10kHz 中位数（避开低频隆隆与高频自然衰减）
-    band = (f >= 200) & (f <= 10000)
-    if band.sum() < 4:
-        return None, 0.0
-    ref = float(np.median(s[band]))
+    # 第一步：在**未平滑**的原始谱上自高向低找局部陡降。
+    # 必须用原始谱：功率域平滑窗口是 ±1/6 倍频程（约 ±12%），
+    # 与"截止点到奈奎斯特的距离"同量级时，边缘会被平滑抹掉
+    # （实测：44.1k 内容到 19.5k，平滑后上方只掉 8.6dB，判定器完全看不见）。
+    # 同时必须用**局部**参考（下方窗口 vs 上方窗口），不能用全频段中位数——
+    # 真实音乐的谱本身随频率向下倾斜，v3 正是这么错的（25kHz 的实际内容被报成 6.8kHz）。
+    step = 2 ** (1 / 12)
+    cur, coarse = nyq, None
+    while cur > max(min_hz * 2.0, 100.0):
+        hi_f = min(cur * 1.6, nyq)
+        if hi_f - cur < cur * 0.04:          # 上方几乎没有可用频段，跳过
+            cur /= step
+            continue
+        jc = int(np.argmin(np.abs(f - cur)))
+        jl = int(np.argmin(np.abs(f - cur / 1.6)))
+        jh = int(np.argmin(np.abs(f - hi_f)))
+        below = float(np.median(raw[jl:jc + 1]))
+        above = float(np.median(raw[jc:jh + 1]))
+        if below - above >= min_drop_db:
+            coarse = cur
+            break
+        cur /= step
 
-    # 半功率点：从高往低第一个仍处于"通带电平 -3dB 以内"的频点
-    idx = np.where((s >= ref - 3.0) & (f >= min_hz))[0]
-    if not idx.size:
-        return None, 0.0
-    j0 = int(idx[-1])
+    if coarse is None:                        # 没有陡降 → 内容直达奈奎斯特
+        return nyq, 0.0
+
+    # 第二步：以「通带电平与阻带底的中间点」为阈值，在原始谱上定位边缘。
+    # 用中点而非"通带 -3dB"：后者对倾斜谱会落到谱自然下降 3dB 的位置，而不是真正的截止点。
+    jc = int(np.argmin(np.abs(f - coarse)))
+    jl = int(np.argmin(np.abs(f - coarse / 1.6)))
+    jh = int(np.argmin(np.abs(f - min(coarse * 1.6, nyq))))
+    floor_lvl = float(np.median(raw[jc:jh + 1]))
+    pass_lvl = float(np.median(raw[jl:jc + 1]))
+    # 阻带必须真的是"坑"。缓滚降（如 2 阶巴特沃斯）上方只低几个 dB，
+    # 算出来的"中点阈值"会落在谱自然下降处，把正常音源判成带限。
+    if pass_lvl - floor_lvl < min_stop_db:
+        return nyq, 0.0
+    thr = (pass_lvl + floor_lvl) / 2.0
+
+    run, j0 = 0, None
+    for i in range(j_end, -1, -1):            # 自高向低，需连续 need 点越过阈值才算数
+        if raw[i] >= thr:
+            run += 1
+            if run >= need:
+                j0 = i + need - 1
+                break
+        else:
+            run = 0
+    if j0 is None:
+        return nyq, 0.0
     cut = float(f[j0])
+    if cut < min_hz:
+        return None, 0.0
 
-    # 陡度守卫：截止点之上 1/3 倍频程内的跌幅必须够大，否则是自然滚降而非截止
-    jt = int(np.argmin(np.abs(f - min(cut * 1.26, f[j_end]))))
-    drop = s[j0] - s[jt]
-    if j0 >= j_end or drop < min_drop_db:
-        # 两种情况必须分开，否则会把"升频"漏判成"真 Hi-Res"：
-        #   (a) 真的没有截止（内容直达奈奎斯特，顶部没有深坑）
-        #   (b) 截止太贴近奈奎斯特，1/3 倍频程里塞不下明显的落差
-        # 用「顶部 5% 频段相对通带参考的落差」区分。顶部有深坑就是 (b)。
-        top = f >= f[-1] * 0.95
-        gap = ref - float(np.max(s[top])) if top.any() else 0.0
-        if gap < 40.0:
-            return float(f[j_end]), 0.0
-        # 确认存在截止但定位被平滑拖高 → 换更细的平滑重新找半功率点
-        fine = smooth_power(f, db, 24.0)
-        idx2 = np.where((fine >= ref - 3.0) & (f >= min_hz))[0]
-        if idx2.size:
-            j0 = int(idx2[-1])
-            cut = float(f[j0])
-        return cut, 0.0
-
-    j1 = int(np.argmin(np.abs(f - min(cut * 2, f[j_end]))))
+    j1 = int(np.argmin(np.abs(f - min(cut * 2, nyq))))
     return cut, (float(s[j0] - s[j1]) if j1 > j0 else 0.0)
 
 
@@ -127,8 +149,11 @@ class SpectrumAnalyzer(Analyzer):
     def run(self, ctx) -> dict:
         if not ctx.deep:
             return {}
-        # 静音素材没有"带宽"可言——不设这道门，相对阈值会把整段静音都当成内容
-        if (ctx.result.get("peak_dbfs") or -999.0) < -60.0:
+        # 静音素材没有"带宽"可言——不设这道门，相对阈值会把整段静音都当成内容。
+        # 注意必须显式判 None：峰值正好 0.0 dBFS（满刻度，很常见）时，
+        # `x or -999` 会因为 0.0 是假值而把正常素材误判成静音。
+        peak = ctx.result.get("peak_dbfs")
+        if peak is None or peak < -60.0:
             return {"silent": True}
         f, db = ctx.spectrum()
         if f is None:

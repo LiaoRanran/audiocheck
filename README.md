@@ -4,7 +4,7 @@
 
 判断音频文件是「真 Hi-Res」还是「升频糊弄」，量出音乐特性，并把它附带的所有信息摊开。
 
-[![CI](https://github.com/yourname/audiocheck/actions/workflows/ci.yml/badge.svg)](https://github.com/yourname/audiocheck/actions/workflows/ci.yml)
+[![CI](https://github.com/LiaoRanran/audiocheck/actions/workflows/ci.yml/badge.svg)](https://github.com/LiaoRanran/audiocheck/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-69%20passed-brightgreen)](tests/)
