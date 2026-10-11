@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# 测试与覆盖率
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+
+# 工具
+.ruff_cache/
+.mypy_cache/
+.idea/
+.vscode/
+*.swp
+
+# 本项目运行产物
+examples/*.json
+!examples/sample_result.json
+*.log
+_dbg*.py
+_check.py
+_dbg3.wav
+
+# 系统
+.DS_Store
+Thumbs.db

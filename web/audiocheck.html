@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>audiocheck · 音源质量检测</title>
+<style>
+  :root{
+    --bg:#0f1117; --panel:#171a23; --panel2:#1e222d; --line:#2a2f3d;
+    --fg:#e6e9f0; --dim:#8b93a7; --ok:#3fb950; --warn:#d29922; --bad:#f85149; --acc:#4c8dff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+  header{padding:18px 26px;border-bottom:1px solid var(--line);display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
+  h1{font-size:17px;margin:0;letter-spacing:.5px}
+  header .sub{color:var(--dim);font-size:12.5px}
+  main{padding:22px 26px;max-width:1180px;margin:0 auto}
+  #drop{border:1.5px dashed var(--line);border-radius:12px;padding:34px;text-align:center;
+        color:var(--dim);background:var(--panel);transition:.18s;cursor:pointer}
+  #drop.hot{border-color:var(--acc);background:#1b2333;color:var(--fg)}
+  #drop b{color:var(--fg)}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin-top:16px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{padding:7px 9px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+  th{color:var(--dim);font-weight:500;font-size:12px}
+  tbody tr{cursor:pointer}
+  tbody tr:hover{background:var(--panel2)}
+  tbody tr.sel{background:#1b2333}
+  .pill{display:inline-block;padding:1px 8px;border-radius:20px;font-size:11.5px;font-weight:600}
+  .ok{color:var(--ok);border:1px solid #1f5c2a} .warn{color:var(--warn);border:1px solid #5c4a1f}
+  .bad{color:var(--bad);border:1px solid #6e2620} .mut{color:var(--dim);border:1px solid var(--line)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-top:4px}
+  .kv{background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:10px 12px}
+  .kv .k{color:var(--dim);font-size:11.5px}
+  .kv .v{font-size:15px;margin-top:2px}
+  .verdict{font-size:15px;font-weight:600;padding:11px 14px;border-radius:9px;margin-bottom:14px;border:1px solid}
+  .verdict.ok{background:#0e2013;border-color:#1f5c2a;color:#7ee787}
+  .verdict.warn{background:#231c0c;border-color:#5c4a1f;color:#e3b341}
+  .verdict.bad{background:#2a1210;border-color:#6e2620;color:#ff7b72}
+  canvas{width:100%;display:block;border-radius:8px;background:#0b0d13;border:1px solid var(--line)}
+  .bars{display:flex;gap:6px;align-items:flex-end;height:82px;margin-top:10px}
+  .bars .b{flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;height:100%}
+  .bars .fill{width:100%;background:linear-gradient(180deg,#6d5cf6,#4c8dff);border-radius:3px 3px 0 0;min-height:2px}
+  .bars .lb{color:var(--dim);font-size:10.5px;margin-top:5px}
+  .bars .pv{font-size:10.5px;color:var(--fg);margin-bottom:3px}
+  h3{margin:22px 0 8px;font-size:13.5px;color:var(--dim);font-weight:600;letter-spacing:.4px}
+  .note{color:var(--dim);font-size:12px;margin-top:10px}
+  .prog{height:4px;background:var(--panel2);border-radius:3px;overflow:hidden;margin-top:14px}
+  .prog i{display:block;height:100%;width:0;background:var(--acc);transition:.2s}
+</style>
+</head>
+<body>
+<header>
+  <h1>audiocheck</h1>
+  <span class="sub">音源质量检测 · 看内容，不看标签 ｜ 全部在本地浏览器完成，文件不上传</span>
+</header>
+<main>
+  <div id="drop">
+    把音频文件（或整个文件夹）拖到这里，或 <b>点击选择</b><br>
+    <span style="font-size:12px">支持 FLAC / WAV / MP3 / M4A(AAC) / OGG ｜ 建议 Chrome / Edge</span>
+  </div>
+  <input id="file" type="file" multiple accept="audio/*,.flac,.wav,.mp3,.m4a,.aac,.ogg,.opus" hidden>
+  <div class="prog" id="prog" style="display:none"><i></i></div>
+
+  <div class="card" id="listcard" style="display:none">
+    <table>
+      <thead><tr><th>文件</th><th>规格</th><th>真实截止</th><th>DR</th><th>判定</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="note" id="sum"></div>
+  </div>
+
+  <div id="detail" style="display:none">
+    <div class="card">
+      <div class="verdict" id="vbox"></div>
+      <div class="grid" id="kvs"></div>
+      <h3>长时平均谱（红虚线 = 真实截止点）</h3>
+      <canvas id="spec" height="300"></canvas>
+      <h3>七频段能量占比</h3>
+      <div class="bars" id="bars"></div>
+      <h3>频谱图（时间 × 频率）</h3>
+      <canvas id="sgram" height="320"></canvas>
+      <div class="note" id="advice"></div>
+    </div>
+  </div>
+</main>
+<script>
+const $=s=>document.querySelector(s);
+const EXTS=['flac','wav','mp3','m4a','aac','ogg','opus','aif','aiff'];
+const BANDS=[['超低',20,60],['低频',60,250],['中低',250,500],['中频',500,2000],
+             ['中高',2000,6000],['高频',6000,16000],['空气',16000,20000]];
+
+/* ---------- FFT ---------- */
+function fft(re,im){
+  const n=re.length;
+  for(let i=1,j=0;i<n;i++){
+    let bit=n>>1;
+    for(;j&bit;bit>>=1) j^=bit;
+    j^=bit;
+    if(i<j){ [re[i],re[j]]=[re[j],re[i]]; [im[i],im[j]]=[im[j],im[i]]; }
+  }
+  for(let len=2;len<=n;len<<=1){
+    const ang=-2*Math.PI/len, wr=Math.cos(ang), wi=Math.sin(ang);
+    for(let i=0;i<n;i+=len){
+      let cr=1,ci=0;
+      for(let k=0;k<len/2;k++){
+        const ur=re[i+k], ui=im[i+k];
+        const vr=re[i+k+len/2]*cr-im[i+k+len/2]*ci;
+        const vi=re[i+k+len/2]*ci+im[i+k+len/2]*cr;
+        re[i+k]=ur+vr; im[i+k]=ui+vi;
+        re[i+k+len/2]=ur-vr; im[i+k+len/2]=ui-vi;
+        const ncr=cr*wr-ci*wi; ci=cr*wi+ci*wr; cr=ncr;
+      }
+    }
+  }
+}
+function hann(n){ const w=new Float64Array(n); for(let i=0;i<n;i++) w[i]=0.5-0.5*Math.cos(2*Math.PI*i/(n-1)); return w; }
+
+/* ---------- 平均谱（Welch） ---------- */
+function welchAvg(chan, fs, nseg=16384){
+  const hop=nseg>>1, win=hann(nseg);
+  const acc=new Float64Array(nseg/2+1);
+  let cnt=0;
+  const total=chan.length;
+  for(const frac of [0.25,0.5,0.75]){
+    const base=Math.floor(total*frac);
+    const end=Math.min(total, base+fs*20);
+    for(let s=base; s+nseg<=end; s+=hop){
+      const re=new Float64Array(nseg), im=new Float64Array(nseg);
+      let mean=0;
+      for(let i=0;i<nseg;i++) mean+=chan[s+i];
+      mean/=nseg;
+      for(let i=0;i<nseg;i++) re[i]=(chan[s+i]-mean)*win[i];
+      fft(re,im);
+      for(let k=0;k<=nseg/2;k++) acc[k]+=re[k]*re[k]+im[k]*im[k];
+      cnt++;
+    }
+  }
+  const freqs=new Float64Array(nseg/2+1);
+  const db=new Float64Array(nseg/2+1);
+  for(let k=0;k<=nseg/2;k++){
+    freqs[k]=k*fs/nseg;
+    db[k]=10*Math.log10(acc[k]/Math.max(cnt,1)+1e-20);
+  }
+  return {freqs,db};
+}
+
+/* ---------- 截止点 ---------- */
+function cutoff(freqs,db,floor=75){
+  const n=freqs.length, ratio=Math.pow(2,1/6), s=Float64Array.from(db);
+  for(let i=0;i<n;i++){
+    const fc=freqs[i]; if(fc<=0) continue;
+    let sum=0,c=0;
+    for(let j=0;j<n;j++) if(freqs[j]>=fc/ratio&&freqs[j]<=fc*ratio){sum+=db[j];c++;}
+    if(c>=2) s[i]=sum/c;
+  }
+  let mx=-1e9; for(let i=0;i<n;i++) mx=Math.max(mx,s[i]);
+  const thr=mx-floor, step=Math.pow(2,1/12);
+  const lo=Math.max(freqs[0],20);
+  let cur=freqs[n-1], run=0, cut=null;
+  while(cur>lo){
+    let j=0,bd=1e9;
+    for(let i=0;i<n;i++){const d=Math.abs(freqs[i]-cur); if(d<bd){bd=d;j=i;}}
+    run = s[j]>thr ? run+1 : 0;
+    if(run>=3){ cut=cur; break; }
+    cur/=step;
+  }
+  let slope=0;
+  if(cut!=null){
+    let j0=0,j1=0,b0=1e9,b1=1e9;
+    for(let i=0;i<n;i++){
+      let d=Math.abs(freqs[i]-cut); if(d<b0){b0=d;j0=i;}
+      d=Math.abs(freqs[i]-Math.min(cut*2,freqs[n-1])); if(d<b1){b1=d;j1=i;}
+    }
+    slope=j1>j0 ? s[j0]-s[j1] : 0;
+  }
+  return {cut,slope};
+}
+
+/* ---------- 判定 ---------- */
+function verdict(fs,cut,slope,clipPct){
+  if(cut==null) return {t:'无法判定（无有效内容）',l:'warn'};
+  const k=cut/1000, nyq=fs/2, tags=[];
+  let t,l;
+  if(fs<=45000){
+    if(k>=21.5){t='CD 级满带宽';l='ok';}
+    else if(k>=19.0){t='轻微带限（≈320kbps 有损，或母带本身如此）';l='warn';}
+    else if(k>=16.0){t='有损溯源（≈192–256kbps 转码）';l='bad';}
+    else {t='强有损溯源（≤128kbps）';l='bad';}
+  } else if(fs<=50000){
+    if(k>=23.0){t='真 48kHz 带宽';l='ok';}
+    else if(k>=21.0){t='疑似 44.1kHz 升频（内容止于 '+k.toFixed(1)+'kHz）';l='bad';}
+    else if(k>=19.0){t='带宽偏窄（'+k.toFixed(1)+'kHz）——48k 容器里有损/带限';l='warn';}
+    else if(k>=16.0){t='有损溯源（≈192–256kbps 转码）';l='bad';}
+    else {t='强有损溯源（≤128kbps）';l='bad';}
+  } else {
+    if(k<=24.5){t='伪 Hi-Res（容器 '+(fs/1000).toFixed(1)+'kHz，内容仅到 '+k.toFixed(1)+'kHz）';l='bad';}
+    else if(cut/nyq>=0.85){t='真 Hi-Res（内容到 '+k.toFixed(1)+'kHz，占奈奎斯特 '+(cut/nyq*100).toFixed(0)+'%）';l='ok';}
+    else {t='半 Hi-Res（内容 '+k.toFixed(1)+'kHz / 容器 '+(fs/1000).toFixed(1)+'kHz）';l='warn';}
+  }
+  if(slope && slope<-40 && k<22) tags.push('砖墙 '+slope.toFixed(0)+'dB/oct');
+  if(clipPct>0.005) tags.push('削波 '+clipPct.toFixed(3)+'%');
+  return {t:t+(tags.length?'｜'+tags.join('｜'):''),l};
+}
+
+/* ---------- 分析一个文件 ---------- */
+async function analyze(file){
+  const buf=await file.arrayBuffer();
+  const ctx=new (window.AudioContext||window.webkitAudioContext)();
+  let ab;
+  try{ ab=await ctx.decodeAudioData(buf); } finally { ctx.close(); }
+  const fs=ab.sampleRate, ch=ab.numberOfChannels, dur=ab.duration;
+  const L=ab.getChannelData(0), R=ch>1?ab.getChannelData(1):null;
+
+  let peak=0,sum=0,n=0,clip=0;
+  const blockRms=[];
+  const BL=65536;
+  for(let s=0;s<L.length;s+=BL){
+    const e=Math.min(L.length,s+BL);
+    let bs=0;
+    for(let i=s;i<e;i++){
+      const a=L[i], b=R?R[i]:0;
+      const m=Math.max(Math.abs(a),Math.abs(b));
+      if(m>peak) peak=m;
+      if(Math.abs(a)>=0.9999||Math.abs(b)>=0.9999) clip++;
+      bs+=a*a+(R?b*b:0);
+    }
+    n+=(e-s)*(R?2:1);
+    sum+=bs;
+    blockRms.push(Math.sqrt(bs/((e-s)*(R?2:1))));
+  }
+  const rms=Math.sqrt(sum/Math.max(n,1));
+  const peakDb=20*Math.log10(peak+1e-9), rmsDb=20*Math.log10(rms+1e-9);
+  const sorted=blockRms.slice().sort((a,b)=>a-b);
+  const topN=Math.max(1,Math.floor(sorted.length*0.2));
+  let topSum=0; for(let i=sorted.length-topN;i<sorted.length;i++) topSum+=20*Math.log10(sorted[i]+1e-9);
+  const dr=peakDb-topSum/topN;
+  const clipPct=clip/Math.max(n,1)*100;
+
+  let corr=null,lrDiff=null;
+  if(R){
+    let sLR=0,sLL=0,sRR=0,ml=0,mr=0;
+    for(let i=0;i<L.length;i++){ ml+=Math.abs(L[i]); mr+=Math.abs(R[i]); }
+    ml/=L.length; mr/=L.length;
+    const st=Math.max(1,Math.floor(L.length/2000000));
+    for(let i=0;i<L.length;i+=st){ sLR+=L[i]*R[i]; sLL+=L[i]*L[i]; sRR+=R[i]*R[i]; }
+    corr=sLR/Math.sqrt(sLL*sRR+1e-20);
+    lrDiff=Math.abs(20*Math.log10((ml+1e-9)/(mr+1e-9)));
+  }
+
+  const {freqs,db}=welchAvg(L,fs);
+  const {cut,slope}=cutoff(freqs,db);
+  const v=verdict(fs,cut,slope,clipPct);
+
+  const bands={};
+  let tot=0;
+  const lin=db.map(v=>Math.pow(10,v/10));
+  for(const [nm,lo,hi] of BANDS){
+    let s2=0;
+    for(let i=0;i<freqs.length;i++) if(freqs[i]>=lo&&freqs[i]<hi) s2+=lin[i];
+    bands[nm]=s2; tot+=s2;
+  }
+  for(const nm in bands) bands[nm]=tot>0?bands[nm]/tot*100:0;
+
+  return {file:file.name,sizeMB:file.size/1e6,fs,ch,dur,peakDb,rmsDb,crest:peakDb-rmsDb,dr,
+          clipPct,corr,lrDiff,freqs,db,cut,slope,bands,verdict:v,chData:L};
+}
+
+/* ---------- 绘图 ---------- */
+function drawSpectrum(r){
+  const c=$('#spec'), dpr=devicePixelRatio||1;
+  const W=c.clientWidth, H=300;
+  c.width=W*dpr; c.height=H*dpr;
+  const g=c.getContext('2d'); g.scale(dpr,dpr);
+  g.clearRect(0,0,W,H);
+  const nyq=r.fs/2, f0=20;
+  const X=f=>(Math.log10(f)-Math.log10(f0))/(Math.log10(nyq)-Math.log10(f0))*W;
+  let mx=-1e9; for(const v of r.db) mx=Math.max(mx,v);
+  const Y=db=>H-(db-(mx-100))/100*H;
+  g.strokeStyle='#20252f'; g.lineWidth=1;
+  for(const f of [20,50,100,200,500,1000,2000,5000,10000,20000]){
+    if(f>nyq) continue; const x=X(f);
+    g.beginPath(); g.moveTo(x,0); g.lineTo(x,H); g.stroke();
+    g.fillStyle='#5b6375'; g.font='10px sans-serif'; g.fillText(f>=1000?(f/1000)+'k':f, x+3, H-4);
+  }
+  g.beginPath(); g.strokeStyle='#4c8dff'; g.lineWidth=1.2;
+  let first=true;
+  for(let i=0;i<r.freqs.length;i++){
+    const f=r.freqs[i]; if(f<f0) continue;
+    const x=X(f), y=Y(r.db[i]);
+    first?g.moveTo(x,y):g.lineTo(x,y); first=false;
+  }
+  g.stroke();
+  if(r.cut){
+    const x=X(r.cut);
+    g.strokeStyle='#f85149'; g.setLineDash([5,4]); g.beginPath();
+    g.moveTo(x,0); g.lineTo(x,H); g.stroke(); g.setLineDash([]);
+    g.fillStyle='#f85149'; g.font='11px sans-serif';
+    g.fillText((r.cut/1000).toFixed(2)+' kHz', Math.min(x+5,W-64), 14);
+  }
+}
+
+function drawSpectrogram(r){
+  const c=$('#sgram'), dpr=devicePixelRatio||1;
+  const W=c.clientWidth, H=320;
+  c.width=W*dpr; c.height=H*dpr;
+  const g=c.getContext('2d'); g.scale(dpr,dpr);
+  const N=4096, hop=3072, win=hann(N);
+  const src=r.chData, fs=r.fs;
+  const start=Math.floor(src.length*0.3), end=Math.min(src.length,start+fs*12);
+  const cols=Math.max(1,Math.floor((end-start-N)/hop));
+  const bins=N/2+1;
+  const img=g.createImageData(W,H);
+  const dbg=new Float64Array(cols*bins);
+  let mx=-1e9;
+  for(let ci=0;ci<cols;ci++){
+    const s=start+ci*hop;
+    const re=new Float64Array(N), im=new Float64Array(N);
+    for(let i=0;i<N;i++) re[i]=src[s+i]*win[i];
+    fft(re,im);
+    for(let k=0;k<bins;k++){
+      const d=10*Math.log10(re[k]*re[k]+im[k]*im[k]+1e-20);
+      dbg[ci*bins+k]=d; if(d>mx) mx=d;
+    }
+  }
+  const nyq=fs/2, f0=20;
+  for(let y=0;y<H;y++){
+    const f=f0*Math.pow(nyq/f0,1-y/H);
+    const k=Math.min(bins-1,Math.round(f/(fs/N)));
+    for(let x=0;x<W;x++){
+      const ci=Math.min(cols-1,Math.floor(x/W*cols));
+      const v=(dbg[ci*bins+k]-(mx-90))/90;
+      const [R,G,B]=magma(Math.max(0,Math.min(1,v)));
+      const o=(y*W+x)*4;
+      img.data[o]=R; img.data[o+1]=G; img.data[o+2]=B; img.data[o+3]=255;
+    }
+  }
+  g.putImageData(img,0,0);
+  g.fillStyle='#c9d1e0'; g.font='10px sans-serif';
+  for(const f of [100,1000,10000]){
+    const y=H-(Math.log10(f)-Math.log10(f0))/(Math.log10(nyq)-Math.log10(f0))*H;
+    if(y>8&&y<H-2) g.fillText(f>=1000?(f/1000)+'kHz':f+'Hz', 4, y-2);
+  }
+}
+function magma(t){
+  const s=[[0,0,4],[28,16,68],[79,18,123],[129,37,129],[181,54,122],[229,80,100],
+           [251,135,97],[254,194,135],[252,253,191]];
+  const p=t*(s.length-1), i=Math.floor(p), f=p-i;
+  const a=s[i], b=s[Math.min(s.length-1,i+1)];
+  return [a[0]+(b[0]-a[0])*f, a[1]+(b[1]-a[1])*f, a[2]+(b[2]-a[2])*f];
+}
+
+/* ---------- 详情面板 ---------- */
+let RESULTS=[];
+function showDetail(idx){
+  const r=RESULTS[idx];
+  document.querySelectorAll('#rows tr').forEach((tr,i)=>tr.classList.toggle('sel',i===idx));
+  $('#detail').style.display='block';
+  $('#vbox').className='verdict '+r.verdict.l;
+  $('#vbox').textContent=r.verdict.t;
+  const kv=(k,v)=>`<div class="kv"><div class="k">${k}</div><div class="v">${v}</div></div>`;
+  $('#kvs').innerHTML=
+    kv('文件',r.file.length>34?r.file.slice(0,32)+'…':r.file)+
+    kv('规格',(r.fs/1000).toFixed(1)+' kHz · '+r.ch+'ch · '+fmt(r.dur))+
+    kv('真实截止',r.cut?(r.cut/1000).toFixed(2)+' kHz':'—')+
+    kv('占奈奎斯特',r.cut?((r.cut/(r.fs/2))*100).toFixed(0)+' %':'—')+
+    kv('峰值 / RMS',r.peakDb.toFixed(2)+' / '+r.rmsDb.toFixed(2)+' dBFS')+
+    kv('动态范围 DR',r.dr.toFixed(1)+' dB')+
+    kv('波峰因数',r.crest.toFixed(1)+' dB')+
+    kv('削波样本',r.clipPct.toFixed(3)+' %')+
+    (r.corr!=null?kv('相位相关',r.corr.toFixed(2)):'')+
+    (r.lrDiff!=null?kv('L/R 电平差',r.lrDiff.toFixed(2)+' dB'):'');
+  const bd=$('#bars'); bd.innerHTML='';
+  const mxc=Math.max(...Object.values(r.bands),1);
+  for(const [nm] of BANDS){
+    const v=r.bands[nm]||0;
+    const d=document.createElement('div'); d.className='b';
+    d.innerHTML=`<div class="pv">${v.toFixed(0)}%</div>
+      <div class="fill" style="height:${Math.max(2,v/mxc*100)}%"></div>
+      <div class="lb">${nm}</div>`;
+    bd.appendChild(d);
+  }
+  $('#advice').textContent=advice(r);
+  drawSpectrum(r); drawSpectrogram(r);
+}
+function fmt(s){ const m=Math.floor(s/60); return m+':'+String(Math.floor(s%60)).padStart(2,'0'); }
+function advice(r){
+  const s=[];
+  const cut=r.cut?r.cut/1000:0;
+  if(cut>=20) s.push('高频内容充足 → 可用于评估耳机高频延伸/空气感。');
+  else if(cut>=16) s.push('内容止于 '+cut.toFixed(1)+'kHz → 评估耳机“高频延伸”不可靠（信息在源头就没了）。');
+  else s.push('内容止于 '+cut.toFixed(1)+'kHz → 仅够评估中频/齿音区，不足以判断高频。');
+  if(r.dr<6) s.push('DR '+r.dr.toFixed(1)+'dB 偏低（响度战）→ 定音量匹配对比时容易误判“更响=更好”。');
+  if(r.clipPct>0.01) s.push('存在削波 → 大动态段落会有失真，勿把它算到耳机头上。');
+  if(r.bands['低频']+r.bands['超低']>60) s.push('低频能量占 '+(r.bands['低频']+r.bands['超低']).toFixed(0)+'% → 适合试低频下潜/控制力。');
+  if(r.bands['中高']>15) s.push('中高频占比高 → 适合试齿音/刺耳度。');
+  return s.join(' ');
+}
+function pill(l){ return {ok:'ok',warn:'warn',bad:'bad'}[l]||'mut'; }
+function addRow(r,i){
+  const tr=document.createElement('tr');
+  tr.innerHTML=`<td>${r.file.length>40?r.file.slice(0,38)+'…':r.file}</td>
+    <td>${(r.fs/1000).toFixed(1)}k/${r.ch}ch</td>
+    <td>${r.cut?(r.cut/1000).toFixed(1)+'k':'—'}</td>
+    <td>${r.dr.toFixed(1)}</td>
+    <td><span class="pill ${pill(r.verdict.l)}">${r.verdict.l==='ok'?'合格':r.verdict.l==='warn'?'有疑':'不达标'}</span>
+        <span style="color:var(--dim);font-size:12px"> ${r.verdict.t.split('｜')[0]}</span></td>`;
+  tr.onclick=()=>showDetail(i);
+  $('#rows').appendChild(tr);
+}
+
+/* ---------- 入口 ---------- */
+async function handle(files){
+  const audio=Array.from(files).filter(f=>EXTS.includes((f.name.split('.').pop()||'').toLowerCase()));
+  if(!audio.length){ alert('没找到可识别的音频文件'); return; }
+  $('#listcard').style.display='block'; $('#rows').innerHTML=''; RESULTS=[];
+  $('#prog').style.display='block';
+  let i=0;
+  for(const f of audio){
+    i++;
+    $('#prog').firstElementChild.style.width=(i/audio.length*100)+'%';
+    try{
+      const r=await analyze(f);
+      RESULTS.push(r); addRow(r,RESULTS.length-1);
+    }catch(e){
+      const tr=document.createElement('tr');
+      tr.innerHTML=`<td>${f.name}</td><td colspan="4"><span class="pill bad">解码失败</span>
+        <span style="color:var(--dim);font-size:12px"> ${String(e.message||e).slice(0,60)}</span></td>`;
+      $('#rows').appendChild(tr);
+    }
+    await new Promise(r=>setTimeout(r,0));
+  }
+  $('#prog').style.display='none';
+  const bad=RESULTS.filter(r=>r.verdict.l==='bad').length;
+  const warn=RESULTS.filter(r=>r.verdict.l==='warn').length;
+  $('#sum').textContent=`共 ${RESULTS.length} 个文件 ｜ 合格 ${RESULTS.length-bad-warn} ｜ 有疑 ${warn} ｜ 不达标 ${bad}。点击任意一行查看频谱详情。`;
+  if(RESULTS.length) showDetail(0);
+}
+const drop=$('#drop'), inp=$('#file');
+drop.onclick=()=>inp.click();
+inp.onchange=e=>handle(e.target.files);
+['dragenter','dragover'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('hot');}));
+['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('hot');}));
+drop.addEventListener('drop',async e=>{
+  const items=e.dataTransfer.items;
+  if(items && items.length && items[0].webkitGetAsEntry){
+    const out=[];
+    const walk=async(entry,path)=>{
+      if(entry.isFile){ const f=await new Promise(r=>entry.file(r)); out.push(f); }
+      else if(entry.isDirectory){
+        const rd=entry.createReader();
+        const es=await new Promise(r=>rd.readEntries(r));
+        for(const x of es) await walk(x);
+      }
+    };
+    for(const it of items){ const en=it.webkitGetAsEntry(); if(en) await walk(en); }
+    handle(out);
+  } else handle(e.dataTransfer.files);
+});
+</script>
+</body>
+</html>

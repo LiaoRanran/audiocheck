@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: test (py${{ matrix.python-version }} / ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.9", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: 单元测试
+        run: python -m pytest -q
+
+      - name: 覆盖率
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        run: |
+          python -m pip install pytest-cov
+          python -m pytest --cov=audiocheck --cov-report=term-missing
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install ruff
+      - run: ruff check src tests
+
+  cli-smoke:
+    name: CLI 冒烟
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e .
+      - name: 生成测试音频并跑一次完整分析
+        run: |
+          python - <<'PY'
+          import numpy as np, soundfile as sf
+          from scipy import signal
+          fs = 44100
+          rng = np.random.default_rng(0)
+          x = (rng.standard_normal(fs * 4) * 0.2).astype(np.float32)
+          sos = signal.butter(10, 16000 / (fs / 2), btype="low", output="sos")
+          y = signal.sosfilt(sos, x).astype(np.float32)
+          sf.write("sample.wav", np.column_stack([y, y]), fs, subtype="PCM_16")
+          PY
+          audiocheck sample.wav --json out.json
+          python -c "import json;d=json.load(open('out.json'));assert d[0]['level']=='bad',d[0]['verdict'];print('OK:',d[0]['verdict'])"
