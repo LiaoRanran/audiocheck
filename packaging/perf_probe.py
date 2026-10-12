@@ -270,6 +270,39 @@ def main(argv=None) -> int:
     else:
         print("  P8 跳过：瀑布图数据未就绪")
 
+    # ---- P10/P11：频谱图整图重绘 —— 本轮优化的直接对象 ----
+    # 旧写法在 (2049, ~900) 网格上用 pcolormesh + 对数轴，约 180 万个多边形，
+    # 单帧 470 ms；现在改成"对数频域重采样 360 行 + imshow"。
+    # **两种口径并排量出来**，免得"我觉得快了"变成口头结论。
+    def spectro_now():
+        w.cv_spectro.redraw()
+
+    def spectro_old():
+        import numpy as np
+
+        ax = w.cv_spectro.ax
+        t, f, S = w.cv_spectro.data
+        db = S - np.nanmax(S)
+        ax.clear()
+        ax.pcolormesh(t, f, np.clip(db, -90, 0), shading="auto", cmap="magma",
+                      vmin=-90, vmax=0, rasterized=True)
+        ax.set_yscale("log")
+        w.cv_spectro.draw()
+
+    if w.cv_spectro._has_data():
+        w._navigate("spectro")
+        pump(app, 0.4)
+        bench.add("P10", "频谱图重绘·现行(imshow)",
+                  measure(spectro_now, max(6, args.repeat // 5)), "对数频域 360 行")
+        bench.add("P11", "频谱图重绘·旧(pcolormesh+对数轴)",
+                  measure(spectro_old, max(4, args.repeat // 8)), "**仅对照，不参与判定**")
+        w._navigate("overview")
+        pump(app, 0.3)
+        w._navigate("spectro")
+        pump(app, 0.4)                      # 恢复成正常画法，别把对照态留给后面
+    else:
+        print("  P10/P11 跳过：频谱图数据未就绪")
+
     # ---- P9：分析过程中每回来一个文件的开销 ----
     guard_items, guard_idx = w.items, w._idx
     w.items = [dict(base_items[0]) for _ in range(args.rows)]

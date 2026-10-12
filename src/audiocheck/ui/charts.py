@@ -3,6 +3,8 @@
 
 约定：每个画布都实现 apply_theme(p) —— 换主题时只需重画，不用重建控件。
 """
+import math
+
 import matplotlib
 import numpy as np
 
@@ -119,6 +121,36 @@ class BaseCanvas(FigureCanvasQTAgg):
             ax.set_xlabel(xlabel, color=p["text_faint"], fontsize=9, labelpad=4)
         if ylabel:
             ax.set_ylabel(ylabel, color=p["text_faint"], fontsize=9, labelpad=4)
+
+
+# --------------------------------------------------------------------- 时频重采样
+#: 频谱图重采样后的**行数**（对数频域等距）。
+#: 360 行 ≈ 每 1/24 倍频程一行——比人耳的临界频带（Bark）还密，够读；
+#: 但比原始的 2049 行少 5.7 倍，这正是 imshow 比 pcolormesh 快的主要来源。
+RESAMPLE_ROWS = 360
+
+#: 纵轴刻度（Hz）
+TICKS_HZ = (20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000)
+
+#: 3D 瀑布图**每条谱线的频点数**（对数等距）。300 ≈ 每 1/12 倍频程一点。
+WATERFALL_POINTS = 300
+
+
+def _hz_label(v: float) -> str:
+    return ("%gk" % (v / 1000)) if v >= 1000 else "%g" % v
+
+
+def _resample_rows(db, f, fl):
+    """把 (n_f, n_t) 的 dB 矩阵按**对数频轴**重采样成 (len(fl), n_t)。
+
+    线性插值即可：这里的目的是出图，不是做谱估计；而 fl 的密度高于 Bark 带，
+    插值带来的平滑不会引入"看不见的伪影"（1/24 倍频程 < 临界频带 1/12）。
+    """
+    f = np.asarray(f, dtype=float)
+    idx = np.clip(np.searchsorted(f, fl), 1, len(f) - 1)
+    lo, hi = f[idx - 1], f[idx]
+    w = (fl - lo) / np.maximum(hi - lo, 1e-12)
+    return db[idx - 1] * (1.0 - w)[:, None] + db[idx] * w[:, None]
 
 
 # --------------------------------------------------------------------- Bark 标度
@@ -418,6 +450,9 @@ class SpectrogramCanvas(BaseCanvas):
         self.data = None
         self._msg = "选择条目后自动生成"
         self._cbar = None            # 色条只建一次，之后只换 mappable（见 _colorbar）
+        # 对数频域重采样结果的缓存（键 = 数据身份 + 行数 + 列数，见 redraw）
+        self._rs_key = None
+        self._rs_cache = None
 
     def set_data(self, r=None, data=None, msg=None):
         # 同一份数据（对象身份相同）再喂一次不必重画：`_load_view` 命中缓存时
@@ -451,15 +486,34 @@ class SpectrogramCanvas(BaseCanvas):
             self.draw()
             return
         t, f, S = self.data
-        db = S - np.nanmax(S)
-        mesh = ax.pcolormesh(t, f, np.clip(db, -90, 0), shading="auto", cmap="magma",
-                             vmin=-90, vmax=0, rasterized=True)
-        ax.set_yscale("log")
-        ax.set_ylim(20, f[-1])
+        # 重采样结果按数据身份缓存：换肤、切页会反复重画**同一份**数据，
+        # 而重采样是 2049→360 行的插值，不缓存等于每次白算一遍。
+        key = (id(S), RESAMPLE_ROWS, len(t))
+        if self._rs_key != key:
+            self._rs_cache = np.clip(
+                _resample_rows(S - np.nanmax(S), f, np.geomspace(20.0, f[-1],
+                                                                 RESAMPLE_ROWS)),
+                -90, 0)
+            self._rs_key = key
+        db = self._rs_cache
+        # **对数频轴重采样 + imshow**，替代 `pcolormesh` + 对数轴。
+        # 旧写法在 (2049, ~900) 的网格上为**每个格子建一个多边形**——约 180 万个，
+        # 单这一项就 83 ms，加上对数轴的坐标变换让整图 draw 到 470 ms（实测，
+        # 见 packaging/perf_probe.py）。改成：先在**对数频域**上重采样成 ~360 行，
+        # 再用 imshow 画一张位图；纵轴用 log10 坐标 + 手动刻度，观感完全等价，
+        # 代价只在"频域采样密度"上（360 行 ≈ 每 1/24 倍频程一行，够读）。
+        mesh = ax.imshow(db, aspect="auto", origin="lower",
+                         extent=(t[0], t[-1], math.log10(20.0), math.log10(f[-1])),
+                         cmap="magma", vmin=-90, vmax=0, interpolation="nearest",
+                         zorder=1)
+        ax.set_ylim(math.log10(20.0), math.log10(f[-1]))
         ax.grid(False)
         for lev in (100, 1000, 10000):
             if lev < f[-1]:
-                ax.axhline(lev, color=p["grid"], lw=.6, alpha=.55, zorder=2)
+                ax.axhline(math.log10(lev), color=p["grid"], lw=.6, alpha=.55, zorder=2)
+        # 纵轴刻度：位置是 log10(Hz)，标签写 Hz（读起来和原来一样）
+        ax.set_yticks([math.log10(v) for v in TICKS_HZ if v < f[-1]])
+        ax.set_yticklabels([_hz_label(v) for v in TICKS_HZ if v < f[-1]])
         self._colorbar(mesh, p)
         self.draw()
 
@@ -624,8 +678,14 @@ class WaterfallCanvas(BaseCanvas):
             return
         t, f, S = self.data
         m = (f >= 20)
-        lf = np.log10(np.maximum(f[m], 20))
-        db = S[m] - np.nanmax(S)
+        f2, S2 = np.asarray(f)[m], np.asarray(S)[m]
+        db = S2 - np.nanmax(S2)
+        # 每条谱线只取 WATERFALL_POINTS 个**对数等距**频点：原来每条 2000 点，
+        # 30 条就是 6 万个 3D 顶点——那是这张图 370 ms 的来源。
+        # 300 点 ≈ 每 1/12 倍频程一点（正好一个临界频带），肉眼看不出差别。
+        fl = np.geomspace(20.0, f2[-1], WATERFALL_POINTS)
+        db = _resample_rows(db, f2, fl)
+        lf = np.log10(fl)
         n = db.shape[1]
         cmap = plt.get_cmap("viridis")
         # 只画有限条谱线，太多会糊成一团
