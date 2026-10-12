@@ -26,6 +26,7 @@ _SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
+from PySide6.QtCore import QCoreApplication, QEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 APP = QApplication.instance() or QApplication([])
@@ -73,6 +74,37 @@ class TestThemeConsistency(unittest.TestCase):
         card = StatCard(w.theme)
         self.assertIn(w.theme.p.text, card.v.styleSheet())
         self.assertIn(w.theme.p.text_faint, card.k.styleSheet())
+
+    def test_switch_repaints_inline_styled_widgets(self):
+        """换肤必须重刷**自己 setStyleSheet** 的控件（指标卡 / 判定条）。
+
+        这些控件的颜色不来自 QSS，而是各自 `setStyleSheet` 写死的。
+        换肤时若不重刷，浅色主题下会留着深色主题的文字色：实测指标卡数值
+        几乎看不见，而"切换主题"这个动作看起来是成功的——最能骗过眼睛的一类 bug。
+        """
+        from audiocheck.ui.widgets import StatCard
+        w = self.w
+        r = {"file": "a.wav", "path": "C:/a.wav", "sr": 44100, "bits": "PCM_16",
+             "format": "WAV", "seconds": 12, "size_mb": 1.0, "channels": 2,
+             "level": "ok", "verdict": "合格", "cutoff_khz": 20.0,
+             "curve": [[20.0, -1.0], [20000.0, -2.0]]}
+        w.items = [{"path": r["path"], "file": "a.wav", "result": r}]
+        w._idx = {r["path"]: 0}
+        w._last_sig = (r["path"], id(r))
+        w.apply_theme(T.DARK)
+        w._refresh_selection_theme()
+        w.apply_theme(T.LIGHT)
+        # 旧指标卡走 deleteLater()，而 processEvents 不派发延迟删除事件
+        # （详见 packaging/mem_probe.py 头部）——不手动派发就会连旧卡片一起数进去。
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        cards = w.findChildren(StatCard)
+        self.assertTrue(cards, "总览页应当有指标卡")
+        self.assertTrue(all(T.LIGHT.p.text in c.v.styleSheet() for c in cards),
+                        "切换主题后指标卡数值仍是旧主题的颜色")
+        self.assertNotIn(T.DARK.p.text, w.lbl_verdict.styleSheet(),
+                         "判定条文字仍是旧主题的颜色")
+        w.items, w._idx, w._last_sig = [], {}, None
+        w.apply_theme(T.DARK)
 
     def test_restore_does_not_bypass_apply_theme(self):
         """回归：`_restore` 里不能再出现裸的 `self.theme =` 赋值。"""

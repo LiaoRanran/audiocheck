@@ -100,13 +100,25 @@ class Palette:
     # 文本：主 / 次 / 弱 / 禁用
     text: str = "#e8ecf3"
     text_dim: str = "#98a2b3"
-    text_faint: str = "#626c80"
+    # 弱文本是 11px 的字段标签/说明，属于**小字正文**，WCAG AA 要 4.5:1。
+    # 原值 #626c80 实测 3.46:1（不达标），沿 OKLCH 的 L 轴上推一格到 4.52:1；
+    # 色相与 chroma 不变，所以看起来还是那个灰。
+    text_faint: str = "#747f93"
     text_disabled: str = "#454e5e"
 
     # 语义色
     primary: str = "#3d7dff"
+    # primary_hi 是**底色**角色（主按钮悬停）——要够暗，按钮文字才达标；
+    # primary_text 是**文字**角色（激活导航）——要够亮，压在 primary_soft 上才达标。
+    # 两者方向互斥，早先只有一个 primary_hi 时激活导航实测 3.2:1（低于 AA 4.5）。
     primary_hi: str = "#5a92ff"
+    primary_text: str = "#5a92ff"
     primary_soft: str = "#16243d"
+    # 主按钮上的文字。**不是所有主色都配得起白字**：白字压在 #3d7dff 上只有
+    # 3.77:1（低于 AA 4.5），压在悬停色 #5a92ff 上只有 3.00:1。
+    # 两条路——压深主色（品牌色变闷）或改用墨字。选后者：种子色/品牌色的
+    # 辨识度是这套设计系统的前提，文字颜色本来就该去适配底色。
+    on_primary: str = "#0d0f13"
     success: str = "#35c46a"
     warning: str = "#e0a92e"
     danger: str = "#f0524a"
@@ -125,6 +137,9 @@ class Palette:
     # 选中 / 悬停叠加
     selection: str = "#1a2740"
     hover: str = "#1a1f29"
+    # 按钮悬停底色。**单独一个令牌是必须的**：QSS 里原来写死 `#1c212b`，
+    # 于是浅色主题下悬停按钮会把深色文字画到近黑底上（对比度 ≈1.1:1，字没了）。
+    hover_hi: str = "#1c212b"
 
     # 图表
     grid: str = "#1e2430"
@@ -195,12 +210,19 @@ LIGHT_P = Palette(
     name="light",
     bg="#f3f5f9", surface="#ffffff", surface_hi="#f7f9fc", surface_raised="#ffffff",
     border="#e0e5ee", border_hi="#c8d0de", border_focus="#2563eb",
-    text="#141a26", text_dim="#5b6478", text_faint="#8a94a8", text_disabled="#b2bac8",
-    primary="#2563eb", primary_hi="#1d4fd8", primary_soft="#e3ecff",
-    success="#15a34a", warning="#b97a04", danger="#dc2626", info="#0284c7",
+    # 下面这四色是按 OKLCH 的 L 轴**最小改动**拉到达标的（见 packaging/palette_report.py）：
+    #   text_faint #8a94a8 → #6d778a（3.05 → 4.51）  小字正文要 4.5
+    #   success    #15a34a → #008137（2.99 → 4.54）  「合格」胶囊
+    #   warning    #b97a04 → #9b6500（3.29 → 4.52）  「有疑」胶囊
+    #   danger     #dc2626 → #d61e21（4.23 → 4.52）  「不达标」胶囊
+    # 后者是全应用最关键的一行信息（判定结论），而它在浅色主题下原本**低于 AA**。
+    text="#141a26", text_dim="#5b6478", text_faint="#6d778a", text_disabled="#b2bac8",
+    primary="#2563eb", primary_hi="#1d4fd8", primary_text="#1d4fd8", primary_soft="#e3ecff",
+    on_primary="#ffffff",
+    success="#008137", warning="#9b6500", danger="#d61e21", info="#0284c7",
     success_bg="#e7f8ee", warning_bg="#fdf4e3", danger_bg="#fdeceb", info_bg="#e5f4fd",
     success_bd="#a9e3c2", warning_bd="#f0dcae", danger_bd="#f5c6c2", info_bd="#a8d8f0",
-    selection="#dbe7ff", hover="#eef1f7",
+    selection="#dbe7ff", hover="#eef1f7", hover_hi="#e6ebf5",
     grid="#e8ecf3", plot_bg="#ffffff", shadow="rgba(15,23,42,.12)",
 )
 
@@ -239,7 +261,7 @@ QToolTip {{ background:{surface_raised}; color:{text}; border:1px solid {border_
 #NavItem {{ background:transparent; border:0; border-radius:{lg}px;
             padding:{sm}px {md}px; color:{text_dim}; text-align:left; font-size:{body}px; }}
 #NavItem:hover {{ background:{hover}; color:{text}; }}
-#NavItem[active="true"] {{ background:{primary_soft}; color:{primary_hi}; font-weight:700; }}
+#NavItem[active="true"] {{ background:{primary_soft}; color:{primary_text}; font-weight:700; }}
 #NavSection {{ color:{text_faint}; font-size:{micro}px; font-weight:700;
               letter-spacing:1.1px; padding:{md}px {md}px {xs}px; }}
 
@@ -258,17 +280,18 @@ QLabel#Caption {{ color:{text_faint}; font-size:{caption}px; }}
 /* ===== 按钮 ===== */
 QPushButton {{ background:{surface_hi}; border:1px solid {border_hi};
                border-radius:{lg}px; padding:{sm}px {lg}px; color:{text}; font-size:{body}px; }}
-QPushButton:hover {{ background:#1c212b; border-color:{border_focus}; }}
+QPushButton:hover {{ background:{hover_hi}; border-color:{border_focus}; }}
 QPushButton:pressed {{ background:{surface}; }}
 QPushButton:disabled {{ color:{text_disabled}; border-color:{border}; background:{surface}; }}
-QPushButton#Primary {{ background:{primary}; border-color:{primary}; color:#fff; font-weight:700; }}
+QPushButton#Primary {{ background:{primary}; border-color:{primary}; color:{on_primary};
+                       font-weight:700; }}
 QPushButton#Primary:hover {{ background:{primary_hi}; border-color:{primary_hi}; }}
 QPushButton#Ghost {{ background:transparent; border-color:transparent; color:{text_dim}; }}
 QPushButton#Ghost:hover {{ background:{hover}; color:{text}; }}
 QToolButton {{ background:transparent; border:1px solid transparent;
                border-radius:{lg}px; padding:{xs}px {md}px; color:{text}; font-size:{body}px; }}
 QToolButton:hover {{ background:{hover}; border-color:{border_hi}; }}
-QToolButton#Primary {{ background:{primary}; border-color:{primary}; color:#fff; font-weight:700; }}
+QToolButton#Primary {{ background:{primary}; border-color:{primary}; color:{on_primary}; font-weight:700; }}
 QToolButton:disabled {{ color:{text_disabled}; }}
 
 /* ===== 输入 ===== */
@@ -330,12 +353,12 @@ QProgressBar::chunk {{ background:{primary}; border-radius:3px; }}
 QMenu {{ background:{surface_raised}; border:1px solid {border_hi};
          border-radius:{lg}px; padding:{xs}px; }}
 QMenu::item {{ padding:{xs}px {xl}px {xs}px {md}px; border-radius:{md}px; font-size:{body}px; }}
-QMenu::item:selected {{ background:{primary}; color:#fff; }}
+QMenu::item:selected {{ background:{primary}; color:{on_primary}; }}
 QMenu::separator {{ height:1px; background:{border}; margin:{xs}px {sm}px; }}
 #Palette {{ background:{surface_raised}; border:1px solid {border_hi}; border-radius:{xl}px; }}
 #PaletteList {{ background:transparent; border:0; font-size:{body}px; }}
 #PaletteList::item {{ padding:{sm}px {md}px; border-radius:{lg}px; }}
-#PaletteList::item:selected {{ background:{primary}; color:#fff; }}
+#PaletteList::item:selected {{ background:{primary}; color:{on_primary}; }}
 #Toast {{ background:{surface_raised}; border:1px solid {border_hi}; border-radius:{lg}px; }}
 QFrame#Sep {{ background:{border}; }}
 QSplitter::handle {{ background:transparent; }}
@@ -346,6 +369,7 @@ QSplitter::handle:hover {{ background:{primary_soft}; }}
         border=p.border, border_hi=p.border_hi, border_focus=p.border_focus,
         text=p.text, text_dim=p.text_dim, text_faint=p.text_faint, text_disabled=p.text_disabled,
         primary=p.primary, primary_hi=p.primary_hi, primary_soft=p.primary_soft,
+        primary_text=p.primary_text, on_primary=p.on_primary, hover_hi=p.hover_hi,
         danger=p.danger, hover=p.hover, selection=p.selection,
         font=t.font, mono=t.mono, body=int(ty.body), body_sm=int(ty.body_sm), body_md=int(ty.body_md),
         caption=int(ty.caption), micro=int(ty.micro), display=int(ty.display),
@@ -454,6 +478,22 @@ def pick_family(fams: list[str],
             if f.lower().startswith(want.lower()):
                 return f
     return fams[0] if fams else "Sans Serif"
+
+
+def mpl_cjk_font() -> str | None:
+    """只经 matplotlib 自己的字体表挑中文字体，**完全不碰 Qt**。
+
+    为什么要单独一个函数：`load_cjk_fonts()` 走 `QFontDatabase`，
+    而没有 `QApplication` 时它会直接在 C 层 abort（进程终止、traceback 打不全，
+    接手文档 §4 第 14 条记过同样的坑）。纯脚本场景（出图、报告）需要一条
+    不依赖 Qt 事件循环的路。本机实测这两条路给出同一个族名。
+    """
+    import matplotlib.font_manager as fm  # 3.14 起不再随 matplotlib 自动导入
+    names = {f.name for f in fm.fontManager.ttflist}
+    for want in ("Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "SimHei", "Meiryo"):
+        if want in names:
+            return want
+    return None
 
 
 def mpl_font(fams: list[str]) -> str | None:

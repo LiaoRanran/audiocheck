@@ -488,7 +488,25 @@ class MainWindow(FramelessWindow):
         self.empty.apply_theme(t, "wave")
         self.toasts.apply_theme(t)
         self._apply_icons()
+        self._refresh_selection_theme()
         self.refresh_table()
+
+    def _refresh_selection_theme(self):
+        """换肤后重刷**用内联样式写死颜色**的那几个控件。
+
+        QSS 管不到它们：指标卡（`StatCard` 自己 `setStyleSheet`）与判定条
+        （`_banner_update` 里拼的 inline style）。换肤时若不重刷，
+        浅色主题下会留着深色主题的文字色 —— 实测指标卡数值几乎看不见，
+        而"切换主题"这个动作看起来是成功的。这类"换了一半"最难查。
+        """
+        if self._last_sig is None:
+            return
+        p = self._last_sig[0]
+        i = self._idx.get(p)
+        r = self.items[i]["result"] if i is not None else None
+        if r:
+            self._banner_update(r)
+            self._cards(r)
 
     def _apply_icons(self):
         p = self.theme.p
