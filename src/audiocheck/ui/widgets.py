@@ -100,13 +100,14 @@ class SideBar(QFrame):
         self._items: dict[str, NavButton] = {}
 
         v = QVBoxLayout(self)
-        v.setContentsMargins(12, 14, 12, 12)
+        v.setContentsMargins(12, 16, 12, 12)
         v.setSpacing(4)
 
         brand = QHBoxLayout()
         brand.setSpacing(8)
         self.brand_icon = QLabel()
-        self.brand_icon.setFixedSize(22, 22)
+        # 24 = 4×6，与品牌文字的行高对齐（图标需略大于字高，22→24 仍在视觉等高处）。
+        self.brand_icon.setFixedSize(24, 24)
         brand.addWidget(self.brand_icon)
         box = QVBoxLayout()
         box.setSpacing(0)
@@ -121,11 +122,14 @@ class SideBar(QFrame):
         v.addSpacing(14)
 
         self.nav_host = QVBoxLayout()
+        # 光学间距（theme.Space.thin）：导航按钮之间贴紧成一组，
+        # 用 4px 会把「一列导航项」的整组感拆掉。不参与布局栅格。
         self.nav_host.setSpacing(2)
         v.addLayout(self.nav_host)
         v.addStretch(1)
 
         self.footer = QVBoxLayout()
+        # 光学间距（theme.Space.thin）：底部两项同属一组，理由同上。
         self.footer.setSpacing(2)
         v.addLayout(self.footer)
 
@@ -173,7 +177,7 @@ class CommandPalette(QDialog):
         self.setMaximumHeight(420)
 
         v = QVBoxLayout(self)
-        v.setContentsMargins(10, 10, 10, 10)
+        v.setContentsMargins(8, 8, 8, 8)
         v.setSpacing(8)
         self.input = QLineEdit()
         self.input.setPlaceholderText("输入命令…（↑↓ 选择，Enter 执行，Esc 关闭）")
@@ -236,7 +240,7 @@ class Toast(QFrame):
         col = {"info": theme.p.info, "ok": theme.p.success,
                "warn": theme.p.warning, "bad": theme.p.danger}.get(kind, theme.p.info)
         h = QHBoxLayout(self)
-        h.setContentsMargins(14, 10, 14, 10)
+        h.setContentsMargins(16, 8, 16, 8)
         dot = QLabel()
         pm = T.make_pixmap("shield", col, 16, 1.8)
         dot.setPixmap(pm)
@@ -256,7 +260,7 @@ class ToastHost(QWidget):
         super().__init__(parent)
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self._lay = QVBoxLayout(self)
-        self._lay.setContentsMargins(0, 0, 18, 18)
+        self._lay.setContentsMargins(0, 0, 16, 16)
         self._lay.setSpacing(8)
         self._lay.addStretch(1)
         self._theme = T.DARK
@@ -299,7 +303,7 @@ class EmptyState(QWidget):
                  hint: str = "", action_text: str = "", on_action=None):
         super().__init__()
         v = QVBoxLayout(self)
-        v.setSpacing(10)
+        v.setSpacing(8)
         v.setAlignment(Qt.AlignCenter)
         self.icon = QLabel()
         self.icon.setAlignment(Qt.AlignCenter)
@@ -340,7 +344,9 @@ class StatCard(QFrame):
         v = QVBoxLayout(self)
         m = theme.space
         v.setContentsMargins(m.md, m.sm, m.md, m.sm)
-        v.setSpacing(1)
+        # 光学间距（theme.Space.hair）：字段名与数值是一个整体，
+        # 间距调到 4px 会把它们拆成两行信息，读者要多花一次眼动。
+        v.setSpacing(m.hair)
         self.k = QLabel("—")
         self.v = QLabel("—")
         self.k.setObjectName("Caption")

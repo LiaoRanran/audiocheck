@@ -58,7 +58,7 @@ class TitleBar(QFrame):
         self._drag_active = False
 
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(12, 0, 6, 0)
+        lay.setContentsMargins(12, 0, 8, 0)
         lay.setSpacing(8)
 
         self.icon_lbl = QLabel()
@@ -88,7 +88,10 @@ class TitleBar(QFrame):
         b = QToolButton(self)
         b.setObjectName("WinBtn")
         b.setProperty("kind", kind)
-        b.setFixedSize(34, 30)
+        # 32×32：标题栏 44（=4×11），按钮 32（=4×8），上下各留 6px 做视觉居中。
+        # 原值 34×30 两者都脱离 4px 栅格，且 30px 高在 44px 栏里偏小。
+        # 32 同时是通用最小点击目标尺寸。
+        b.setFixedSize(32, 32)
         b.setCursor(Qt.ArrowCursor)
         b._kind = kind                            # noqa: SLF001
         b.paintEvent = lambda ev, _b=b: self._paint_btn(_b, ev)

@@ -1,0 +1,173 @@
+216 INFO: PyInstaller: 6.22.3, contrib hooks: 2026.8
+217 INFO: Python: 3.14.5
+253 INFO: Platform: Windows-11-10.0.26200-SP0
+253 INFO: Python environment: C:\Users\ASUS\AppData\Local\Python\pythoncore-3.14-64
+257 INFO: Removing temporary files and cleaning cache in C:\Users\ASUS\AppData\Local\pyinstaller
+261 INFO: Module search paths (PYTHONPATH):
+['C:\\Users\\ASUS\\CodeBuddy\\20261011132341\\audiocheck',
+ 'C:\\Users\\ASUS\\AppData\\Local\\Programs\\CodeBuddy '
+ 'CN\\resources\\app\\extensions\\genie\\out\\vendor\\shim',
+ 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\python314.zip',
+ 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\DLLs',
+ 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib',
+ 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64',
+ 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages',
+ 'C:\\Users\\ASUS\\CodeBuddy\\20261011132341\\audiocheck\\src',
+ 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\win32',
+ 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\win32\\lib',
+ 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\pythonwin',
+ 'C:\\Users\\ASUS\\CodeBuddy\\20261011132341\\audiocheck\\packaging',
+ 'C:\\Users\\ASUS\\CodeBuddy\\20261011132341\\audiocheck\\src']
+808 INFO: checking Analysis
+809 INFO: Building Analysis because Analysis-00.toc is non existent
+809 INFO: Looking for Python shared library...
+810 INFO: Using Python shared library: C:\Users\ASUS\AppData\Local\Python\pythoncore-3.14-64\python314.dll
+810 INFO: Running Analysis Analysis-00.toc
+810 INFO: Target bytecode optimization level: 0
+811 INFO: Initializing module dependency graph...
+812 INFO: Initializing module graph hook caches...
+852 INFO: Analyzing modules for base_library.zip ...
+3067 INFO: Processing standard module hook 'hook-encodings.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+3743 INFO: Processing standard module hook 'hook-pickle.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+4112 INFO: Processing standard module hook 'hook-math.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+4297 INFO: Processing standard module hook 'hook-difflib.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+4322 INFO: Processing standard module hook 'hook-heapq.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+7934 INFO: Caching module dependency graph...
+7978 INFO: Analyzing C:\Users\ASUS\CodeBuddy\20261011132341\audiocheck\packaging\launch_gui.py
+8028 INFO: Processing standard module hook 'hook-numpy.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+8543 INFO: Processing pre-safe-import-module hook 'hook-typing_extensions.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+8545 INFO: SetuptoolsInfo: initializing cached setuptools info...
+9742 INFO: Processing standard module hook 'hook-multiprocessing.util.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+9885 INFO: Processing standard module hook 'hook-xml.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+10311 INFO: Processing standard module hook 'hook-sysconfig.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+10319 INFO: Processing standard module hook 'hook-_ctypes.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+11458 INFO: Processing standard module hook 'hook-platform.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+11912 INFO: Processing standard module hook 'hook-webbrowser.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+14735 INFO: Processing standard module hook 'hook-charset_normalizer.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+15320 INFO: Processing standard module hook 'hook-soundfile.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+15392 INFO: Processing standard module hook 'hook-scipy.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+16461 INFO: Processing standard module hook 'hook-pycparser.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+16751 INFO: Processing standard module hook 'hook-setuptools.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+16773 INFO: Processing pre-safe-import-module hook 'hook-distutils.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+16820 INFO: Processing pre-safe-import-module hook 'hook-jaraco.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+16821 INFO: Setuptools: 'jaraco' appears to be a full setuptools-vendored copy - creating alias to 'setuptools._vendor.jaraco'!
+16838 INFO: Processing pre-safe-import-module hook 'hook-more_itertools.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+16839 INFO: Setuptools: 'more_itertools' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.more_itertools'!
+17062 INFO: Processing standard module hook 'hook-_osx_support.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+17087 INFO: Processing pre-safe-import-module hook 'hook-packaging.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+17559 INFO: Processing standard module hook 'hook-setuptools._vendor.jaraco.text.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+17561 INFO: Processing pre-safe-import-module hook 'hook-importlib_resources.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+17575 INFO: Processing pre-safe-import-module hook 'hook-backports.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+17576 INFO: Setuptools: 'backports' appears to be a full setuptools-vendored copy - creating alias to 'setuptools._vendor.backports'!
+18454 INFO: Processing pre-safe-import-module hook 'hook-tomli.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+19312 INFO: Processing pre-safe-import-module hook 'hook-wheel.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+20672 INFO: Processing standard module hook 'hook-scipy.linalg.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+20898 INFO: Processing standard module hook 'hook-scipy.special._ufuncs.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+24229 INFO: Processing standard module hook 'hook-scipy.spatial._ckdtree.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+24384 INFO: Processing standard module hook 'hook-matplotlib.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+25491 INFO: Processing standard module hook 'hook-matplotlib.backend_bases.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+25785 INFO: Processing standard module hook 'hook-PIL.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+25998 INFO: Processing standard module hook 'hook-PIL.Image.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+26499 INFO: Processing standard module hook 'hook-xml.etree.cElementTree.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+26633 INFO: Processing standard module hook 'hook-xml.dom.domreg.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+27270 INFO: Processing standard module hook 'hook-PIL.ImageFilter.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+28670 INFO: Processing standard module hook 'hook-jinja2.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+29981 INFO: Processing standard module hook 'hook-matplotlib.backends.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+30230 INFO: Processing standard module hook 'hook-matplotlib.pyplot.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+30556 INFO: Processing standard module hook 'hook-matplotlib.figure.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+32284 INFO: Processing standard module hook 'hook-dateutil.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+32472 INFO: Processing pre-safe-import-module hook 'hook-six.moves.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+36236 INFO: Processing standard module hook 'hook-pandas.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+38648 INFO: Processing standard module hook 'hook-zoneinfo.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+41801 INFO: Processing standard module hook 'hook-pandas.io.formats.style.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+46130 INFO: Processing standard module hook 'hook-pandas.plotting.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+48349 INFO: Processing standard module hook 'hook-openpyxl.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+48467 INFO: Processing standard module hook 'hook-lxml.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+48934 INFO: Processing standard module hook 'hook-lxml.etree.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+51628 INFO: Processing standard module hook 'hook-sqlite3.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+52087 INFO: Processing standard module hook 'hook-pandas.io.clipboard.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+52246 INFO: Processing standard module hook 'hook-fsspec.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+55109 INFO: Processing pre-safe-import-module hook 'hook-gi.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+55114 INFO: Processing standard module hook 'hook-certifi.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+55409 INFO: Processing standard module hook 'hook-scipy.spatial.transform.rotation.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+57174 INFO: Processing standard module hook 'hook-scipy.stats._stats.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+58249 INFO: Processing standard module hook 'hook-scipy.sparse.csgraph.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+59748 INFO: Processing standard module hook 'hook-scipy.special._ellip_harm_2.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+61037 INFO: Processing standard module hook 'hook-PySide6.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+61337 INFO: Processing standard module hook 'hook-shiboken6.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+61855 INFO: Processing standard module hook 'hook-PySide6.QtNetwork.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+67148 INFO: Processing standard module hook 'hook-PySide6.QtCore.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+73541 INFO: Processing standard module hook 'hook-PySide6.QtGui.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+97005 INFO: Processing standard module hook 'hook-PySide6.QtWidgets.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+102236 INFO: Processing standard module hook 'hook-matplotlib.backends.backend_qtagg.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+102246 INFO: Processing standard module hook 'hook-matplotlib.backends.qt_compat.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+102247 INFO: hook-matplotlib.backends.qt_compat: selected 'PySide6' as Qt bindings because hook for 'PySide6' has been run before.
+102269 INFO: Processing standard module hook 'hook-PySide6.QtSvg.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+103410 INFO: Analyzing hidden import 'audiocheck.core.analyzers.basic'
+103418 INFO: Analyzing hidden import 'audiocheck.core.analyzers.bitdepth'
+103426 INFO: Analyzing hidden import 'audiocheck.core.analyzers.codec'
+103433 INFO: Analyzing hidden import 'audiocheck.core.analyzers.loudness'
+103458 INFO: Analyzing hidden import 'audiocheck.core.analyzers.normalization'
+103461 INFO: Analyzing hidden import 'audiocheck.core.analyzers.spectrum'
+103473 INFO: Analyzing hidden import 'audiocheck.core.analyzers.stereo'
+103476 INFO: Analyzing hidden import 'audiocheck.core.analyzers.verdict'
+103485 INFO: Analyzing hidden import 'audiocheck.core.pipeline'
+103498 INFO: Analyzing hidden import 'audiocheck.cli'
+103525 INFO: Analyzing hidden import 'audiocheck.summarize'
+103540 INFO: Processing module hooks (post-graph stage)...
+103760 INFO: Processing standard module hook 'hook-urllib3.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+105355 INFO: Processing standard module hook 'hook-lxml.isoschematron.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+105379 WARNING: Hidden import "pycparser.lextab" not found!
+105380 WARNING: Hidden import "pycparser.yacctab" not found!
+105392 INFO: Processing standard module hook 'hook-matplotlib.backends.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+105394 INFO: Matplotlib backend selection method: automatic discovery of used backends
+105431 INFO: Discovered Matplotlib backend(s) via `matplotlib.use()` call in module 'audiocheck.ui.charts': ['QtAgg']
+105443 INFO: Discovered Matplotlib backend(s) via `matplotlib.use()` call in module 'audiocheck.cli': ['Agg']
+105443 INFO: The following Matplotlib backends were discovered by scanning for `matplotlib.use()` calls: ['Agg', 'QtAgg']. If your backend of choice is not in this list, either add a `matplotlib.use()` call to your code, or configure the backend collection via hook options (see: https://pyinstaller.org/en/stable/hooks-config.html#matplotlib-hooks).
+105980 INFO: Selected matplotlib backends: ['Agg', 'QtAgg']
+105980 INFO: Extra dists for selected matplotlib backends: []
+106773 INFO: Processing standard module hook 'hook-PIL.SpiderImagePlugin.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+106883 WARNING: Hidden import "scipy.special._cdflib" not found!
+106966 INFO: Processing standard module hook 'hook-lxml.objectify.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+106968 INFO: Processing standard module hook 'hook-tzdata.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+107598 INFO: Performing binary vs. data reclassification (961 entries)
+107945 INFO: Looking for ctypes DLLs
+108165 INFO: Analyzing run-time hooks ...
+108178 INFO: Including run-time hook 'pyi_rth_inspect.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+108182 INFO: Including run-time hook 'pyi_rth_pkgutil.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+108186 INFO: Including run-time hook 'pyi_rth_multiprocessing.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+108190 INFO: Including run-time hook 'pyi_rth_setuptools.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+108192 INFO: Including run-time hook 'pyi_rth_pyside6.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+108195 INFO: Processing pre-find-module-path hook 'hook-_pyi_rth_utils.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks\\pre_find_module_path'
+108198 INFO: Processing standard module hook 'hook-_pyi_rth_utils.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks'
+108203 INFO: Including run-time hook 'pyi_rth_mplconfig.py' from 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+108287 INFO: Creating base_library.zip...
+108313 INFO: Looking for dynamic libraries
+112974 INFO: Extra DLL search directories (AddDllDirectory): ['C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\shiboken6', 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\numpy.libs', 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\pandas.libs', 'C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\scipy.libs']
+112975 INFO: Extra DLL search directories (PATH): ['C:\\Users\\ASUS\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PySide6']
+116288 INFO: Warnings written to C:\Users\ASUS\CodeBuddy\20261011132341\audiocheck\build\audiocheck\warn-audiocheck.txt
+116529 INFO: Graph cross-reference written to C:\Users\ASUS\CodeBuddy\20261011132341\audiocheck\build\audiocheck\xref-audiocheck.html
+116638 INFO: checking PYZ
+116638 INFO: Building PYZ because PYZ-00.toc is non existent
+116638 INFO: Building PYZ (ZlibArchive) C:\Users\ASUS\CodeBuddy\20261011132341\audiocheck\build\audiocheck\PYZ-00.pyz
+118436 INFO: Building PYZ (ZlibArchive) C:\Users\ASUS\CodeBuddy\20261011132341\audiocheck\build\audiocheck\PYZ-00.pyz completed successfully.
+118511 INFO: checking PKG
+118511 INFO: Building PKG because PKG-00.toc is non existent
+118511 INFO: Building PKG (CArchive) audiocheck.pkg
+118555 INFO: Building PKG (CArchive) audiocheck.pkg completed successfully.
+118557 INFO: Bootloader C:\Users\ASUS\AppData\Local\Python\pythoncore-3.14-64\Lib\site-packages\PyInstaller\bootloader\Windows-64bit-intel\runw.exe
+118558 INFO: checking EXE
+118558 INFO: Building EXE because EXE-00.toc is non existent
+118558 INFO: Building EXE from EXE-00.toc
+118558 INFO: Copying bootloader EXE to C:\Users\ASUS\CodeBuddy\20261011132341\audiocheck\build\audiocheck\audiocheck.exe
+118649 INFO: Copying icon to EXE
+118702 INFO: Copying 0 resources to EXE
+118702 INFO: Embedding manifest in EXE
+118753 INFO: Appending PKG archive to EXE
+118860 INFO: Fixing EXE headers
+119230 INFO: Building EXE from EXE-00.toc completed successfully.
+119243 INFO: checking COLLECT
+119243 INFO: Building COLLECT because COLLECT-00.toc is non existent
+119244 INFO: Building COLLECT COLLECT-00.toc
+121112 INFO: Building COLLECT COLLECT-00.toc completed successfully.
+121146 INFO: Build complete! The results are available in: C:\Users\ASUS\CodeBuddy\20261011132341\audiocheck\dist

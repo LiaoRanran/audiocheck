@@ -29,12 +29,27 @@ from PySide6.QtGui import (
 
 @dataclass(frozen=True)
 class Space:
+    """间距刻度。**两套刻度，用途不同，不要混用。**
+
+    * 布局刻度（xs…xxl）：全部是 4 的倍数，用于**元素之间**的间距。
+      栅格审计（tests/test_ui_grid.py）强制这一条。
+    * 光学刻度（hair/thin）：**故意脱离栅格**，只用于**组件内部**的微调。
+      例：StatCard 里字段名与数值之间、导航按钮的图标与文字之间。
+
+    **为什么不把光学间距也凑到 4px**：4px 在 10–12px 的字号旁边是可见的
+    空隙，硬凑会把"字段名 + 数值"这个整体拆散，观感反而更差。
+    设计系统里"栅格"约束的是构图节奏，不是像素强迫症——
+    但光学例外必须**显式登记**，否则它就退化成随手写的魔数。
+    """
     xs: int = 4
     sm: int = 8
     md: int = 12
     lg: int = 16
     xl: int = 24
     xxl: int = 32
+    # ---- 光学刻度：仅限组件内部，不参与布局 ----
+    hair: int = 1
+    thin: int = 2
 
 
 @dataclass(frozen=True)
@@ -348,14 +363,32 @@ MONO_STACK = ("Cascadia Mono", "Cascadia Code", "Consolas", "SF Mono", "Menlo",
               "DejaVu Sans Mono", "Liberation Mono", "Courier New")
 
 
+_MONO_CACHE: str | None = None
+
+
 def mono_family() -> str:
-    """返回本机真实可用的等宽字体族名。
+    """返回本机真实可用的等宽字体族名。找不到返回空串。
+
+    **没有 QApplication 实例时必须返回空串，不能继续往下走。**
+    `QFontDatabase` 是依赖 QGuiApplication 存在的，在它之前调用会
+    **让进程直接 abort**（不是抛 Python 异常，是 C 层终止，连 traceback
+    都打不全）。实测：在 pytest 里跑一个只读 qss() 的测试就会崩在
+    `test_qss_uses_type_scale_only`。
+
+    调用方对此的约定：空串时退回 "monospace" 通用名，QSS 照样合法。
 
     与 load_cjk_fonts() 同理：**先显式注册字体文件再查**。只查
-    QFontDatabase.families() 是不够的——离屏/未初始化时它可能返回空，
-    而直接写死族名（如 "Cascadia Mono"）在本机没装时会静默回退。
+    families() 不够——直接写死族名（如 "Cascadia Mono"）在本机没装时
+    会静默回退到比例字体，等宽等于没做。
+    结果缓存，避免每次 qss()/mono_qfont() 都去扫字体库。
     """
+    global _MONO_CACHE
+    if _MONO_CACHE is not None:
+        return _MONO_CACHE
     from PySide6.QtGui import QFontDatabase
+    from PySide6.QtWidgets import QApplication
+    if QApplication.instance() is None:
+        return ""                       # 不缓存：有了 app 之后还要重新探测
     for path in _MONO_FILES:
         if os.path.exists(path):
             idx = QFontDatabase.addApplicationFont(path)
@@ -364,7 +397,9 @@ def mono_family() -> str:
     have = set(QFontDatabase.families())
     for f in MONO_STACK:
         if f in have:
+            _MONO_CACHE = f
             return f
+    _MONO_CACHE = ""
     return ""
 
 

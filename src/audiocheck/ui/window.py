@@ -236,7 +236,7 @@ class MainWindow(FramelessWindow):
         split.setChildrenCollapsible(False)
         left_box = QWidget()
         lv = QVBoxLayout(left_box)
-        lv.setContentsMargins(16, 12, 6, 12)
+        lv.setContentsMargins(16, 12, 8, 12)
         lv.setSpacing(8)
         lv.addWidget(self._file_panel())
         split.addWidget(left_box)
@@ -265,7 +265,7 @@ class MainWindow(FramelessWindow):
         bar.setFixedHeight(52)
         h = QHBoxLayout(bar)
         h.setContentsMargins(16, 8, 16, 8)
-        h.setSpacing(6)
+        h.setSpacing(8)
 
         self.act: dict[str, QPushButton] = {}
         defs = [("add", "添加文件", "folder"), ("dir", "添加文件夹", "add"),
@@ -299,7 +299,8 @@ class MainWindow(FramelessWindow):
         h.addWidget(self.ed_search)
         self.cb_filter = QComboBox()
         self.cb_filter.addItems(["全部", "仅不达标", "仅有疑", "仅合格", "仅未分析"])
-        self.cb_filter.setFixedWidth(110)
+        # 112 = 4×28，上栅格。原 110 是随手写的，与筛选框内的文字宽度也无关系。
+        self.cb_filter.setFixedWidth(112)
         self.cb_filter.currentIndexChanged.connect(self.refresh_table)
         h.addWidget(self.cb_filter)
         return bar
@@ -308,7 +309,7 @@ class MainWindow(FramelessWindow):
         w = QWidget()
         v = QVBoxLayout(w)
         v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(6)
+        v.setSpacing(8)
         head = QHBoxLayout()
         t = QLabel("文件")
         t.setObjectName("SectionTitle")
@@ -355,7 +356,7 @@ class MainWindow(FramelessWindow):
     def _stack(self):
         w = QWidget()
         v = QVBoxLayout(w)
-        v.setContentsMargins(6, 12, 16, 12)
+        v.setContentsMargins(8, 12, 16, 12)
         v.setSpacing(0)
         self.stack = QStackedWidget()
         v.addWidget(self.stack, 1)
@@ -363,7 +364,7 @@ class MainWindow(FramelessWindow):
         # --- 总览 ---
         ov = QWidget()
         ovl = QVBoxLayout(ov)
-        ovl.setContentsMargins(10, 0, 0, 0)
+        ovl.setContentsMargins(8, 0, 0, 0)
         ovl.setSpacing(12)
         self.banner = self._banner()
         ovl.addWidget(self.banner)
@@ -396,13 +397,13 @@ class MainWindow(FramelessWindow):
         ml.setChildrenCollapsible(False)
         lb = QWidget()
         l1 = QVBoxLayout(lb)
-        l1.setContentsMargins(10, 0, 5, 0)
+        l1.setContentsMargins(8, 0, 4, 0)
         l1.addWidget(self._section("容器标签"))
         self.tb_meta = KVTable(self.theme)
         l1.addWidget(self.tb_meta, 1)
         rb = QWidget()
         l2 = QVBoxLayout(rb)
-        l2.setContentsMargins(5, 0, 0, 0)
+        l2.setContentsMargins(4, 0, 0, 0)
         l2.addWidget(self._section("全部测量指标"))
         self.tb_metrics = KVTable(self.theme)
         l2.addWidget(self.tb_metrics, 1)
@@ -998,7 +999,14 @@ class MainWindow(FramelessWindow):
             self.restoreGeometry(g)
         n = s.value("theme")
         if n in T.THEMES:
-            self.theme = T.THEMES[n]
+            # **必须走 apply_theme，不能只给 self.theme 赋值。**
+            # 只赋值会让 QSS 停留在上一个主题、而 self.theme 已换成新主题：
+            # __init__ 的顺序是 apply_theme(DARK) → _restore()，若这里直接赋值，
+            # 全局 QSS 仍是深色，但之后新建的组件（StatCard 等）会按新主题取色，
+            # 于是浅色配色被画在深色背景上。
+            # 实测症状：深色底上画出 #141a26 的数值，几乎不可见——
+            # 指标卡的数字是仪表盘的重点，结果它最不显眼。
+            self.apply_theme(T.THEMES[n])
 
     def closeEvent(self, e):
         from PySide6.QtCore import QSettings
