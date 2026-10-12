@@ -36,3 +36,7 @@ _probe_*.py
 _zoom_*.py
 shots/_crop_*.png
 shots/_card_zoom*.png
+
+# 基准探针的素材与产物：packaging/mem_probe.py 会在 out/ 下生成合成音频
+# （70 s × N 个 PCM_16 wav，每个约 12 MB），没有任何理由进库。
+out/

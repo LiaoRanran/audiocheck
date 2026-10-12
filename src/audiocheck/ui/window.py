@@ -172,6 +172,9 @@ class SettingsDialog(QDialog):
 class MainWindow(FramelessWindow):
     COLS = ["文件名", "规格", "截止", "DR", "削波", "判定"]
     COL_W = {1: 74, 2: 62, 3: 46, 4: 62, 5: 78}
+    # 视图数据缓存的**字节**上限：一份频谱图 (t,f,S) 约 0.7–3 MB、瀑布图约 0.2 MB。
+    # 96 MB 够留住几十次点选，又不会把常驻内存顶上去（实测连点 40 个文件稳定在 +60 MB）。
+    CACHE_MAX_BYTES = 96 << 20
     # 视图 key → QStackedWidget 的索引。**顺序必须与 _stack() 里 addWidget 的
     # 真实顺序一致**：overview, spectrum, spectro, waterfall, bands,
     # compare(cv_cmp), batch(cv_ovw), meta(两个 KVTable)。
@@ -194,7 +197,9 @@ class MainWindow(FramelessWindow):
         self._idx: dict[str, int] = {}
         self.queue: list[str] = []
         self.worker: AnalyzeWorker | None = None
-        self._view_workers: list[ViewWorker] = []
+        # 按 (路径, 视图) 索引在跑的线程：既能持有引用防 GC，也顺手当"去重表"
+        # 用（快速来回点选时同一个 STFT 不该算两遍）。
+        self._view_workers: dict[tuple[str, str], ViewWorker] = {}
         self._cache: dict[tuple[str, str], tuple] = {}
         self._last_sig: tuple | None = None
 
@@ -495,6 +500,7 @@ class MainWindow(FramelessWindow):
         if key in self.VIEW_KEYS:
             self.stack.setCurrentIndex(self.VIEW_KEYS.index(key))
             self.sidebar.set_active(key)
+            self._load_visible_view()          # 切到频谱图/瀑布图时才补算数据
 
     def _commands(self):
         self._cmds = [
@@ -734,8 +740,21 @@ class MainWindow(FramelessWindow):
         self.cv_band.set_data(r)
         self._meta(r)
         self.lbl_advice.setText(r.get("advice", "—"))
-        self._load_view(p, "spec")
-        self._load_view(p, "wfall")
+        # 只给**当前真的在看**的视图起线程：频谱图与瀑布图的 S 矩阵各要读盘 +
+        # 12 s 的 4096 点 STFT，选一次文件算两份是白算（多数人只看频谱图）。
+        # 切到另一个视图时 _navigate 会补上（见 _load_visible_view）。
+        self._load_visible_view()
+
+    def _load_visible_view(self):
+        """按当前页决定要生成哪一份视图数据（不在视图页就什么都不做）。"""
+        i = self.stack.currentIndex()
+        if not 0 <= i < len(self.VIEW_KEYS) or self._last_sig is None:
+            return
+        kind = {"spectro": "spec", "waterfall": "wfall"}.get(self.VIEW_KEYS[i])
+        p = self._last_sig[0]
+        j = self._idx.get(p)
+        if kind and j is not None and self.items[j]["result"]:
+            self._load_view(p, kind)
 
     def _results_of(self, paths):
         out = []
@@ -843,20 +862,40 @@ class MainWindow(FramelessWindow):
             cv.set_data(self.items[self._idx[path]]["result"] if path in self._idx else None,
                         self._cache[key])
             return
+        if key in self._view_workers:
+            return          # 同一份数据已在算：再来一次就是白读一遍盘 + 白做一遍 STFT
         cv.set_data(None, None, "生成中…")
-        # 必须持有引用：QThread 被 GC 而线程仍在跑会让进程硬崩。
-        self._view_workers = [w for w in self._view_workers if w.isRunning()][-6:]
+        # 必须持有引用：QThread 被 GC 而线程仍在跑会让进程硬崩。用字典按 key 存，
+        # 线程结束后自己摘掉——既不残留线程对象，也天然去重。
         w = ViewWorker(path, kind)
-        self._view_workers.append(w)
+        self._view_workers[key] = w
         w.ready.connect(self._view_ready)
+        w.finished.connect(lambda k=key: self._view_workers.pop(k, None))
         w.start()
+
+    def _cache_bytes(self) -> int:
+        """缓存当前压着多少字节（按数组真实 nbytes 算）。"""
+        tot = 0
+        for v in self._cache.values():
+            for part in v:
+                n = getattr(part, "nbytes", None)
+                tot += int(n) if n is not None else 0
+        return tot
+
+    def _evict_cache(self):
+        """按**字节**淘汰，而不是按条数。
+
+        按条数限制是错的：一条 (t, f, S) 有多大取决于 nperseg / 时长 / max_cols，
+        改一个常量就能让「12 条」变成 GB 级。字节预算是唯一与实现无关的界。
+        """
+        while len(self._cache) > 1 and self._cache_bytes() > self.CACHE_MAX_BYTES:
+            self._cache.pop(next(iter(self._cache)))
 
     def _view_ready(self, path, kind, t, f, S):
         if S is None:
             return
         self._cache[(path, kind)] = (t, f, S)
-        while len(self._cache) > 12:
-            self._cache.pop(next(iter(self._cache)))
+        self._evict_cache()
         mine = [i for i in self.table.selectedItems() if i.column() == 0]
         if len(mine) == 1 and mine[0].data(Qt.UserRole) == path:
             cv = self.cv_spectro if kind == "spec" else self.cv_wfall
@@ -1013,7 +1052,7 @@ class MainWindow(FramelessWindow):
         s = QSettings("audiocheck", "gui")
         s.setValue("geometry", self.saveGeometry())
         s.setValue("theme", self.theme.name)
-        for w in ([self.worker] if self.worker else []) + self._view_workers:
+        for w in ([self.worker] if self.worker else []) + list(self._view_workers.values()):
             if w and w.isRunning():
                 try:
                     w.stop()

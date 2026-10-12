@@ -244,6 +244,7 @@ class SpectrogramCanvas(BaseCanvas):
         self.r = None
         self.data = None
         self._msg = "选择条目后自动生成"
+        self._cbar = None            # 色条只建一次，之后只换 mappable（见 _colorbar）
 
     def set_data(self, r=None, data=None, msg=None):
         self.r, self.data = r, data
@@ -262,6 +263,8 @@ class SpectrogramCanvas(BaseCanvas):
         ax.clear()
         self._ax_style(ax, "时间 s", "频率 Hz")
         if not self.data:
+            if self._cbar is not None:
+                self._cbar.ax.set_visible(False)   # 空数据不该留着一条没有含义的色条
             ax.text(.5, .5, self._msg, ha="center", va="center", color=p["text_faint"],
                     transform=ax.transAxes, fontsize=11)
             ax.set_xticks([])
@@ -278,11 +281,32 @@ class SpectrogramCanvas(BaseCanvas):
         for lev in (100, 1000, 10000):
             if lev < f[-1]:
                 ax.axhline(lev, color=p["grid"], lw=.6, alpha=.55, zorder=2)
-        cb = self.fig.colorbar(mesh, ax=ax, pad=.015, fraction=.045)
+        self._colorbar(mesh, p)
+        self.draw()
+
+    def _colorbar(self, mesh, p):
+        """色条：**建一次，之后只换 mappable**。
+
+        为什么不能每次 `fig.colorbar(...)`：它每调一次就往 `fig.axes` 里再加一个
+        Axes，而 `ax.clear()` 带不走它。旧写法（每次重画新建色条）的后果是
+        ——色条握着 mappable → 握着那份 S 矩阵，于是每重画一次净增约 18 MB，
+        且**不可回收**。实测量化（packaging/mem_probe.py）：
+            点选 10 个文件：+179 MB        切 30 次主题：+577 MB
+            figure.axes 从 2 涨到 31，renderer 每次要给 31 个轴做布局
+        复用之后：axes 恒为 2（主图 + 1 个色条），30 次重画共 23 MB。
+        """
+        if self._cbar is None:
+            self._cbar = self.fig.colorbar(mesh, ax=self.ax, pad=.015, fraction=.045)
+        else:
+            self._cbar.ax.set_visible(True)
+            # 千万别先 `self._cbar.ax.clear()`：那会把 solids 从轴上摘下来，
+            # `_add_solids()` 随后执行 `self.solids.remove()` 会抛
+            # NotImplementedError: cannot remove artist（实测）。
+            self._cbar.update_normal(mesh)
+        cb = self._cbar
         cb.ax.tick_params(colors=p["text_faint"], labelsize=7.5)
         cb.outline.set_edgecolor(p["border"])
         cb.set_label("dB", color=p["text_faint"], fontsize=8)
-        self.draw()
 
 
 # --------------------------------------------------------------------- 频段能量

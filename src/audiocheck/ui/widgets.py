@@ -5,7 +5,15 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import (
+    QAbstractAnimation,
+    QEasingCurve,
+    QPropertyAnimation,
+    QRectF,
+    Qt,
+    QTimer,
+    Signal,
+)
 from PySide6.QtGui import QColor, QConicalGradient, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -277,7 +285,10 @@ class ToastHost(QWidget):
         anim.setEndValue(1.0)
         anim.setDuration(160)
         anim.setEasingCurve(QEasingCurve.OutCubic)
-        anim.start()
+        # 动画必须**用完即毁**：它以 ToastHost 为父对象，若只 start() 就会被挂在
+        # 组件树上永不回收，而它还握着 target（弹窗控件）→ 每次通知泄漏
+        # 两个动画 + 一个弹窗。开着界面跑一晚上分析，光提示就能攒出上千个对象。
+        anim.start(QAbstractAnimation.DeletionPolicy.DeleteWhenStopped)
         QTimer.singleShot(ms, lambda: self._dismiss(t))
 
     def _dismiss(self, t: Toast) -> None:
@@ -286,7 +297,7 @@ class ToastHost(QWidget):
         anim.setEndValue(0.0)
         anim.setDuration(180)
         anim.finished.connect(lambda: (self._lay.removeWidget(t), t.deleteLater()))
-        anim.start()
+        anim.start(QAbstractAnimation.DeletionPolicy.DeleteWhenStopped)
 
     def sync_geometry(self) -> None:
         p = self.parentWidget()

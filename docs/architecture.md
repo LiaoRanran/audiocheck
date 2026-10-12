@@ -81,6 +81,33 @@ class PolarityAnalyzer(Analyzer):
 
 ---
 
+## UI 层的资源边界（改动前必读）
+
+界面层最贵的资源不是 CPU，而是**被一直引用着的数组**：一份频谱图数据 `(t, f, S)`
+约 0.7–3 MB、瀑布图约 0.2 MB，而 matplotlib 的图元会把它们连带引用住。
+这些对象不报错、不进日志，只表现为「开着它翻半小时文件，任务管理器里 1 GB」。
+四条硬边界，改动画布 / 列表 / 线程前先读：
+
+| 边界 | 位置 | 规则 |
+| --- | --- | --- |
+| 图元 | `charts.SpectrogramCanvas._colorbar` | 色条**只建一次**，之后 `update_normal(mesh)`。`fig.colorbar()` 每调一次都会往 `fig.axes` 里加一个 Axes，而 `ax.clear()` 带不走它；旧色条握着 mappable → 握着 S 矩阵。实测每次重画 **+17.9 MB** 且不可回收 |
+| 缓存 | `window.MainWindow.CACHE_MAX_BYTES` | 视图数据**按字节**淘汰（FIFO，至少留 1 份）。按条数限制是错的：单份大小取决于 `nperseg` / 时长 / `max_cols` |
+| 线程 | `window.MainWindow._view_workers` | 按 `(路径, 视图)` 登记的**字典**：既持有引用防 GC（QThread 被回收而线程仍在跑会让进程硬崩），又天然去重；线程 `finished` 时摘掉 |
+| 生成时机 | `window.MainWindow._load_visible_view` | 只为**当前可见页**生成数据。频谱图与瀑布图各要读盘 + 12 s 的 4096 点 STFT，选一次文件算两份是白算 |
+
+另外两条同源规则：
+
+- 以组件为父对象的 `QPropertyAnimation` 必须 `start(DeleteWhenStopped)`，
+  否则动画（以及它的 target）永不销毁 —— `widgets.ToastHost.notify` 踩过。
+- 用 `deleteLater()` 回收对象时，测试 / 探针里要手动
+  `sendPostedEvents(None, QEvent.DeferredDelete)`：`processEvents()` 不派发延迟删除事件，
+  漏派发会让人看到「每点一次涨 0.6 MB」这种**假泄漏**（真实运行时 `exec()` 会自己派发）。
+
+量化工具：`python packaging/mem_probe.py [--strict] [--trace]`，场景与判据见该文件头部。
+不变量回归：`tests/test_ui_memory.py`（断言用对象计数，不用进程内存）。
+
+---
+
 ## 为什么截止点检测这么绕（三代演进）
 
 这是本项目最关键也最容易写错的算法。三代实现都留在了注释与测试里：

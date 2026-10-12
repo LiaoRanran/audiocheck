@@ -2,6 +2,40 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [未发布]
+
+### 修复
+
+- **内存随使用线性增长**（严重）：`SpectrogramCanvas.redraw()` 每次重画都
+  `fig.colorbar(...)` 新建一个色条 Axes，而 `ax.clear()` 带不走它；色条握着
+  mappable → 握着那份 S 矩阵，**永远回收不掉**。实测（`packaging/mem_probe.py`）：
+  频谱图每次重画 **+17.9 MB**、点选 10 个文件 **+178.8 MB**、切换主题 30 次
+  **+576.5 MB**、一整段流程净增 **+845.7 MB**，`figure.axes` 从 2 涨到 31 个。
+  改为**建一次、之后只换 mappable**（`Colorbar.update_normal`）。
+  修后：每次重画 +0.03 MB，axes 恒为 2，换肤 30 次 +3.5 MB，全流程净增 +43 MB（首轮预热后逐轮为 0）。
+- **视图缓存按条数限制**（12 条）：单份 `(t, f, S)` 的大小取决于 `nperseg` / 时长 /
+  `max_cols`，改一个常量就能让「12 条」变成 GB 级。改为**按字节预算**淘汰
+  （`CACHE_MAX_BYTES = 96 MB`，FIFO，至少留 1 份）。同时把 S 从 float64 降到
+  **float32**（dB 只需 0.01 dB 精度），缓存与 `pcolormesh` 内部缓冲直接减半。
+- **视图数据重复计算**：快速来回点选同一文件会为同一 `(文件, 视图)` 起多个线程，
+  每个都白读一遍盘 + 白做一遍 12 s / 4096 点 STFT。改为按 key 登记 + 去重，
+  线程结束自动摘掉（顺带把 QThread 的引用管理写清楚）。
+- **只算当前在看的那张图**：点选文件时不再同时生成频谱图 + 瀑布图，切到对应页才补算。
+- **通知动画永不回收**：`QPropertyAnimation` 以 ToastHost 为父对象且只 `start()`，
+  每次通知泄漏 2 个动画 + 1 个弹窗（动画握着 target）。改为 `DeleteWhenStopped`。
+- `.gitignore` 漏掉基准探针的输出目录：70 s × N 个 PCM_16 wav（每个约 12 MB）
+  会被 `git status` 当成待提交文件。
+
+### 新增
+
+- **`packaging/mem_probe.py`**：内存基准探针（7 个场景 + 阈值判据 + `--strict` + `--trace` 归因）。
+  文件头顺便记下两个**探针保真度**的坑：`GetProcessMemoryInfo` 住在 **psapi.dll**
+  （kernel32 只有 `K32` 前缀那版）；`processEvents()` **不派发** `DeferredDelete`，
+  不手动 `sendPostedEvents` 就会看到「每点一次涨 0.6 MB」的**假泄漏**。
+- **`tests/test_ui_memory.py`**（8 用例）：把"必须有界"的四件事钉死——图元数、
+  缓存字节、线程去重、按需生成。断言全部用**对象计数**而不是进程内存
+  （后者受分配器与字体缓存影响，放进 CI 只会得到偶发失败）。
+
 ## [1.0.0] - 2026-10-11
 
 首个正式版本：从一堆脚本重构为可扩展的 Python 包。
