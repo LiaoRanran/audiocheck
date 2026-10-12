@@ -1,7 +1,13 @@
-# 构建产物
-build/
+# 构建产物。**dist_old*/ 与 dist_stuck/ 也必须忽略**：
+# build.ps1 的 Clear-Dir 用「重命名归档」代替删除（环境的删除策略会把
+# Remove-Item 改成移入回收站，而该操作在深层目录上会失败），于是每次构建
+# 都会留下 dist_old1、dist_old2…… 只忽略 dist/ 会把这些 280MB 的副本
+# 一个个提交进仓库（实测踩过：一次误提交 560MB）。
 dist/
-*.manifest
+dist_old*/
+dist_stuck/
+build/
+build_old*/
 
 # Python
 __pycache__/
