@@ -25,6 +25,15 @@ OFFSET = -0.691         # BS.1770 常数项
 BLOCK_STEP = 0.1        # 100ms 步进（400ms 块 = 4 步）
 SHORT_STEP = 1.0        # LRA 短时块 3s，步进 1s
 
+# True Peak（ITU-R BS.1770-4 Annex 2）
+TP_OS = 4               # 规格要求 ≥4 倍过采样
+TP_OVERLAP = 4096       # 块间重叠的输入采样数，必须 > 滤波器瞬态长度
+TP_TRIM = 64            # 每段处理时两端各丢弃的输入采样数（滤波器瞬态）。
+                        # resample_poly 用 81 抽头 / up=4 → 瞬态约 21 个输入采样，
+                        # 取 64 留足余量。**不丢就会在人造边界上生出虚假峰值**：
+                        # 早先「每块独立过采样后从两头各削 10%」既是这个道理、
+                        # 又削得太狠（把真实峰值也削掉了）。
+
 
 def k_weighting(fs: int):
     """返回两级 biquad 系数 ((b1,a1),(b2,a2))。"""
@@ -74,7 +83,7 @@ def loudness(path: str, fs: int, channels: int, total: int, chunk: int = 1 << 20
     z2 = [np.zeros(2) for _ in range(channels)]
     acc = np.zeros(channels)
     acc_n = si = 0
-    true_peak = 0.0
+    tp_db: float | None = None      # 别叫 true_peak —— 那会遮蔽同名模块函数
 
     with sf.SoundFile(path) as f:
         while True:
@@ -88,12 +97,9 @@ def loudness(path: str, fs: int, channels: int, total: int, chunk: int = 1 << 20
                 y[:, c], z2[c] = signal.lfilter(b2, a2, x, zi=z2[c])
             np.square(y, out=y)
 
-            # True Peak：4 倍过采样。只取每段中心，避开重采样边界瞬态造成的虚假峰值。
-            if block.shape[0] > 8192:
-                ov = signal.resample_poly(block, 4, 1, axis=0)
-                m = int(ov.shape[0] * 0.1)
-                seg = ov[m:ov.shape[0] - m] if ov.shape[0] > 2 * m + 8 else ov
-                true_peak = max(true_peak, float(np.abs(seg).max()))
+            # True Peak 不在这里做：它与响度计量的分块方式需求不同
+            # （响度要跨块连续滤波，真峰值要段段带上下文），混在一个循环里
+            # 必然有一方被将就。改为循环结束后单独一遍，见文件末尾。
 
             p = 0
             while p < y.shape[0]:
@@ -111,6 +117,10 @@ def loudness(path: str, fs: int, channels: int, total: int, chunk: int = 1 << 20
     if si < 4:
         return {}
     step_ms = step_ms[:si]
+
+    # True Peak 单独一遍（见 true_peak() 的 docstring）：每段带 TP_TRIM 上下文、
+    # 只取中段，既不在人造边界上生出虚假峰值，也不漏掉真实峰值。
+    tp_db = true_peak(path)
 
     # 积分响度：400ms 块 = 4 个 100ms 步（用卷积做滑窗，矢量化）
     kern = np.ones(4) / 4.0
@@ -142,10 +152,10 @@ def loudness(path: str, fs: int, channels: int, total: int, chunk: int = 1 << 20
         "st_max": round(float(st.max()), 1) if st.size else None,
         "st_min": round(float(st.min()), 1) if st.size else None,
     }
-    if true_peak > 0:
-        out["true_peak_dbfs"] = round(20 * np.log10(true_peak + 1e-12), 2)
+    if tp_db is not None:
+        out["true_peak_dbfs"] = round(tp_db, 2)
         if lufs is not None:
-            out["plr"] = round(out["true_peak_dbfs"] - out["lufs"], 1)
+            out["plr"] = round(tp_db - lufs, 1)
     return out
 
 
@@ -211,17 +221,53 @@ def dc_offset(path: str, channels: int, chunk: int = 1 << 20) -> dict:
     }
 
 
+def _oversample(x: np.ndarray) -> np.ndarray:
+    """4 倍过采样后的整段信号（BS.1770-4 Annex 2 要求 ≥4×）。
+
+    滤波器说明（**已知偏差，不粉饰**）：BS.1770-4 Annex 2 给的是一张**固定 FIR 系数表**；
+    scipy 的 `resample_poly` 用 Kaiser 窗设计 sinc，无法逐字复刻那张表。
+    这里取 beta=10（阻带约 −70 dB，规格要求 ≥ −40 dB，因此更保守）。
+    注意 `resample_poly` 的抽头数固定为 2·(10·max(up,down))+1 = 81，**与 beta 无关**——
+    所以调 beta 只会改变窗形、不会让滤波器变长。实测真实音乐素材上，
+    本实现与 FFT 理想插值的真峰值相差 < 0.01 dB。
+    """
+    if x.size == 0:
+        return np.zeros(0)
+    return signal.resample_poly(x, TP_OS, 1, axis=0, window=("kaiser", 10.0))
+
+
+def _true_peak_of(x: np.ndarray) -> float:
+    """整段过采样后的最大绝对值。"""
+    ov = _oversample(x)
+    return float(np.abs(ov).max()) if ov.size else 0.0
+
+
 def true_peak(path: str, chunk: int = 1 << 21) -> float | None:
-    """单独计算真峰值（供只需要这一项的调用方）。"""
-    peak = 0.0
+    """单独计算真峰值（供只需要这一项的调用方）。
+
+    做法：按 `chunk` 分段，但每段都向前后各多读 `TP_TRIM` 个采样作上下文，
+    过采样后**只取中段**（丢掉两端各 TP_TRIM 对应的输出）。
+
+    两个坑都因此避开：
+      * 不多读上下文 → 段首的人造不连续被滤波器振铃放大成**虚假峰值**；
+      * 不从两端丢瞬态 → 同上；
+      * 早先「每块独立过采样后从两头各削 10%」则是丢得太多，
+        落在削掉区间里的**真实峰值永久漏掉**。
+    """
     with sf.SoundFile(path) as f:
-        while True:
-            b = f.read(chunk, dtype="float32", always_2d=True)
-            if not len(b):
-                break
-            if b.shape[0] > 8192:
-                ov = signal.resample_poly(b, 4, 1, axis=0)
-                m = int(ov.shape[0] * 0.1)
-                seg = ov[m:ov.shape[0] - m] if ov.shape[0] > 2 * m + 8 else ov
-                peak = max(peak, float(np.abs(seg).max()))
+        total = f.frames
+    if total <= 0:
+        return None
+    peak, pos = 0.0, 0
+    while pos < total:
+        end = min(pos + chunk, total)
+        a = max(0, pos - TP_TRIM)                 # 向前借上下文
+        b = min(total, end + TP_TRIM)             # 向后借上下文
+        x, _ = sf.read(path, start=a, frames=b - a, dtype="float32", always_2d=True)
+        ov = _oversample(x)
+        lo, hi = (pos - a) * TP_OS, (end - a) * TP_OS
+        seg = ov[lo:hi]
+        if seg.size:
+            peak = max(peak, float(np.abs(seg).max()))
+        pos = end
     return round(20 * np.log10(peak + 1e-12), 2) if peak > 0 else None

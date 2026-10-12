@@ -8,6 +8,12 @@ from ..registry import Analyzer, register
 
 BLOCK = 65536
 
+# TT / Pleasurize Music Foundation 规定的 RMS 块长。
+# 早先拿「读文件的块」当 RMS 块（65536 采样，48kHz 下 1.37 秒），
+# 既不是 3 秒、也不与曲目结构对齐 —— 这是真 bug，不是口径差异。
+DR_BLOCK_SECONDS = 3.0
+DR_TOP_FRACTION = 0.20    # TT：只取最响的 20% 块参与计算
+
 
 @register
 class BasicAnalyzer(Analyzer):
@@ -17,8 +23,12 @@ class BasicAnalyzer(Analyzer):
 
     def run(self, ctx) -> dict:
         ch = ctx.channels
+        fs = ctx.fs
         peak = sumsq = 0.0
         n = clips = 0
+        dr_win = max(1, int(DR_BLOCK_SECONDS * fs))
+        dr_acc = np.zeros(ch)
+        dr_n = 0
         block_rms: list[float] = []
         corr_num = corr_l = corr_r = 0.0
         mean_l = mean_r = 0.0
@@ -33,7 +43,21 @@ class BasicAnalyzer(Analyzer):
                 sumsq += float((bf ** 2).sum())
                 n += b.size
                 clips += int((np.abs(b) >= 0.9999).sum())
-                block_rms.append(float(np.sqrt((bf ** 2).mean())))
+
+                # 3 秒 RMS 块：**按样本精确消费**，把读块的超出部分留给下一个块。
+                # 若写成「dr_n >= dr_win 就整块结算」，块长会随读块大小漂移
+                # （BLOCK=65536 时第一个块实际是 4.1 秒）——那等于没修干净。
+                pos = 0
+                while pos < bf.shape[0]:
+                    take = min(dr_win - dr_n, bf.shape[0] - pos)
+                    dr_acc += (bf[pos:pos + take] ** 2).sum(axis=0)
+                    dr_n += take
+                    pos += take
+                    if dr_n == dr_win:
+                        block_rms.append(float(np.sqrt(dr_acc.sum() / (dr_n * ch))))
+                        dr_acc[:] = 0.0
+                        dr_n = 0
+
                 if ch >= 2:
                     lc, rc = bf[:, 0], bf[:, 1]
                     corr_num += float((lc * rc).sum())
@@ -51,12 +75,17 @@ class BasicAnalyzer(Analyzer):
         if out["peak_dbfs"] is not None:
             out["crest_db"] = round(out["peak_dbfs"] - out["rms_dbfs"], 1)
 
-        # 近似 TT-DR：采样峰值 − 最响 20% 块的均方根
-        # 注意：不能用「块 RMS 的最大值」，那对恒定响度曲目会算出 ≈0 的假结果
-        if block_rms:
-            br = 20 * np.log10(np.array(block_rms) + 1e-9)
-            top = br[np.argsort(br)[-max(1, len(br) // 5):]]
-            out["dr_db"] = round(out["peak_dbfs"] - float(top.mean()), 1)
+        # TT-DR：采样峰值 − 最响 20% 的 3 秒块中**第二响**那一块的 RMS。
+        # 取第二响而非最响，是为了不被单个瞬态（一声镲片）主导。
+        # ⚠ 选择规则是我对 TT 方法的解读；官方 spec sheet 未能直接核到（PyPI/GitHub 均被拦），
+        #   故同时给出 mean20 变体供对照，两者差异通常 < 1 dB。见 docs/theory.md。
+        if block_rms and out["peak_dbfs"] is not None:
+            br = 20 * np.log10(np.array(block_rms) + 1e-12)
+            k = max(1, int(len(br) * DR_TOP_FRACTION))
+            top = np.sort(br)[-k:]
+            ref = float(top[-2]) if len(top) >= 2 else float(top[-1])
+            out["dr_db"] = round(out["peak_dbfs"] - ref, 1)
+            out["dr_db_mean20"] = round(out["peak_dbfs"] - float(top.mean()), 1)
 
         if ch >= 2 and corr_l > 0 and corr_r > 0:
             out["lr_level_diff_db"] = round(
