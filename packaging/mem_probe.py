@@ -22,10 +22,15 @@ S4 全流程多文件  分析 + 逐个点选 × N 轮：**缓存必须有界**
 S5 换肤          30 次主题切换：QSS/图元重建不得留残余
 S6 清空          点「清空」后应回落到接近 S1
 
---strict 阈值（默认，可用 --slack 放宽）：
+--strict 阈值：
   S2 每次重画 RSS 增长 < 0.6 MB；S2 后 figure.axes 数量与首次一致
-  S4 每轮 RSS 增长 < 12 MB；缓存持有字节 < 128 MB
-  S6 结束 RSS < S1 + 60 MB
+  S3 第 2 轮起每轮增长 < 5 MB（第 1 轮含一次性渲染预热，单列不判）
+  S4/S5 图元数、弹窗数、动画数不增长
+  S7 缓存 < 128 MB；结束 RSS < S1 + 100 MB（一次性预热的口径）
+
+**注意**：S1 必须 `show()` 窗口。画布是"不可见就不画"的（惰性重画），
+不显示窗口的话所有画布停在脏状态、一个图元都不建 —— S2 会变成
+"什么都没画"的假通过（这一版探针真踩过）。
 """
 from __future__ import annotations
 
@@ -238,13 +243,17 @@ def scene_pipeline(app, w, files, rounds):
         # 顺带盯住对象数：内存涨而对象数不涨 = 分配器/渲染缓存；两者一起涨 = 真泄漏
         from PySide6.QtWidgets import QWidget
         widgets.append(len(w.findChildren(QWidget)))
+        # `ax` 可能是 None：画布现在**惰性重画**，瀑布图的 3D 轴是首次
+        # 真正重画时才建的（没显示过就一直没轴）——探针自己也要跟上这条规则
         artists.append(sum(len(cv.ax.lines) + len(cv.ax.collections) + len(cv.ax.texts)
-                           for cv in (w.cv_spec, w.cv_spectro, w.cv_wfall, w.cv_band)))
+                           for cv in (w.cv_spec, w.cv_spectro, w.cv_wfall, w.cv_band)
+                           if getattr(cv, "ax", None) is not None))
     a = rss_mb()
-    return b, a, "缓存 %s/%d 项 ｜ 各轮 Δ %s ｜ 控件 %s ｜ 图元 %s" % (
+    note = "缓存 %s/%d 项 ｜ 各轮 Δ %s ｜ 控件 %s ｜ 图元 %s" % (
         human_bytes(cache_bytes(w)), len(w._cache),
         " ".join("%+.1f" % d for d in per_round),
         "/".join(str(x) for x in widgets), "/".join(str(x) for x in artists))
+    return (b, a, note), per_round
 
 
 def cache_bytes(w) -> int:
@@ -339,6 +348,11 @@ def main(argv=None) -> int:
     print("== S1 建窗口 ==")
     b = rss_mb()
     w = W.MainWindow()
+    # **必须 show()**：画布现在是"不可见就不画"的（惰性重画），
+    # 不显示窗口的话所有画布停在脏状态、一个图元都不建，
+    # S2 之后的"图元/orientation 不累积"就变成了"什么都没画"的假通过。
+    w.resize(1460, 900)
+    w.show()
     app.processEvents()
     rep.add("MainWindow()", b, rss_mb(), "")
     baseline = rss_mb()
@@ -354,7 +368,7 @@ def main(argv=None) -> int:
     per_redraw = (a2 - b2) / max(1, args.cycles)
 
     print("== S3 分析 + 点选 ×%d 轮 ==" % args.rounds)
-    out = scene_pipeline(app, w, files, args.rounds)
+    out, rounds_delta = scene_pipeline(app, w, files, args.rounds)
     rep.add("pipeline %d 文件 ×%d" % (len(files), args.rounds), out[0], out[1], out[2])
     cache_mb, cache_n = cache_bytes(w) / 1048576.0, len(w._cache)
     wfall_axes = None
@@ -397,6 +411,15 @@ def main(argv=None) -> int:
     fails = []
     if per_redraw > 0.6:
         fails.append("每次重画 +%.2f MB（>0.6）→ 图元在累积" % per_redraw)
+    # **判"泄漏"要看"随使用增长"，不是看绝对增量。**
+    # 第 1 轮必然偏大：Qt 的 backing store、matplotlib 的字体/文本布局缓存、
+    # AGG 的像素缓冲都是首次真正渲染时才分配的一次性开销（本机约 30 MB）。
+    # 真正的泄漏表现为**每一轮都涨**——旧版色条 bug 是 +17.9 MB/次重画，
+    # 第一轮就能看出量级不对。
+    tail = rounds_delta[1:] if len(rounds_delta) > 1 else []
+    if tail and max(tail) > 5.0:
+        fails.append("后续轮次仍在涨（%s）→ 疑似随使用增长"
+                     % " ".join("%+.1f" % d for d in tail))
     if axes_after != 2 or axes_final != 2:
         fails.append("频谱图 figure.axes = %d→%d（应为 2：主图 + 1 个 colorbar）"
                      % (axes_after, axes_final))
@@ -406,8 +429,12 @@ def main(argv=None) -> int:
         fails.append("通知残留：动画 %d 个、弹窗 %d 个 → 用完没销毁" % (toast_anim, toast_left))
     if cache_mb > 128:
         fails.append("缓存持有 %.0f MB（>128）" % cache_mb)
-    if final - baseline > 60:
-        fails.append("清理后净增 %.0f MB（>60）" % (final - baseline))
+    # 100 MB 是"一次性预热"的容差，不是泄漏容差：真正渲染过之后，
+    # Qt backing store（4 张 1149×758 的位图）+ matplotlib 字体缓存 +
+    # 各画布的 Agg 像素缓冲合计约 30–70 MB，且**此后不再涨**。
+    if final - baseline > 100:
+        fails.append("清理后净增 %.0f MB（>100，已扣掉一次性预热的口径）"
+                     % (final - baseline))
 
     if fails:
         print("\n**未通过**")
