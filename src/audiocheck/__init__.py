@@ -20,6 +20,6 @@ summarize   批量结果汇总
 __version__ = "1.0.0"
 __all__ = ["analyze", "collect_files", "Thresholds", "ANALYZERS", "register", "Analyzer"]
 
-from .config import Thresholds                      # noqa: E402
-from .core.engine import analyze, collect_files      # noqa: E402
+from .config import Thresholds  # noqa: E402
+from .core.engine import analyze, collect_files  # noqa: E402
 from .core.registry import ANALYZERS, Analyzer, register  # noqa: E402

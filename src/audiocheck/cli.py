@@ -9,8 +9,38 @@ import sys
 from . import __version__
 from .config import Thresholds
 from .core.engine import analyze, collect_files, list_analyzers
+from .core.pipeline import ResultCache, analyze_many
 
 ICON = {"ok": "[OK] ", "warn": "[!]  ", "bad": "[X]  "}
+
+
+def _bar(frac: float, width: int = 28) -> str:
+    n = int(max(0.0, min(1.0, frac)) * width)
+    return "[" + "#" * n + "-" * (width - n) + "]"
+
+
+def doctor() -> int:
+    """环境自检：把"为什么跑不起来"说清楚，而不是抛一堆栈。"""
+    import importlib.util as u
+    print("audiocheck %s 环境自检\n" % __version__)
+    ok = True
+    mods = [("numpy", True), ("scipy", True), ("soundfile", True), ("mutagen", False),
+            ("matplotlib", False), ("PySide6", False)]
+    for m, required in mods:
+        has = u.find_spec(m) is not None
+        mark = "OK  " if has else ("缺失" if required else "可选缺失")
+        if required and not has:
+            ok = False
+        print("  %-12s %-8s %s" % (m, mark, "" if has else "(pip install %s)" % m))
+    try:
+        import soundfile as sf
+        print("\n  libsndfile  %s" % sf.__libsndfile_version__)
+    except Exception:                                      # noqa: BLE001
+        pass
+    import os
+    print("  CPU 核心    %s" % (os.cpu_count() or 1))
+    print("\n结论: %s" % ("可以运行" if ok else "缺少必需依赖"))
+    return 0 if ok else 1
 
 
 def _fmt(v, unit=""):
@@ -67,12 +97,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--only", default=None, help="只跑指定分析器（逗号分隔）")
     p.add_argument("--config", default=None, help="从 JSON 载入自定义阈值")
     p.add_argument("--list-analyzers", action="store_true", help="列出所有已注册分析器")
+    p.add_argument("--jobs", type=int, default=0, help="并行进程数（0=自动，按 CPU 核数）")
+    p.add_argument("--cache", default=None, help="结果缓存文件（跳过已算过的文件）")
+    p.add_argument("--doctor", action="store_true", help="环境自检后退出")
     p.add_argument("--version", action="version", version="audiocheck %s" % __version__)
     return p
 
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+
+    if args.doctor:
+        return doctor()
 
     if args.list_analyzers:
         print("%-14s %-26s %-7s %s" % ("key", "说明", "order", "依赖"))
@@ -94,14 +130,30 @@ def main(argv=None) -> int:
     only = [s.strip() for s in args.only.split(",")] if args.only else None
     print("待检测 %d 个文件\n" % len(files))
 
+    cache = ResultCache(args.cache) if args.cache else None
     rows = []
-    for p in files:
-        try:
-            r = analyze(p, deep=not args.shallow, thresholds=th, only=only)
-        except Exception as e:                                     # noqa: BLE001
-            print("[X]  %s —— 读取失败：%s" % (os.path.basename(p), e))
-            continue
-        rows.append(r)
+    if only:
+        # 只跑指定分析器时逐个执行，便于定位问题
+        for p in files:
+            try:
+                rows.append(analyze(p, deep=not args.shallow, thresholds=th, only=only))
+            except Exception as e:                                 # noqa: BLE001
+                print("[X]  %s —— 读取失败：%s" % (os.path.basename(p), e))
+    else:
+        def on_prog(frac, eta):
+            tail = ("  剩余约 %ds" % int(eta)) if eta else "         "
+            sys.stderr.write("\r  %s %3d%%%s" % (_bar(frac), int(frac * 100), tail))
+            sys.stderr.flush()
+
+        rows = analyze_many(files, deep=not args.shallow, thresholds=th,
+                            jobs=args.jobs, cache=cache,
+                            keep_curve=bool(args.plot), on_progress=on_prog)
+        sys.stderr.write("\r" + " " * 62 + "\r")
+        sys.stderr.flush()
+        if cache is not None:
+            cache.save()
+
+    for r in rows:
         show(r, args.quiet)
         if args.plot:
             _plot(r, args.plot)
@@ -129,6 +181,7 @@ def main(argv=None) -> int:
 
 def _csv(rows, path):
     import csv
+
     from .config import BAND_CN, BANDS
     with open(path, "w", encoding="utf-8-sig", newline="") as f:
         w = csv.writer(f)

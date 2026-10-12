@@ -3,15 +3,14 @@
 
 约定：每个画布都实现 apply_theme(p) —— 换主题时只需重画，不用重建控件。
 """
+import matplotlib
 import numpy as np
 
-import matplotlib
 matplotlib.use("QtAgg")
 import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg  # noqa: E402
 from matplotlib.figure import Figure  # noqa: E402
 from matplotlib.gridspec import GridSpec  # noqa: E402
-
 from PySide6.QtCore import QRectF, Qt  # noqa: E402
 from PySide6.QtGui import QColor, QFont, QPainter, QPen  # noqa: E402
 from PySide6.QtWidgets import QStyle, QStyledItemDelegate  # noqa: E402
@@ -120,8 +119,7 @@ class SpectrumCanvas(BaseCanvas):
         lo = max(top - 95, float(db.min()) - 3)
 
         # 频段分界（与推荐引擎 band_def 一致）
-        for edge, lab in ((60, "60"), (250, "250"), (500, "500"), (2000, "2k"),
-                          (6000, "6k"), (16000, "16k")):
+        for edge in (60, 250, 500, 2000, 6000, 16000):
             if edge < nyq:
                 ax.axvline(edge, color=p["grid"], lw=.8, ls="-", zorder=1)
         ax.axvline(nyq, color=p["text_faint"], lw=1.0, ls=":", zorder=2)
@@ -239,7 +237,7 @@ class BandCanvas(BaseCanvas):
         for rect, v in zip(bars, vals):
             ax.text(rect.get_x() + rect.get_width() / 2, v + max(vals + [1]) * .025,
                     "%.0f%%" % v, ha="center", color=p["text"], fontsize=9.5, fontweight="600")
-        for i, (k, lo, hi) in enumerate(BANDS):
+        for i, (_k, lo, hi) in enumerate(BANDS):
             ax.text(i, -max(vals + [1]) * .085, "%s–%s" % (
                 lo if lo < 1000 else "%dk" % (lo // 1000),
                 hi if hi < 1000 else "%dk" % (hi // 1000)),
@@ -442,7 +440,7 @@ class OverviewCanvas(BaseCanvas):
         self._ax_style(self.axh, "真实截止 kHz", "文件数")
         self.axh.set_title("真实带宽分布", color=p["text_dim"], fontsize=10, pad=8)
         for lv in ("ok", "warn", "bad"):
-            sel = cuts[[i for i, l in enumerate(levels) if l == lv]]
+            sel = cuts[[i for i, lvl in enumerate(levels) if lvl == lv]]
             if len(sel):
                 self.axh.hist(sel, bins=bins, color=p[lv], alpha=.85, zorder=3,
                               label="%s (%d)" % (LEVEL_CN[lv], len(sel)), rwidth=.92)
@@ -454,7 +452,7 @@ class OverviewCanvas(BaseCanvas):
                               edgecolor=p["border_hi"], labelcolor=p["text"])
         leg.get_frame().set_linewidth(.8)
 
-        cnt = {lv: sum(1 for l in levels if l == lv) for lv in ("ok", "warn", "bad")}
+        cnt = {lv: sum(1 for lvl in levels if lvl == lv) for lv in ("ok", "warn", "bad")}
         order = [lv for lv in ("ok", "warn", "bad") if cnt[lv]]
         vals = [cnt[lv] for lv in order]
         cols = [p[lv] for lv in order]

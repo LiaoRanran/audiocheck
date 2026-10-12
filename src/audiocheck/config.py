@@ -36,7 +36,7 @@ class Thresholds:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, d: dict) -> "Thresholds":
+    def from_dict(cls, d: dict) -> Thresholds:
         known = {f.name for f in fields(cls)}
         return cls(**{k: v for k, v in (d or {}).items() if k in known})
 
@@ -45,7 +45,7 @@ class Thresholds:
             json.dump(self.to_dict(), f, ensure_ascii=False, indent=2)
 
     @classmethod
-    def load(cls, path: str) -> "Thresholds":
+    def load(cls, path: str) -> Thresholds:
         if path and os.path.exists(path):
             try:
                 with open(path, encoding="utf-8") as f:

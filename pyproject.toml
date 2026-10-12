@@ -64,7 +64,13 @@ target-version = "py39"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B"]
-ignore = ["E501", "B008"]
+# E501 行长：中文字符宽度与西文不同，强制 100 会造成大量无意义折行
+# B008 函数调用做默认值：Qt 里 setStyleSheet(theme.qss(t)) 之类的惯用法
+# UP031 百分号格式化：本项目刻意统一用 % 而非 f-string，与日志风格一致且更快
+ignore = ["E501", "B008", "UP031", "UP032"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011", "E731"]
 
 [tool.coverage.run]
 source = ["audiocheck"]

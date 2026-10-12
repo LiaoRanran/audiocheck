@@ -1,53 +1,401 @@
-#!/usr/bin/env python3
-"""audiocheck 控件层：自绘仪表 + 可复用的键值表。"""
-import math
+"""界面控件库。
 
-from PySide6.QtCore import QRectF, Qt
+约定：所有控件都从 `theme` 取色与尺寸，不自带硬编码色值；
+需要随主题变化的控件实现 `apply_theme(theme)`。
+"""
+from __future__ import annotations
+
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QConicalGradient, QFont, QPainter, QPen
-from PySide6.QtWidgets import (QAbstractItemView, QHeaderView, QTableWidget, QTableWidgetItem,
-                               QWidget)
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QDialog,
+    QFrame,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QPushButton,
+    QSizePolicy,
+    QTableWidget,
+    QTableWidgetItem,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from . import theme as T
 
+# ------------------------------------------------------------------ 数值格式化
+
+def fmt_num(v, unit: str = "", digits: int = 1, signed: bool = False) -> str:
+    if v is None:
+        return "—"
+    if isinstance(v, bool):
+        return "是" if v else "否"
+    if isinstance(v, (int, float)):
+        spec = "%+.*f" if signed else "%.*f"
+        return (spec % (digits, float(v))) + unit
+    return "%s%s" % (v, unit)
+
+
+def human_khz(hz) -> str:
+    if hz is None:
+        return "—"
+    hz = float(hz)
+    return "%.1f Hz" % hz if hz < 1000 else "%.2f kHz" % (hz / 1000)
+
+
+def ratio_pct(x) -> str:
+    try:
+        return "%.0f%%" % (float(x) * 100)
+    except (TypeError, ValueError):
+        return ""
+
+
+# ------------------------------------------------------------------ 导航
+
+class NavButton(QToolButton):
+    """侧边栏导航项：图标 + 文字，选中时高亮。"""
+
+    def __init__(self, key: str, label: str, icon_name: str, theme: T.Theme):
+        super().__init__()
+        self.key = key
+        self._label = label
+        self._icon_name = icon_name
+        self.setObjectName("NavItem")
+        self.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setFixedHeight(36)
+        self.setCursor(Qt.PointingHandCursor)
+        self.apply_theme(theme)
+
+    def apply_theme(self, t: T.Theme) -> None:
+        self._theme = t
+        active = self.property("active") is True
+        col = t.p.primary_hi if active else t.p.text_dim
+        self.setIcon(T.icon(self._icon_name, col, 17))
+        self.setText(self._label)
+        self.setProperty("active", active)
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def set_active(self, on: bool) -> None:
+        self.setProperty("active", bool(on))
+        self.apply_theme(self._theme)
+
+
+class SideBar(QFrame):
+    """左侧导航：品牌区 + 导航列表 + 底部操作。"""
+
+    navigate = Signal(str)
+
+    def __init__(self, theme: T.Theme):
+        super().__init__()
+        self.setObjectName("SideBar")
+        self.setFixedWidth(196)
+        self._theme = theme
+        self._items: dict[str, NavButton] = {}
+
+        v = QVBoxLayout(self)
+        v.setContentsMargins(12, 14, 12, 12)
+        v.setSpacing(4)
+
+        brand = QHBoxLayout()
+        brand.setSpacing(8)
+        self.brand_icon = QLabel()
+        self.brand_icon.setFixedSize(22, 22)
+        brand.addWidget(self.brand_icon)
+        box = QVBoxLayout()
+        box.setSpacing(0)
+        self.brand_name = QLabel("audiocheck")
+        self.brand_name.setObjectName("BrandName")
+        self.brand_sub = QLabel("音源检测")
+        self.brand_sub.setObjectName("BrandSub")
+        box.addWidget(self.brand_name)
+        box.addWidget(self.brand_sub)
+        brand.addLayout(box, 1)
+        v.addLayout(brand)
+        v.addSpacing(14)
+
+        self.nav_host = QVBoxLayout()
+        self.nav_host.setSpacing(2)
+        v.addLayout(self.nav_host)
+        v.addStretch(1)
+
+        self.footer = QVBoxLayout()
+        self.footer.setSpacing(2)
+        v.addLayout(self.footer)
+
+    def add_section(self, text: str) -> None:
+        lab = QLabel(text.upper())
+        lab.setObjectName("NavSection")
+        self.nav_host.addWidget(lab)
+
+    def add_item(self, key: str, label: str, icon_name: str) -> NavButton:
+        b = NavButton(key, label, icon_name, self._theme)
+        b.clicked.connect(lambda: self.navigate.emit(key))
+        self._items[key] = b
+        self.nav_host.addWidget(b)
+        return b
+
+    def add_footer_item(self, key: str, label: str, icon_name: str) -> NavButton:
+        b = NavButton(key, label, icon_name, self._theme)
+        b.clicked.connect(lambda: self.navigate.emit(key))
+        self._items[key] = b
+        self.footer.addWidget(b)
+        return b
+
+    def set_active(self, key: str) -> None:
+        for k, b in self._items.items():
+            b.set_active(k == key)
+
+    def apply_theme(self, t: T.Theme) -> None:
+        self._theme = t
+        self.brand_icon.setPixmap(T.make_pixmap("wave", t.p.primary, 22, 2.0))
+        for b in self._items.values():
+            b.apply_theme(t)
+
+
+# ------------------------------------------------------------------ 命令面板
+
+class CommandPalette(QDialog):
+    """Ctrl+K 命令面板：模糊匹配，键盘直达任意操作。"""
+
+    def __init__(self, parent: QWidget, commands, theme: T.Theme):
+        super().__init__(parent, Qt.FramelessWindowHint | Qt.Popup)
+        self.setObjectName("Palette")
+        self._commands = list(commands)
+        self._theme = theme
+        self.setFixedWidth(520)
+        self.setMaximumHeight(420)
+
+        v = QVBoxLayout(self)
+        v.setContentsMargins(10, 10, 10, 10)
+        v.setSpacing(8)
+        self.input = QLineEdit()
+        self.input.setPlaceholderText("输入命令…（↑↓ 选择，Enter 执行，Esc 关闭）")
+        self.input.textChanged.connect(self._filter)
+        v.addWidget(self.input)
+        self.list = QListWidget()
+        self.list.setObjectName("PaletteList")
+        self.list.itemActivated.connect(self._run)
+        v.addWidget(self.list, 1)
+        self._filter("")
+        self.input.setFocus()
+
+    def _filter(self, text: str) -> None:
+        q = text.strip().lower()
+        self.list.clear()
+        for label, hint, fn in self._commands:
+            hay = (label + " " + (hint or "") + " ").lower()
+            if not q or self._fuzzy(q, hay):
+                it = QListWidgetItem("%s    %s" % (label, hint or ""))
+                it.setData(Qt.UserRole, fn)
+                self.list.addItem(it)
+        if self.list.count():
+            self.list.setCurrentRow(0)
+
+    @staticmethod
+    def _fuzzy(q: str, hay: str) -> bool:
+        """子序列匹配：'exht' 能命中 'Export HTML'。"""
+        i = 0
+        for ch in hay:
+            if i < len(q) and ch == q[i]:
+                i += 1
+        return i == len(q)
+
+    def _run(self, item: QListWidgetItem) -> None:
+        fn = item.data(Qt.UserRole)
+        self.accept()
+        if callable(fn):
+            fn()
+
+    def keyPressEvent(self, e):                         # noqa: N802
+        if e.key() in (Qt.Key_Down,):
+            self.list.setCurrentRow(min(self.list.currentRow() + 1, self.list.count() - 1))
+        elif e.key() in (Qt.Key_Up,):
+            self.list.setCurrentRow(max(self.list.currentRow() - 1, 0))
+        elif e.key() in (Qt.Key_Return, Qt.Key_Enter):
+            if self.list.currentItem():
+                self._run(self.list.currentItem())
+        elif e.key() == Qt.Key_Escape:
+            self.reject()
+        else:
+            super().keyPressEvent(e)
+
+
+# ------------------------------------------------------------------ Toast
+
+class Toast(QFrame):
+    def __init__(self, text: str, kind: str, theme: T.Theme):
+        super().__init__()
+        self.setObjectName("Toast")
+        col = {"info": theme.p.info, "ok": theme.p.success,
+               "warn": theme.p.warning, "bad": theme.p.danger}.get(kind, theme.p.info)
+        h = QHBoxLayout(self)
+        h.setContentsMargins(14, 10, 14, 10)
+        dot = QLabel()
+        pm = T.make_pixmap("shield", col, 16, 1.8)
+        dot.setPixmap(pm)
+        h.addWidget(dot)
+        lab = QLabel(text)
+        lab.setWordWrap(True)
+        h.addWidget(lab, 1)
+        self.setStyleSheet(
+            "#Toast{background:%s;border:1px solid %s;border-radius:%dpx}"
+            % (theme.p.surface_raised, theme.p.border_hi, theme.radius.lg))
+
+
+class ToastHost(QWidget):
+    """右下角浮层通知。鼠标穿透，不挡交互。"""
+
+    def __init__(self, parent: QWidget):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._lay = QVBoxLayout(self)
+        self._lay.setContentsMargins(0, 0, 18, 18)
+        self._lay.setSpacing(8)
+        self._lay.addStretch(1)
+        self._theme = T.DARK
+
+    def apply_theme(self, t: T.Theme) -> None:
+        self._theme = t
+
+    def notify(self, text: str, kind: str = "info", ms: int = 2800) -> None:
+        t = Toast(text, kind, self._theme)
+        t.setMaximumWidth(340)
+        self._lay.insertWidget(self._lay.count() - 1, t)
+        anim = QPropertyAnimation(t, b"windowOpacity", self)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setDuration(160)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.start()
+        QTimer.singleShot(ms, lambda: self._dismiss(t))
+
+    def _dismiss(self, t: Toast) -> None:
+        anim = QPropertyAnimation(t, b"windowOpacity", self)
+        anim.setStartValue(1.0)
+        anim.setEndValue(0.0)
+        anim.setDuration(180)
+        anim.finished.connect(lambda: (self._lay.removeWidget(t), t.deleteLater()))
+        anim.start()
+
+    def sync_geometry(self) -> None:
+        p = self.parentWidget()
+        if p is not None:
+            self.setGeometry(p.rect())
+
+
+# ------------------------------------------------------------------ 空状态
+
+class EmptyState(QWidget):
+    """没有数据时的占位：图标 + 说明 + 主操作（不给用户一个"死界面"）。"""
+
+    def __init__(self, theme: T.Theme, icon_name: str = "folder", title: str = "",
+                 hint: str = "", action_text: str = "", on_action=None):
+        super().__init__()
+        v = QVBoxLayout(self)
+        v.setSpacing(10)
+        v.setAlignment(Qt.AlignCenter)
+        self.icon = QLabel()
+        self.icon.setAlignment(Qt.AlignCenter)
+        v.addWidget(self.icon)
+        self.title = QLabel(title)
+        self.title.setAlignment(Qt.AlignCenter)
+        self.title.setStyleSheet("font-size:%dpx;font-weight:600" % int(theme.type.body_md))
+        v.addWidget(self.title)
+        self.hint = QLabel(hint)
+        self.hint.setAlignment(Qt.AlignCenter)
+        self.hint.setWordWrap(True)
+        self.hint.setObjectName("Caption")
+        v.addWidget(self.hint)
+        if action_text:
+            btn = QPushButton(action_text)
+            btn.setObjectName("Primary")
+            btn.setFixedWidth(180)
+            if on_action:
+                btn.clicked.connect(on_action)
+            v.addWidget(btn, 0, Qt.AlignCenter)
+        self.apply_theme(theme, icon_name)
+
+    def apply_theme(self, t: T.Theme, icon_name: str = "folder") -> None:
+        self.icon.setPixmap(T.make_pixmap(icon_name, t.p.text_faint, 48, 1.4))
+        self.title.setStyleSheet("font-size:%dpx;font-weight:600;color:%s"
+                                 % (int(t.type.body_md), t.p.text))
+        self.hint.setStyleSheet("color:%s;font-size:%dpx" % (t.p.text_faint, int(t.type.caption)))
+
+
+# ------------------------------------------------------------------ 指标卡 / 仪表
+
+class StatCard(QFrame):
+    """紧凑指标卡：字段名 + 数值 + 单位。数值过长时省略，完整值给 tooltip。"""
+
+    def __init__(self, theme: T.Theme):
+        super().__init__()
+        self.setObjectName("Card")
+        v = QVBoxLayout(self)
+        m = theme.space
+        v.setContentsMargins(m.md, m.sm, m.md, m.sm)
+        v.setSpacing(1)
+        self.k = QLabel("—")
+        self.v = QLabel("—")
+        self.k.setObjectName("Caption")
+        self.v.setObjectName("Hero")
+        v.addWidget(self.k)
+        v.addWidget(self.v)
+        self.apply_theme(theme)
+
+    def set(self, key: str, value: str, tooltip: str = "") -> None:
+        self.k.setText(key)
+        self.v.setText(value)
+        self.setToolTip(tooltip or value)
+
+    def apply_theme(self, t: T.Theme) -> None:
+        self.k.setStyleSheet("color:%s;font-size:%dpx" % (t.p.text_faint, int(t.type.caption)))
+        self.v.setStyleSheet("color:%s;font-size:%dpx;font-weight:600"
+                             % (t.p.text, int(t.type.body_md)))
+
 
 class Gauge(QWidget):
-    """半环仪表：显示「真实截止 / 奈奎斯特」占比，颜色随结论变化。"""
+    """270° 环形仪表：显示「真实截止 / 奈奎斯特」占比，颜色随结论变化。"""
 
-    def __init__(self, size=124, parent=None):
-        super().__init__(parent)
+    def __init__(self, size: int = 128, theme: T.Theme | None = None):
+        super().__init__()
         self.setFixedSize(size, size)
-        self.p = T.DARK
-        self.value = None          # 0..1
-        self.level = None
+        self.t = theme or T.DARK
+        self.value: float | None = None
+        self.level: str | None = None
         self.main = "—"
         self.sub = "真实截止"
         self.caption = ""
 
-    def set_data(self, ratio, level, main, sub, caption=""):
-        self.value = ratio
-        self.level = level
+    def set_data(self, ratio, level: str | None, main: str, sub: str, caption: str = "") -> None:
+        self.value, self.level = ratio, level
         self.main, self.sub, self.caption = main, sub, caption
         self.update()
 
-    def set_theme(self, p):
-        self.p = p
+    def apply_theme(self, t: T.Theme) -> None:
+        self.t = t
         self.update()
 
-    def paintEvent(self, _):
-        p = self.p
-        pr = QPainter(self)
+    def paintEvent(self, _):                           # noqa: N802
+        p, pr = self.t.p, QPainter(self)
         pr.setRenderHint(QPainter.Antialiasing, True)
         w, h = self.width(), self.height()
         thick = 9.0
         pad = thick / 2 + 3
         rect = QRectF(pad, pad, w - 2 * pad, h - 2 * pad)
-        start, span = 225.0, -270.0                      # 从左上开始，逆时针 270°
+        start, span = 225.0, -270.0
 
-        pr.setPen(QPen(QColor(p["surface3"]), thick, Qt.SolidLine, Qt.RoundCap))
+        pr.setPen(QPen(QColor(p.surface_hi), thick, Qt.SolidLine, Qt.RoundCap))
         pr.drawArc(rect, int(start * 16), int(span * 16))
 
         if self.value is not None:
-            col = QColor(p.get(self.level or "accent", p["accent"]))
+            col = QColor(p.level_color(self.level or "info"))
             grad = QConicalGradient(rect.center(), 225)
             grad.setColorAt(0.0, col.lighter(125))
             grad.setColorAt(0.5, col)
@@ -56,134 +404,80 @@ class Gauge(QWidget):
             frac = max(0.0, min(1.0, float(self.value)))
             pr.drawArc(rect, int(start * 16), int(span * frac * 16))
 
-        pr.setPen(QColor(p["text"]))
         f = QFont(self.font())
-        f.setPointSizeF(15.5)
+        f.setPointSizeF(self.t.type.heading - 4.5)
         f.setBold(True)
         pr.setFont(f)
+        pr.setPen(QColor(p.text))
         pr.drawText(QRectF(0, h * 0.30, w, h * 0.30), Qt.AlignCenter, self.main)
-
-        f.setPointSizeF(8.4)
+        f.setPointSizeF(self.t.type.caption)
         f.setBold(False)
         pr.setFont(f)
-        pr.setPen(QColor(p["text_faint"]))
+        pr.setPen(QColor(p.text_faint))
         pr.drawText(QRectF(0, h * 0.55, w, h * 0.18), Qt.AlignCenter, self.sub)
-
         if self.caption:
-            f.setPointSizeF(7.8)
-            pr.setFont(f)
-            pr.setPen(QColor(p["text_dim"]))
-            pr.drawText(QRectF(0, h * 0.70, w, h * 0.20), Qt.AlignCenter, self.caption)
+            pr.drawText(QRectF(0, h * 0.71, w, h * 0.20), Qt.AlignCenter, self.caption)
         pr.end()
 
 
-class BarMeter(QWidget):
-    """横向电平条：用于响度/真峰值这类「对照满刻度」的量。"""
-
-    def __init__(self, height=22, parent=None):
-        super().__init__(parent)
-        self.setFixedHeight(height)
-        self.p = T.DARK
-        self.value = None
-        self.lo, self.hi = -30.0, 5.0
-        self.label = ""
-
-    def set_data(self, value, lo, hi, label=""):
-        self.value, self.lo, self.hi, self.label = value, lo, hi, label
-        self.update()
-
-    def set_theme(self, p):
-        self.p = p
-        self.update()
-
-    def paintEvent(self, _):
-        p = self.p
-        pr = QPainter(self)
-        pr.setRenderHint(QPainter.Antialiasing, True)
-        w, h = self.width(), self.height()
-        r = QRectF(0, h / 2 - 4, w, 8)
-        pr.setPen(Qt.NoPen)
-        pr.setBrush(QColor(p["surface3"]))
-        pr.drawRoundedRect(r, 4, 4)
-        if self.value is None:
-            pr.end()
-            return
-        frac = max(0.0, min(1.0, (self.value - self.lo) / (self.hi - self.lo)))
-        col = QColor(p["ok"] if self.value < -1 else (p["warn"] if self.value <= 0 else p["bad"]))
-        pr.setBrush(col)
-        pr.drawRoundedRect(QRectF(0, h / 2 - 4, max(6.0, w * frac), 8), 4, 4)
-        f = QFont(self.font())
-        f.setPointSizeF(8.0)
-        pr.setFont(f)
-        pr.setPen(QColor(p["text_faint"]))
-        pr.drawText(QRectF(2, 1, w, h / 2 - 3), Qt.AlignVCenter | Qt.AlignLeft, self.label)
-        pr.end()
-
+# ------------------------------------------------------------------ 键值表
 
 class KVTable(QTableWidget):
-    """两列键值表：只读、可选中复制、带斑马纹与悬浮提示。"""
+    """两列键值表：只读、可选中复制、斑马纹、悬浮提示。"""
 
-    def __init__(self, parent=None):
-        super().__init__(0, 2, parent)
-        self.setHorizontalHeaderLabels(["字段", "值"])
+    def __init__(self, theme: T.Theme, headers=("字段", "值")):
+        super().__init__(0, 2)
+        self.setHorizontalHeaderLabels(list(headers))
         self.verticalHeader().setVisible(False)
         self.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.setAlternatingRowColors(True)
         self.setShowGrid(False)
         self.setWordWrap(False)
-        h = self.horizontalHeader()
-        h.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        h.setSectionResizeMode(1, QHeaderView.Stretch)
-        h.setHighlightSections(False)
+        hh = self.horizontalHeader()
+        hh.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(1, QHeaderView.Stretch)
+        hh.setHighlightSections(False)
         self.verticalHeader().setDefaultSectionSize(27)
-        self._p = T.DARK
+        self._t = theme
 
-    def set_theme(self, p):
-        self._p = p
+    def apply_theme(self, t: T.Theme) -> None:
+        self._t = t
 
-    def set_rows(self, rows, mono_keys=()):
+    def set_rows(self, rows, mono_keys=()) -> None:
         self.setRowCount(0)
         for k, v in rows:
             i = self.rowCount()
             self.insertRow(i)
             a = QTableWidgetItem(str(k))
-            a.setForeground(QColor(self._p["text_dim"]))
             b = QTableWidgetItem(str(v))
+            b.setToolTip(str(v))
             if str(k) in mono_keys:
                 f = QFont("Consolas")
                 f.setPointSizeF(9.0)
                 b.setFont(f)
-            b.setToolTip(str(v))
             self.setItem(i, 0, a)
             self.setItem(i, 1, b)
 
-    def fit_rows(self, rows):
-        """行数少时把高度收紧，避免大片空白。"""
-        self.set_rows(rows)
-        h = self.verticalHeader().defaultSectionSize() * max(1, len(rows)) + 30
-        self.setMinimumHeight(min(h, 520))
 
+# ------------------------------------------------------------------ 徽标
 
-def fmt_num(v, unit="", digits=1, signed=False):
-    if v is None:
-        return "—"
-    try:
-        s = ("%+.*f" if signed else "%.*f") % (digits, float(v))
-    except (TypeError, ValueError):
-        return str(v)
-    return "%s%s" % (s, unit)
+class Badge(QLabel):
+    """结论徽标：胶囊底 + 语义色文字。"""
 
+    def __init__(self, text: str, level: str, theme: T.Theme):
+        super().__init__(text)
+        self._level = level
+        self.apply_theme(theme)
 
-def ratio_caption(x):
-    try:
-        return "%.0f%%" % (float(x) * 100)
-    except (TypeError, ValueError):
-        return ""
+    def apply_theme(self, t: T.Theme) -> None:
+        p = t.p
+        self.setStyleSheet(
+            "background:%s;color:%s;border:1px solid %s;border-radius:%dpx;"
+            "padding:3px 10px;font-weight:600;font-size:%dpx"
+            % (p.level_bg(self._level), p.level_color(self._level),
+               p.level_bd(self._level), t.radius.pill, int(t.type.caption)))
 
-
-def human_khz(hz):
-    if hz is None:
-        return "—"
-    hz = float(hz)
-    return "%.1f Hz" % hz if hz < 1000 else "%.2f kHz" % (hz / 1000)
+    def set_level(self, level: str, theme: T.Theme) -> None:
+        self._level = level
+        self.apply_theme(theme)

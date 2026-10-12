@@ -9,7 +9,7 @@ import os
 import sys
 from collections import defaultdict
 
-from .config import BAND_CN, BANDS
+from .config import BANDS
 
 BAND_ORDER = [k[0] for k in BANDS]
 

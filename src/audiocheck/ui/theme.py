@@ -1,197 +1,329 @@
-#!/usr/bin/env python3
-"""audiocheck 主题层：配色系统、QSS 生成、矢量图标（全部手绘，不依赖外部资源）。
+"""设计系统：令牌 → QSS。
 
-设计约束：
-  · 所有颜色只从这里取，避免散落的硬编码色值导致主题切换时漏改
-  · 图标用 QPainterPath 矢量绘制，2x 渲染 + devicePixelRatio，任意 DPI 都锐利
+为什么要有令牌：手写 QSS 时颜色/间距会散落各处，改一处要全局搜。
+这里把所有视觉参数集中成一组令牌，QSS 由令牌生成，主题切换只需换一组值。
+
+令牌命名遵循「语义 > 外观」：
+  surface / border / text_primary 而不是 #1b202b，
+  这样加新组件时不需要发明新的色号。
 """
+from __future__ import annotations
+
 import os
+from dataclasses import dataclass, field
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import (QColor, QFontDatabase, QIcon, QPainter, QPainterPath, QPen,
-                           QPixmap, QPolygonF)
+from PySide6.QtGui import (
+    QColor,
+    QFontDatabase,
+    QIcon,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+    QPolygonF,
+)
 
-# --------------------------------------------------------------------- 配色
+# ------------------------------------------------------------------ 尺寸令牌（4px 栅格）
 
-DARK = {
-    "name": "dark",
-    "bg": "#0d0f14",
-    "surface": "#151922",
-    "surface2": "#1b202b",
-    "surface3": "#212836",
-    "border": "#252c39",
-    "border_hi": "#333c4d",
-    "text": "#e8ecf3",
-    "text_dim": "#8b94a8",
-    "text_faint": "#5a6377",
-    "accent": "#3d7dff",
-    "accent_hi": "#5a92ff",
-    "accent_soft": "#16243d",
-    "ok": "#35c46a",
-    "warn": "#e0a92e",
-    "bad": "#f0524a",
-    "ok_bg": "#0b1f13",
-    "warn_bg": "#221a09",
-    "bad_bg": "#281110",
-    "ok_border": "#1d5a33",
-    "warn_border": "#5e4818",
-    "bad_border": "#6b2521",
-    "grid": "#232a37",
-    "plot_bg": "#0b0e13",
-    "selection": "#1a2740",
-}
 
-LIGHT = {
-    "name": "light",
-    "bg": "#f2f4f9",
-    "surface": "#ffffff",
-    "surface2": "#f7f9fc",
-    "surface3": "#eef1f7",
-    "border": "#dde3ee",
-    "border_hi": "#c4cddd",
-    "text": "#161c2b",
-    "text_dim": "#5c6579",
-    "text_faint": "#8a94a8",
-    "accent": "#2563eb",
-    "accent_hi": "#1d4fd8",
-    "accent_soft": "#e3ecff",
-    "ok": "#15a34a",
-    "warn": "#c07d05",
-    "bad": "#dc2626",
-    "ok_bg": "#e9f9ef",
-    "warn_bg": "#fdf4e3",
-    "bad_bg": "#fdeceb",
-    "ok_border": "#b6e6c8",
-    "warn_border": "#f0dcae",
-    "bad_border": "#f5c6c2",
-    "grid": "#e6ebf3",
-    "plot_bg": "#ffffff",
-    "selection": "#dbe7ff",
-}
+@dataclass(frozen=True)
+class Space:
+    xs: int = 4
+    sm: int = 8
+    md: int = 12
+    lg: int = 16
+    xl: int = 24
+    xxl: int = 32
 
+
+@dataclass(frozen=True)
+class Radius:
+    sm: int = 4
+    md: int = 6
+    lg: int = 8
+    xl: int = 12
+    pill: int = 999
+
+
+@dataclass(frozen=True)
+class Type:
+    """字阶。caption 到 display 共 8 级，覆盖全部场景，不允许出现第 9 种字号。"""
+    micro: float = 10.0      # 角标 / 单位
+    caption: float = 11.0    # 字段标签
+    body_sm: float = 12.0    # 表格 / 次要正文
+    body: float = 13.0       # 正文
+    body_md: float = 14.0    # 小节标题
+    title: float = 16.0      # 卡片标题
+    heading: float = 20.0    # 页标题
+    display: float = 27.0    # Hero 数字
+
+
+@dataclass(frozen=True)
+class Motion:
+    fast: int = 120          # 悬停
+    base: int = 200          # 展开/切换
+    slow: int = 320          # 抽屉
+
+
+@dataclass(frozen=True)
+class Palette:
+    """语义化配色。每一项都注明用途，新增组件时按用途选，不要自选色号。"""
+    name: str = "dark"
+
+    # 背景层级：bg 最低，surface_raised 最高（浮层）
+    bg: str = "#0b0d12"
+    surface: str = "#12151c"
+    surface_hi: str = "#171b24"
+    surface_raised: str = "#1d222d"
+
+    # 描边：默认 / 悬停 / 聚焦
+    border: str = "#222834"
+    border_hi: str = "#2e3644"
+    border_focus: str = "#3d7dff"
+
+    # 文本：主 / 次 / 弱 / 禁用
+    text: str = "#e8ecf3"
+    text_dim: str = "#98a2b3"
+    text_faint: str = "#626c80"
+    text_disabled: str = "#454e5e"
+
+    # 语义色
+    primary: str = "#3d7dff"
+    primary_hi: str = "#5a92ff"
+    primary_soft: str = "#16243d"
+    success: str = "#35c46a"
+    warning: str = "#e0a92e"
+    danger: str = "#f0524a"
+    info: str = "#38bdf8"
+
+    # 语义色的背景态（用于徽标/胶囊底）
+    success_bg: str = "#0c2015"
+    warning_bg: str = "#221a09"
+    danger_bg: str = "#281110"
+    info_bg: str = "#0b1e2a"
+    success_bd: str = "#1d5a33"
+    warning_bd: str = "#5e4818"
+    danger_bd: str = "#6b2521"
+    info_bd: str = "#12506a"
+
+    # 选中 / 悬停叠加
+    selection: str = "#1a2740"
+    hover: str = "#1a1f29"
+
+    # 图表
+    grid: str = "#1e2430"
+    plot_bg: str = "#0d1016"
+
+    # 阴影（Qt 不直接支持 box-shadow，用于自绘与浮层描边模拟）
+    shadow: str = "rgba(0,0,0,.45)"
+
+    def level_color(self, level: str) -> str:
+        return {"ok": self.success, "warn": self.warning, "bad": self.danger}.get(
+            level, self.text_dim)
+
+    def level_bg(self, level: str) -> str:
+        return {"ok": self.success_bg, "warn": self.warning_bg,
+                "bad": self.danger_bg}.get(level, self.surface_hi)
+
+    def level_bd(self, level: str) -> str:
+        return {"ok": self.success_bd, "warn": self.warning_bd,
+                "bad": self.danger_bd}.get(level, self.border_hi)
+
+
+def plot_palette(p: Palette) -> dict:
+    """图表层（matplotlib）用的字典式调色适配。
+
+    画布代码历史上按旧键名（surface2 / accent / ok / warn_border…）取值。
+    与其改动画布，不如在这里做一次**显式**键名映射——映射表集中可见，
+    将来统一画布命名后删掉本函数即可。
+    """
+    return {
+        "bg": p.bg, "surface": p.surface, "surface2": p.surface_hi, "surface3": p.surface_raised,
+        "border": p.border, "border_hi": p.border_hi,
+        "text": p.text, "text_dim": p.text_dim, "text_faint": p.text_faint,
+        "accent": p.primary, "accent_hi": p.primary_hi, "accent_soft": p.primary_soft,
+        "ok": p.success, "warn": p.warning, "bad": p.danger,
+        "ok_bg": p.success_bg, "warn_bg": p.warning_bg, "bad_bg": p.danger_bg,
+        "ok_border": p.success_bd, "warn_border": p.warning_bd, "bad_border": p.danger_bd,
+        "grid": p.grid, "plot_bg": p.plot_bg, "selection": p.selection,
+    }
+
+
+@dataclass(frozen=True)
+class Theme:
+    name: str
+    p: Palette
+    space: Space = field(default_factory=Space)
+    radius: Radius = field(default_factory=Radius)
+    type: Type = field(default_factory=Type)
+    motion: Motion = field(default_factory=Motion)
+    font_family: str = "Microsoft YaHei UI"
+
+    @property
+    def font(self) -> str:
+        return '"%s","Microsoft YaHei","Segoe UI",sans-serif' % self.font_family
+
+
+DARK_P = Palette()
+LIGHT_P = Palette(
+    name="light",
+    bg="#f3f5f9", surface="#ffffff", surface_hi="#f7f9fc", surface_raised="#ffffff",
+    border="#e0e5ee", border_hi="#c8d0de", border_focus="#2563eb",
+    text="#141a26", text_dim="#5b6478", text_faint="#8a94a8", text_disabled="#b2bac8",
+    primary="#2563eb", primary_hi="#1d4fd8", primary_soft="#e3ecff",
+    success="#15a34a", warning="#b97a04", danger="#dc2626", info="#0284c7",
+    success_bg="#e7f8ee", warning_bg="#fdf4e3", danger_bg="#fdeceb", info_bg="#e5f4fd",
+    success_bd="#a9e3c2", warning_bd="#f0dcae", danger_bd="#f5c6c2", info_bd="#a8d8f0",
+    selection="#dbe7ff", hover="#eef1f7",
+    grid="#e8ecf3", plot_bg="#ffffff", shadow="rgba(15,23,42,.12)",
+)
+
+DARK = Theme("dark", DARK_P)
+LIGHT = Theme("light", LIGHT_P)
 THEMES = {"dark": DARK, "light": LIGHT}
 
-LEVEL_KEY = {"ok": "ok", "warn": "warn", "bad": "bad"}
 LEVEL_CN = {"ok": "合格", "warn": "有疑", "bad": "不达标"}
 LEVEL_COLOR_KEY = {"ok": "ok", "warn": "warn", "bad": "bad"}
 
 
-def qss(p):
-    """由配色字典生成完整 QSS。"""
+# ------------------------------------------------------------------ QSS 生成
+
+def qss(t: Theme) -> str:
+    p, sp, ty = t.p, t.space, t.type
     return """
+/* ===== 基础 ===== */
 * {{ outline: 0; }}
-QWidget {{ background:{bg}; color:{text}; font-size:13px;
-           font-family:"Microsoft YaHei UI","Microsoft YaHei","Segoe UI",sans-serif; }}
+QWidget {{ background:{bg}; color:{text}; font-size:{body}px; font-family:{font}; }}
 QMainWindow, QDialog {{ background:{bg}; }}
-QToolTip {{ background:{surface3}; color:{text}; border:1px solid {border_hi};
-            padding:5px 8px; border-radius:6px; }}
+QToolTip {{ background:{surface_raised}; color:{text}; border:1px solid {border_hi};
+            padding:{xs}px {sm}px; border-radius:{md}px; }}
 
-/* ---------- 顶栏 ---------- */
-#HeaderBar {{ background:{surface}; border-bottom:1px solid {border}; }}
-#AppTitle {{ font-size:15px; font-weight:700; letter-spacing:.3px; }}
-#AppSub {{ color:{text_faint}; font-size:11.5px; }}
-#HeaderMeta {{ color:{text_dim}; font-size:11.5px; }}
+/* ===== 标题栏（无边框窗口自绘） ===== */
+#TitleBar {{ background:{surface}; border-bottom:1px solid {border}; }}
+#TitleText {{ font-size:{body_sm}px; color:{text_dim}; }}
+#WinBtn {{ background:transparent; border:0; border-radius:{md}px; }}
+#WinBtn:hover {{ background:{hover}; }}
+#WinBtn#Close:hover {{ background:{danger}; }}
+#WinBtn#Close:hover {{ color:#fff; }}
 
-/* ---------- 工具条 ---------- */
-#Toolbar {{ background:{surface}; border-bottom:1px solid {border}; }}
-#Toolbar QToolButton {{ background:transparent; border:1px solid transparent; border-radius:7px;
-                        padding:6px 11px; color:{text}; }}
-#Toolbar QToolButton:hover {{ background:{surface3}; border-color:{border_hi}; }}
-#Toolbar QToolButton:pressed {{ background:{surface2}; }}
-#Toolbar QToolButton:disabled {{ color:{text_faint}; }}
-#Toolbar QToolButton#Primary {{ background:{accent}; border-color:{accent}; color:#fff; font-weight:600; }}
-#Toolbar QToolButton#Primary:hover {{ background:{accent_hi}; border-color:{accent_hi}; }}
-#Toolbar QToolButton#Primary:disabled {{ background:{surface3}; border-color:{border};
-                                         color:{text_faint}; }}
-QFrame#Sep {{ background:{border}; max-width:1px; }}
+/* ===== 侧边栏 ===== */
+#SideBar {{ background:{surface}; border-right:1px solid {border}; }}
+#BrandName {{ font-size:{body_md}px; font-weight:700; color:{text}; }}
+#BrandSub {{ font-size:{micro}px; color:{text_faint}; }}
+#NavItem {{ background:transparent; border:0; border-radius:{lg}px;
+            padding:{sm}px {md}px; color:{text_dim}; text-align:left; font-size:{body}px; }}
+#NavItem:hover {{ background:{hover}; color:{text}; }}
+#NavItem[active="true"] {{ background:{primary_soft}; color:{primary_hi}; font-weight:600; }}
+#NavSection {{ color:{text_faint}; font-size:{micro}px; font-weight:600; padding:{md}px {md}px {xs}px; }}
 
-/* ---------- 输入 ---------- */
-QLineEdit, QComboBox, QSpinBox {{ background:{surface2}; border:1px solid {border};
-    border-radius:7px; padding:5px 9px; selection-background-color:{accent}; color:{text}; }}
-QLineEdit:focus, QComboBox:focus, QSpinBox:focus {{ border-color:{accent}; }}
-QComboBox::drop-down {{ border:0; width:20px; }}
-QComboBox QAbstractItemView {{ background:{surface2}; border:1px solid {border_hi};
-    selection-background-color:{accent}; color:{text}; padding:3px; }}
-QCheckBox {{ spacing:7px; }}
-QCheckBox::indicator {{ width:15px; height:15px; border-radius:4px;
-    border:1px solid {border_hi}; background:{surface2}; }}
-QCheckBox::indicator:checked {{ background:{accent}; border-color:{accent}; }}
+/* ===== 卡片 / 分区 ===== */
+QFrame#Card, QWidget#Card {{ background:{surface}; border:1px solid {border};
+                             border-radius:{xl}px; }}
+QLabel#SectionTitle {{ color:{text_dim}; font-size:{caption}px; font-weight:600;
+                       letter-spacing:.5px; }}
+QLabel#Hero {{ font-size:{display}px; font-weight:700; color:{text}; }}
+QLabel#HeroUnit {{ color:{text_faint}; font-size:{caption}px; }}
+QLabel#Caption {{ color:{text_faint}; font-size:{caption}px; }}
 
-/* ---------- 表格 ---------- */
-QTableWidget {{ background:{surface}; alternate-background-color:{surface2};
-    gridline-color:transparent; border:1px solid {border}; border-radius:9px;
-    selection-background-color:{selection}; selection-color:{text}; }}
-QTableWidget::item {{ padding:6px 8px; border:0; }}
-QHeaderView {{ background:transparent; }}
-QHeaderView::section {{ background:{surface2}; color:{text_dim}; border:0;
-    border-bottom:1px solid {border}; border-right:1px solid {border};
-    padding:8px 9px; font-weight:600; font-size:11.5px; }}
-QHeaderView::section:last {{ border-right:0; }}
-QTableCornerButton::section {{ background:{surface2}; border:0; }}
+/* ===== 按钮 ===== */
+QPushButton {{ background:{surface_hi}; border:1px solid {border_hi};
+               border-radius:{lg}px; padding:{sm}px {lg}px; color:{text}; font-size:{body}px; }}
+QPushButton:hover {{ background:#1c212b; border-color:{border_focus}; }}
+QPushButton:pressed {{ background:{surface}; }}
+QPushButton:disabled {{ color:{text_disabled}; border-color:{border}; background:{surface}; }}
+QPushButton#Primary {{ background:{primary}; border-color:{primary}; color:#fff; font-weight:600; }}
+QPushButton#Primary:hover {{ background:{primary_hi}; border-color:{primary_hi}; }}
+QPushButton#Ghost {{ background:transparent; border-color:transparent; color:{text_dim}; }}
+QPushButton#Ghost:hover {{ background:{hover}; color:{text}; }}
+QToolButton {{ background:transparent; border:1px solid transparent;
+               border-radius:{lg}px; padding:{xs}px {md}px; color:{text}; font-size:{body}px; }}
+QToolButton:hover {{ background:{hover}; border-color:{border_hi}; }}
+QToolButton#Primary {{ background:{primary}; border-color:{primary}; color:#fff; font-weight:600; }}
+QToolButton:disabled {{ color:{text_disabled}; }}
 
-/* ---------- 容器 ---------- */
-QFrame#Card, QWidget#Card {{ background:{surface}; border:1px solid {border}; border-radius:10px; }}
-QWidget#Metric {{ background:{surface2}; border:1px solid {border}; border-radius:8px; }}
-QLabel#MetricK {{ color:{text_faint}; font-size:10.5px; }}
-QLabel#MetricV {{ font-size:12.5px; font-weight:600; }}
-#Banner {{ border-radius:10px; padding:13px 16px; font-size:14px; font-weight:600; }}
-#HeroNum {{ font-size:27px; font-weight:700; }}
-#HeroK {{ color:{text_faint}; font-size:11px; }}
-#SectionTitle {{ color:{text_dim}; font-size:11.5px; font-weight:600; letter-spacing:.6px; }}
-#Advice {{ background:{surface2}; border:1px solid {border}; border-radius:9px;
-           padding:10px 12px; color:{text}; font-size:12.5px; }}
-#Empty {{ color:{text_faint}; font-size:13px; }}
+/* ===== 输入 ===== */
+QLineEdit, QComboBox, QSpinBox {{ background:{surface_hi}; border:1px solid {border};
+    border-radius:{lg}px; padding:{xs}px {md}px; color:{text};
+    selection-background-color:{primary}; font-size:{body}px; }}
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus {{ border-color:{border_focus}; }}
+QLineEdit[invalid="true"] {{ border-color:{danger}; }}
+QComboBox::drop-down {{ border:0; width:22px; }}
+QComboBox QAbstractItemView {{ background:{surface_raised}; border:1px solid {border_hi};
+    selection-background-color:{primary}; color:{text}; padding:{xs}px; border-radius:{md}px; }}
+QCheckBox {{ spacing:{sm}px; color:{text}; font-size:{body}px; }}
+QCheckBox::indicator {{ width:16px; height:16px; border-radius:{sm}px;
+    border:1px solid {border_hi}; background:{surface_hi}; }}
+QCheckBox::indicator:checked {{ background:{primary}; border-color:{primary}; }}
 
-/* ---------- 标签页 ---------- */
-QTabWidget::pane {{ border:1px solid {border}; border-radius:9px; top:-1px; background:{surface}; }}
-QTabBar::tab {{ background:transparent; color:{text_dim}; padding:7px 15px; border:0;
-    border-bottom:2px solid transparent; margin-right:2px; font-size:12.5px; }}
+/* ===== 表格 ===== */
+QTableWidget {{ background:{surface}; alternate-background-color:{surface_hi};
+    gridline-color:transparent; border:1px solid {border}; border-radius:{xl}px;
+    selection-background-color:{selection}; selection-color:{text}; font-size:{body_sm}px; }}
+QTableWidget::item {{ padding:{xs}px {sm}px; border:0; }}
+QHeaderView::section {{ background:{surface_hi}; color:{text_dim}; border:0;
+    border-bottom:1px solid {border}; padding:{sm}px {md}px;
+    font-weight:600; font-size:{caption}px; }}
+QHeaderView::section:hover {{ color:{text}; }}
+QTableCornerButton::section {{ background:{surface_hi}; border:0; }}
+
+/* ===== 标签页（内容区内的次级切换） ===== */
+QTabWidget::pane {{ border:1px solid {border}; border-radius:{xl}px; background:{surface}; }}
+QTabBar::tab {{ background:transparent; color:{text_dim}; padding:{xs}px {lg}px;
+    border:0; border-bottom:2px solid transparent; font-size:{body}px; }}
 QTabBar::tab:hover {{ color:{text}; }}
-QTabBar::tab:selected {{ color:{text}; border-bottom-color:{accent}; font-weight:600; }}
+QTabBar::tab:selected {{ color:{text}; border-bottom-color:{primary}; font-weight:600; }}
 
-/* ---------- 滚动条 ---------- */
-QScrollBar:vertical {{ background:transparent; width:10px; margin:2px; }}
-QScrollBar::handle:vertical {{ background:{border_hi}; border-radius:5px; min-height:30px; }}
+/* ===== 滚动条（细、圆角、悬停才明显） ===== */
+QScrollBar:vertical {{ background:transparent; width:10px; margin:0; }}
+QScrollBar::handle:vertical {{ background:{border_hi}; border-radius:5px; min-height:36px;
+    margin:2px; }}
 QScrollBar::handle:vertical:hover {{ background:{text_faint}; }}
-QScrollBar:horizontal {{ background:transparent; height:10px; margin:2px; }}
-QScrollBar::handle:horizontal {{ background:{border_hi}; border-radius:5px; min-width:30px; }}
+QScrollBar:horizontal {{ background:transparent; height:10px; }}
+QScrollBar::handle:horizontal {{ background:{border_hi}; border-radius:5px; min-width:36px;
+    margin:2px; }}
 QScrollBar::add-line, QScrollBar::sub-line {{ width:0; height:0; }}
 QScrollBar::add-page, QScrollBar::sub-page {{ background:transparent; }}
 
-/* ---------- 状态栏 ---------- */
-QStatusBar {{ background:{surface}; border-top:1px solid {border}; color:{text_dim}; }}
+/* ===== 状态栏 ===== */
+QStatusBar {{ background:{surface}; border-top:1px solid {border};
+              color:{text_dim}; font-size:{caption}px; }}
 QStatusBar::item {{ border:0; }}
-QProgressBar {{ background:{surface3}; border:0; border-radius:3px; height:5px;
-                text-align:center; color:transparent; }}
-QProgressBar::chunk {{ background:{accent}; border-radius:3px; }}
+QProgressBar {{ background:{surface_hi}; border:0; border-radius:3px; height:4px;
+                color:transparent; }}
+QProgressBar::chunk {{ background:{primary}; border-radius:3px; }}
 
-/* ---------- 其它 ---------- */
+/* ===== 菜单 / 命令面板 ===== */
+QMenu {{ background:{surface_raised}; border:1px solid {border_hi};
+         border-radius:{lg}px; padding:{xs}px; }}
+QMenu::item {{ padding:{xs}px {xl}px {xs}px {md}px; border-radius:{md}px; font-size:{body}px; }}
+QMenu::item:selected {{ background:{primary}; color:#fff; }}
+QMenu::separator {{ height:1px; background:{border}; margin:{xs}px {sm}px; }}
+#Palette {{ background:{surface_raised}; border:1px solid {border_hi}; border-radius:{xl}px; }}
+#PaletteList {{ background:transparent; border:0; font-size:{body}px; }}
+#PaletteList::item {{ padding:{sm}px {md}px; border-radius:{lg}px; }}
+#PaletteList::item:selected {{ background:{primary}; color:#fff; }}
+#Toast {{ background:{surface_raised}; border:1px solid {border_hi}; border-radius:{lg}px; }}
+QFrame#Sep {{ background:{border}; }}
 QSplitter::handle {{ background:transparent; }}
 QSplitter::handle:horizontal {{ width:6px; }}
-QSplitter::handle:hover {{ background:{accent_soft}; }}
-QMenu {{ background:{surface2}; border:1px solid {border_hi}; border-radius:8px; padding:5px; }}
-QMenu::item {{ padding:6px 22px 6px 12px; border-radius:6px; }}
-QMenu::item:selected {{ background:{accent}; color:#fff; }}
-QMenu::separator {{ height:1px; background:{border}; margin:4px 8px; }}
-QMenuBar {{ background:{surface}; }}
-QMenuBar::item {{ padding:5px 10px; border-radius:6px; }}
-QMenuBar::item:selected {{ background:{surface3}; }}
-QPushButton {{ background:{surface3}; border:1px solid {border_hi}; border-radius:7px;
-    padding:6px 14px; color:{text}; }}
-QPushButton:hover {{ border-color:{accent}; }}
-QPushButton#Primary {{ background:{accent}; border-color:{accent}; color:#fff; font-weight:600; }}
-QPushButton#Primary:hover {{ background:{accent_hi}; }}
-QLabel#Drop {{ color:{text_faint}; border:1.5px dashed {border_hi}; border-radius:10px;
-    padding:9px; font-size:12px; }}
-QLabel#DropHot {{ color:{accent}; border:1.5px dashed {accent}; border-radius:10px;
-    padding:9px; font-size:12px; background:{accent_soft}; }}
-""".format(**p)
+QSplitter::handle:hover {{ background:{primary_soft}; }}
+""".format(
+        bg=p.bg, surface=p.surface, surface_hi=p.surface_hi, surface_raised=p.surface_raised,
+        border=p.border, border_hi=p.border_hi, border_focus=p.border_focus,
+        text=p.text, text_dim=p.text_dim, text_faint=p.text_faint, text_disabled=p.text_disabled,
+        primary=p.primary, primary_hi=p.primary_hi, primary_soft=p.primary_soft,
+        danger=p.danger, hover=p.hover, selection=p.selection,
+        font=t.font, body=int(ty.body), body_sm=int(ty.body_sm), body_md=int(ty.body_md),
+        caption=int(ty.caption), micro=int(ty.micro), display=int(ty.display),
+        xs=sp.xs, sm=sp.sm, md=sp.md, lg=sp.lg, xl=sp.xl,
+        )
 
 
-# --------------------------------------------------------------------- 字体
+# ------------------------------------------------------------------ 字体
 
-def load_cjk_fonts():
-    """Qt6 不再自带字体，缺中文字体会整屏方框——主动注册系统字体。"""
+def load_cjk_fonts() -> list[str]:
+    """Qt6 不再自带字体；缺中文字体会整屏方框，这里主动注册系统字体。"""
     cands = [
         r"C:\Windows\Fonts\msyh.ttc", r"C:\Windows\Fonts\msyhbd.ttc", r"C:\Windows\Fonts\msyhl.ttc",
         r"C:\Windows\Fonts\msjh.ttc", r"C:\Windows\Fonts\simhei.ttf", r"C:\Windows\Fonts\Deng.ttf",
@@ -200,17 +332,18 @@ def load_cjk_fonts():
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
     ]
-    fams = []
-    for p in cands:
-        if os.path.exists(p):
-            i = QFontDatabase.addApplicationFont(p)
-            if i >= 0:
-                fams += QFontDatabase.applicationFontFamilies(i)
+    fams: list[str] = []
+    for path in cands:
+        if os.path.exists(path):
+            idx = QFontDatabase.addApplicationFont(path)
+            if idx >= 0:
+                fams += QFontDatabase.applicationFontFamilies(idx)
     return fams
 
 
-def pick_family(fams, prefer=("Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC",
-                              "Noto Sans CJK SC", "Meiryo")):
+def pick_family(fams: list[str],
+                prefer=("Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC",
+                        "Noto Sans CJK SC", "Meiryo")) -> str:
     for want in prefer:
         for f in fams:
             if f.lower().startswith(want.lower()):
@@ -218,134 +351,129 @@ def pick_family(fams, prefer=("Microsoft YaHei UI", "Microsoft YaHei", "PingFang
     return fams[0] if fams else "Sans Serif"
 
 
-def mpl_font(fams):
+def mpl_font(fams: list[str]) -> str | None:
     """给 matplotlib 也挑一个能显示中文的字体族。"""
-    import matplotlib
+    import matplotlib.font_manager as fm  # 3.14 起不再随 matplotlib 自动导入
     for want in ("Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "Meiryo", "SimHei"):
-        for f in fams + [x.name for x in matplotlib.font_manager.fontManager.ttflist]:
+        for f in fams + [x.name for x in fm.fontManager.ttflist]:
             if want.lower() in f.lower():
                 return want
     return None
 
 
-# --------------------------------------------------------------------- 矢量图标
+# ------------------------------------------------------------------ 矢量图标
 
-def _painter(size):
+def make_pixmap(name: str, color: str, size: int = 18, weight: float = 1.6) -> QPixmap:
+    """手绘矢量图标：统一圆头线帽、圆角连接，保证整套图标风格一致。"""
     pm = QPixmap(size, size)
     pm.fill(Qt.transparent)
     pr = QPainter(pm)
     pr.setRenderHint(QPainter.Antialiasing, True)
-    return pm, pr
-
-
-def make_pixmap(name, color, size=18, weight=1.6):
-    """手绘矢量图标：统一 linear 线帽、round 连接，风格一致。"""
-    pm, pr = _painter(size)
-    s = size
+    s = float(size)
     pen = QPen(QColor(color))
     pen.setWidthF(weight)
     pen.setCapStyle(Qt.RoundCap)
     pen.setJoinStyle(Qt.RoundJoin)
     pr.setPen(pen)
     pr.setBrush(Qt.NoBrush)
-    m = s * 0.22                                     # 边距
+    m = s * 0.22
 
-    if name == "add":                                # ＋
+    if name == "add":
         pr.drawLine(QPointF(s / 2, m), QPointF(s / 2, s - m))
         pr.drawLine(QPointF(m, s / 2), QPointF(s - m, s / 2))
-    elif name == "folder":                           # 文件夹
-        p = QPainterPath()
-        p.moveTo(m, s - m)
-        p.lineTo(m, m + s * 0.14)
-        p.lineTo(s * 0.42, m + s * 0.14)
-        p.lineTo(s * 0.52, m + s * 0.30)
-        p.lineTo(s - m, m + s * 0.30)
-        p.lineTo(s - m, s - m)
-        p.closeSubpath()
-        pr.drawPath(p)
-    elif name == "play":                             # ▶
-        p = QPainterPath()
-        p.moveTo(m + s * 0.06, m)
-        p.lineTo(s - m, s / 2)
-        p.lineTo(m + s * 0.06, s - m)
-        p.closeSubpath()
+    elif name == "folder":
+        path = QPainterPath()
+        path.moveTo(m, s - m)
+        path.lineTo(m, m + s * 0.14)
+        path.lineTo(s * 0.42, m + s * 0.14)
+        path.lineTo(s * 0.52, m + s * 0.30)
+        path.lineTo(s - m, m + s * 0.30)
+        path.lineTo(s - m, s - m)
+        path.closeSubpath()
+        pr.drawPath(path)
+    elif name == "play":
+        path = QPainterPath()
+        path.moveTo(m + s * 0.06, m)
+        path.lineTo(s - m, s / 2)
+        path.lineTo(m + s * 0.06, s - m)
+        path.closeSubpath()
         pr.setBrush(QColor(color))
-        pr.drawPath(p)
-    elif name == "stop":                             # ■
+        pr.drawPath(path)
+    elif name == "stop":
         r = s * 0.26
         pr.setBrush(QColor(color))
         pr.drawRoundedRect(QRectF(r, r, s - 2 * r, s - 2 * r), 2.2, 2.2)
-    elif name == "export":                           # 下载/导出
+    elif name == "export":
         pr.drawLine(QPointF(s / 2, m), QPointF(s / 2, s * 0.64))
         pr.drawPolyline(QPolygonF([QPointF(s * 0.31, s * 0.46), QPointF(s / 2, s * 0.66),
                                    QPointF(s * 0.69, s * 0.46)]))
         pr.drawLine(QPointF(m, s - m), QPointF(s - m, s - m))
-    elif name == "trash":                            # 清空
+    elif name == "trash":
         pr.drawLine(QPointF(m, m + s * 0.16), QPointF(s - m, m + s * 0.16))
         pr.drawLine(QPointF(s * 0.40, m + s * 0.16), QPointF(s * 0.40, m + s * 0.05))
         pr.drawLine(QPointF(s * 0.60, m + s * 0.16), QPointF(s * 0.60, m + s * 0.05))
-        p = QPainterPath()
-        p.moveTo(m + s * 0.07, m + s * 0.16)
-        p.lineTo(m + s * 0.12, s - m)
-        p.lineTo(s - m - s * 0.12, s - m)
-        p.lineTo(s - m - s * 0.07, m + s * 0.16)
-        pr.drawPath(p)
-    elif name == "search":                           # 放大镜
+        path = QPainterPath()
+        path.moveTo(m + s * 0.07, m + s * 0.16)
+        path.lineTo(m + s * 0.12, s - m)
+        path.lineTo(s - m - s * 0.12, s - m)
+        path.lineTo(s - m - s * 0.07, m + s * 0.16)
+        pr.drawPath(path)
+    elif name == "search":
         pr.drawEllipse(QPointF(s * 0.44, s * 0.44), s * 0.24, s * 0.24)
         pr.drawLine(QPointF(s * 0.62, s * 0.62), QPointF(s * 0.83, s * 0.83))
-    elif name == "gear":                             # 齿轮
+    elif name == "gear":
+        import math
         pr.drawEllipse(QPointF(s / 2, s / 2), s * 0.17, s * 0.17)
-        import math
         for i in range(8):
             a = i * math.pi / 4
-            x1, y1 = s / 2 + math.cos(a) * s * 0.26, s / 2 + math.sin(a) * s * 0.26
-            x2, y2 = s / 2 + math.cos(a) * s * 0.36, s / 2 + math.sin(a) * s * 0.36
-            pr.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+            p1 = QPointF(s / 2 + math.cos(a) * s * 0.26, s / 2 + math.sin(a) * s * 0.26)
+            p2 = QPointF(s / 2 + math.cos(a) * s * 0.36, s / 2 + math.sin(a) * s * 0.36)
+            pr.drawLine(p1, p2)
     elif name == "sun":
-        pr.drawEllipse(QPointF(s / 2, s / 2), s * 0.16, s * 0.16)
         import math
+        pr.drawEllipse(QPointF(s / 2, s / 2), s * 0.16, s * 0.16)
         for i in range(8):
             a = i * math.pi / 4
-            x1, y1 = s / 2 + math.cos(a) * s * 0.25, s / 2 + math.sin(a) * s * 0.25
-            x2, y2 = s / 2 + math.cos(a) * s * 0.36, s / 2 + math.sin(a) * s * 0.36
-            pr.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+            p1 = QPointF(s / 2 + math.cos(a) * s * 0.25, s / 2 + math.sin(a) * s * 0.25)
+            p2 = QPointF(s / 2 + math.cos(a) * s * 0.36, s / 2 + math.sin(a) * s * 0.36)
+            pr.drawLine(p1, p2)
     elif name == "moon":
-        p = QPainterPath()
-        p.moveTo(s * 0.66, m)
-        p.arcTo(QRectF(m, m, s - 2 * m, s - 2 * m), 70, 220)
-        p.closeSubpath()
+        path = QPainterPath()
+        path.moveTo(s * 0.66, m)
+        path.arcTo(QRectF(m, m, s - 2 * m, s - 2 * m), 70, 220)
+        path.closeSubpath()
         pr.setBrush(QColor(color))
         pr.setPen(Qt.NoPen)
-        pr.drawPath(p)
-    elif name == "chart":                            # 迷你柱状
-        for i, h in enumerate((0.30, 0.55, 0.42, 0.72)):
+        pr.drawPath(path)
+    elif name == "chart":
+        for i, hh in enumerate((0.30, 0.55, 0.42, 0.72)):
             x = m + i * (s - 2 * m) / 4
             w = (s - 2 * m) / 7
             pr.setBrush(QColor(color))
             pr.setPen(Qt.NoPen)
-            pr.drawRoundedRect(QRectF(x, s - m - (s - 2 * m) * h, w, (s - 2 * m) * h), 1.6, 1.6)
-    elif name == "layers":                           # 对比：两条叠加曲线
+            pr.drawRoundedRect(QRectF(x, s - m - (s - 2 * m) * hh, w, (s - 2 * m) * hh), 1.6, 1.6)
+    elif name == "layers":
         pr.drawLine(QPointF(m, s * 0.62), QPointF(s - m, s * 0.62))
-        p = QPainterPath()
-        p.moveTo(m, s * 0.62)
-        p.cubicTo(s * 0.36, s * 0.20, s * 0.62, s * 0.86, s - m, s * 0.38)
-        pr.drawPath(p)
-    elif name == "wave":                             # 波形
-        p = QPainterPath()
-        p.moveTo(m, s / 2)
+        path = QPainterPath()
+        path.moveTo(m, s * 0.62)
+        path.cubicTo(s * 0.36, s * 0.20, s * 0.62, s * 0.86, s - m, s * 0.38)
+        pr.drawPath(path)
+    elif name == "wave":
+        path = QPainterPath()
+        path.moveTo(m, s / 2)
         for k in range(10):
             x = m + (s - 2 * m) * k / 9
             y = s / 2 + (s * 0.30 if k % 2 else -s * 0.30)
-            p.lineTo(x, y)
-        pr.drawPath(p)
-    elif name == "grid":                             # 频段格
+            path.lineTo(x, y)
+        pr.drawPath(path)
+    elif name == "grid":
+        pr.setBrush(QColor(color))
+        pr.setPen(Qt.NoPen)
         for i in range(3):
             for j in range(3):
-                pr.setBrush(QColor(color))
-                pr.setPen(Qt.NoPen)
                 pr.drawRect(QRectF(m + i * (s - 2 * m) / 3 + 1, m + j * (s - 2 * m) / 3 + 1,
                                    (s - 2 * m) / 3 - 1.6, (s - 2 * m) / 3 - 1.6))
-    elif name == "reload":                           # 重新分析
+    elif name == "reload":
         pr.drawArc(QRectF(m, m, s - 2 * m, s - 2 * m), 40 * 16, 280 * 16)
         pr.drawPolyline(QPolygonF([QPointF(s - m - s * 0.16, m + s * 0.02),
                                    QPointF(s - m, m + s * 0.16),
@@ -353,31 +481,57 @@ def make_pixmap(name, color, size=18, weight=1.6):
     elif name == "copy":
         pr.drawRoundedRect(QRectF(m, m + s * 0.12, s * 0.5, s * 0.58), 2.4, 2.4)
         pr.drawRoundedRect(QRectF(m + s * 0.20, m, s * 0.5, s * 0.58), 2.4, 2.4)
+    elif name == "doc":
+        pr.drawRoundedRect(QRectF(m + s * 0.06, m, s * 0.62, s - 2 * m), 2.4, 2.4)
+        for i in range(3):
+            y = m + s * (0.22 + i * 0.19)
+            pr.drawLine(QPointF(m + s * 0.20, y), QPointF(m + s * 0.56, y))
+    elif name == "shield":
+        path = QPainterPath()
+        path.moveTo(s / 2, m)
+        path.lineTo(s - m, m + s * 0.16)
+        path.lineTo(s - m, s * 0.55)
+        path.quadTo(s - m, s - m, s / 2, s - m)
+        path.quadTo(m, s - m, m, s * 0.55)
+        path.lineTo(m, m + s * 0.16)
+        path.closeSubpath()
+        pr.drawPath(path)
+    elif name == "sliders":
+        for i, yy in enumerate((0.32, 0.52, 0.72)):
+            pr.drawLine(QPointF(m, s * yy), QPointF(s - m, s * yy))
+            pr.setBrush(QColor(color))
+            pr.setPen(Qt.NoPen)
+            pr.drawEllipse(QPointF(s * (0.35 + i * 0.15), s * yy), s * 0.07, s * 0.07)
+            pen2 = QPen(QColor(color))
+            pen2.setWidthF(weight)
+            pr.setPen(pen2)
+            pr.setBrush(Qt.NoBrush)
     pr.end()
     return pm
 
 
-def icon(name, color="#e8ecf3", size=18):
+def icon(name: str, color: str = "#e8ecf3", size: int = 18) -> QIcon:
+    """2x 渲染后再缩放，任意 DPI 都锐利。"""
     ic = QIcon()
-    ic.addPixmap(make_pixmap(name, color, size * 2, 1.9), QIcon.Normal, QIcon.Off)  # 2x 更锐
-    ic.addPixmap(make_pixmap(name, color, size * 2, 1.9), QIcon.Disabled, QIcon.Off)
+    px = make_pixmap(name, color, size * 2, 1.9)
+    ic.addPixmap(px, QIcon.Normal, QIcon.Off)
+    ic.addPixmap(px, QIcon.Disabled, QIcon.Off)
     return ic
 
 
-def app_icon(p):
-    """程序图标：一块「频谱砖墙」——低区密、高区骤停。"""
+def app_icon(p: Palette = DARK_P) -> QIcon:
+    """程序图标：频谱砖墙——低区密、高区骤停（本工具的立意为"看内容"）。"""
     pm = QPixmap(128, 128)
     pm.fill(Qt.transparent)
     pr = QPainter(pm)
     pr.setRenderHint(QPainter.Antialiasing, True)
     pr.setPen(Qt.NoPen)
-    pr.setBrush(QColor(p["surface3"]))
+    pr.setBrush(QColor(p.surface_raised))
     pr.drawRoundedRect(QRectF(4, 4, 120, 120), 26, 26)
     heights = [30, 52, 74, 62, 84, 70, 88, 66, 78, 40, 16, 6]
-    for i, h in enumerate(heights):
+    for i, hh in enumerate(heights):
         x = 18 + i * 7.8
-        col = QColor(p["accent"]) if i < 9 else QColor(p["bad"])
-        pr.setBrush(col)
-        pr.drawRoundedRect(QRectF(x, 112 - h, 5.4, h), 2.4, 2.4)
+        pr.setBrush(QColor(p.primary if i < 9 else p.danger))
+        pr.drawRoundedRect(QRectF(x, 112 - hh, 5.4, hh), 2.4, 2.4)
     pr.end()
     return QIcon(pm)

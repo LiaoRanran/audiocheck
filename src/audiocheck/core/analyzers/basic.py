@@ -35,12 +35,12 @@ class BasicAnalyzer(Analyzer):
                 clips += int((np.abs(b) >= 0.9999).sum())
                 block_rms.append(float(np.sqrt((bf ** 2).mean())))
                 if ch >= 2:
-                    l, r = bf[:, 0], bf[:, 1]
-                    corr_num += float((l * r).sum())
-                    corr_l += float((l * l).sum())
-                    corr_r += float((r * r).sum())
-                    mean_l += float(np.abs(l).sum())
-                    mean_r += float(np.abs(r).sum())
+                    lc, rc = bf[:, 0], bf[:, 1]
+                    corr_num += float((lc * rc).sum())
+                    corr_l += float((lc * lc).sum())
+                    corr_r += float((rc * rc).sum())
+                    mean_l += float(np.abs(lc).sum())
+                    mean_r += float(np.abs(rc).sum())
 
         rms = np.sqrt(sumsq / max(n, 1))
         out = {

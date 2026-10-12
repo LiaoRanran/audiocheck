@@ -4,10 +4,10 @@ from __future__ import annotations
 import os
 
 from ..config import AUDIO_EXTS, Thresholds
-from .context import AnalysisContext, to_native
-from .views import compact_curve
 from . import analyzers  # noqa: F401  触发分析器自动注册（不要删）
+from .context import AnalysisContext, to_native
 from .registry import all_analyzers, schedule
+from .views import compact_curve
 
 
 def collect_files(targets) -> list[str]:

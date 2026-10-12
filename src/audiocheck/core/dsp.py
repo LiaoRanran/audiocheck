@@ -47,12 +47,12 @@ def k_weighting(fs: int):
 def _gated_loudness(block_ms: np.ndarray, rel_gate: float) -> float | None:
     """门限平均：先绝对门限，再相对门限。block_ms 形状 [n, ch]。"""
     z = block_ms.sum(axis=1)
-    l = OFFSET + 10 * np.log10(z + 1e-30)
-    keep = l > ABS_GATE
+    lv = OFFSET + 10 * np.log10(z + 1e-30)
+    keep = lv > ABS_GATE
     if not keep.any():
         return None
     rel = OFFSET + 10 * np.log10(z[keep].mean() + 1e-30) + rel_gate
-    keep &= (l > rel)
+    keep &= (lv > rel)
     if not keep.any():
         return None
     return float(OFFSET + 10 * np.log10(z[keep].mean() + 1e-30))
@@ -127,14 +127,14 @@ def loudness(path: str, fs: int, channels: int, total: int, chunk: int = 1 << 20
     st = np.array([])
     if st_ms.shape[0] >= 4:
         z = st_ms.sum(axis=1)
-        l = OFFSET + 10 * np.log10(z + 1e-30)
-        keep = l > ABS_GATE
+        lv = OFFSET + 10 * np.log10(z + 1e-30)
+        keep = lv > ABS_GATE
         if keep.any():
             rel = OFFSET + 10 * np.log10(z[keep].mean() + 1e-30) + REL_GATE_LRA
-            keep &= (l > rel)
+            keep &= (lv > rel)
             if keep.any():
-                lra = float(np.percentile(l[keep], 95) - np.percentile(l[keep], 10))
-        st = l
+                lra = float(np.percentile(lv[keep], 95) - np.percentile(lv[keep], 10))
+        st = lv
 
     out: dict = {
         "lufs": round(lufs, 1) if lufs is not None else None,
@@ -177,13 +177,13 @@ def stereo_features(left: np.ndarray, right: np.ndarray) -> dict:
         return {}
     n = min(len(left), len(right), 4_000_000)
     step = max(1, len(left) // n)
-    l = np.asarray(left[::step], dtype=np.float64)
-    r = np.asarray(right[::step], dtype=np.float64)
-    if l.size < 1024:
+    lc = np.asarray(left[::step], dtype=np.float64)
+    rc = np.asarray(right[::step], dtype=np.float64)
+    if lc.size < 1024:
         return {}
-    mid, side = (l + r) / 2.0, (l - r) / 2.0
+    mid, side = (lc + rc) / 2.0, (lc - rc) / 2.0
     me, se = float((mid ** 2).mean()), float((side ** 2).mean())
-    corr = float((l * r).mean() / (np.sqrt((l ** 2).mean() * (r ** 2).mean()) + 1e-30))
+    corr = float((lc * rc).mean() / (np.sqrt((lc ** 2).mean() * (rc ** 2).mean()) + 1e-30))
     return {
         "width_db": round(10 * np.log10((se + 1e-30) / (me + 1e-30)), 1),
         "corr": round(corr, 3),
