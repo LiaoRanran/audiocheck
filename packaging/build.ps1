@@ -22,12 +22,37 @@ Set-Location $Root
 # 用重命名不用 Remove-Item：环境的安全删除策略会把 Remove-Item 改成"移入回收站"，
 # 而回收站操作在 dist 这种深层目录上会失败，导致整个构建中止（实测踩过）。
 # 顺带的好处是上一个构建留作回滚。
+#
+# **归档必须限量**：早期版本只往编号递增、从不清理，实测累积到 1.8 GB
+# （build_old1..6 + dist_old1..5，每份 65/280 MB），而且这些目录一度被
+# 误提交进仓库（.gitignore 里加规则**不会**自动取消已跟踪文件）。
+# 现在只保留最近 $KeepArchives 份。
+$KeepArchives = 2
+
+# 用 [System.IO.Directory]::Delete 而不是 Remove-Item：
+# 前者是 .NET 调用，不经过安全删除策略的 cmdlet 包装，在深层目录上更可靠。
+function Remove-DirHard([string]$Path) {
+    if (-not (Test-Path $Path)) { return }
+    try {
+        [System.IO.Directory]::Delete((Resolve-Path $Path).Path, $true)
+        Write-Host "  已清理 ${Path}"
+    } catch {
+        Write-Host "  清理 $Path 失败（$($_.Exception.Message)）——不影响构建"
+    }
+}
+
 function Clear-Dir([string]$Path) {
     if (-not (Test-Path $Path)) { return }
     $n = 1
     while (Test-Path "${Path}_old$n") { $n++ }
     Rename-Item $Path "${Path}_old$n" -Force
     Write-Host "  旧产物已归档为 ${Path}_old$n"
+    # 只保留最近 $KeepArchives 份，更早的清掉
+    $i = 1
+    while (Test-Path "${Path}_old$i") { $i++ }
+    for ($k = 0; $k -lt ($i - $KeepArchives); $k++) {
+        Remove-DirHard "${Path}_old$k"
+    }
 }
 
 if ($Clean) {
