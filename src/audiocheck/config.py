@@ -37,8 +37,60 @@ class Thresholds:
 
     @classmethod
     def from_dict(cls, d: dict) -> Thresholds:
-        known = {f.name for f in fields(cls)}
-        return cls(**{k: v for k, v in (d or {}).items() if k in known})
+        """从 dict 构造，**逐项类型校验**。
+
+        ## 为什么必须校验（这里踩过一个很难看的坑）
+
+        早期只过滤键名、不校验类型：
+
+            known = {f.name for f in fields(cls)}
+            return cls(**{k: v for k, v in d.items() if k in known})
+
+        于是 `{"cd_full": "不是数字"}` 会被 dataclass **照单全收**
+        （dataclass 不做运行时类型检查），一直等到判定器里做
+        `20.0 >= "不是数字"` 才抛 TypeError。
+
+        而引擎把分析器异常吞成"分析器告警"，最终表现是：
+
+            判定整段消失 ｜ 汇总变成「合格 0 / 有疑 0 / 不达标 0」｜ 退出码仍是 0
+
+        **用户设了阈值、阈值没生效、判定没了、脚本还一切正常。**
+        这类"静默降级"比直接报错危险得多——所以配置必须在入口就校验。
+
+        未知键**不报错但会返回在 warnings 里**（便于发现拼写错误，
+        又不会因为新版加了字段就让旧配置文件用不了）。
+        """
+        d = d or {}
+        known = {f.name: f for f in fields(cls)}
+        bad: list[str] = []
+        unknown: list[str] = []
+        vals: dict = {}
+        for k, v in d.items():
+            if k not in known:
+                unknown.append(k)
+                continue
+            ftype = known[k].type
+            want_num = ftype in ("float", "int", float, int)
+            if want_num:
+                if isinstance(v, bool) or not isinstance(v, (int, float)):
+                    # 尝试把"看起来是数字"的字符串救回来（如 "19.5"），
+                    # 救不回来才算错 —— 手写 JSON 常把数字写成字符串。
+                    try:
+                        v = float(v)
+                    except (TypeError, ValueError):
+                        bad.append("%s=%r（应为数字）" % (k, v))
+                        continue
+                v = int(v) if (ftype in ("int", int) or float(v).is_integer()) else float(v)
+            elif ftype == "bool" and not isinstance(v, bool):
+                bad.append("%s=%r（应为 true/false）" % (k, v))
+                continue
+            vals[k] = v
+        if bad:
+            raise ValueError("配置文件里的阈值类型不对：" + "；".join(bad))
+        th = cls(**vals)
+        if unknown:
+            th.__dict__["_unknown_keys"] = unknown      # 只作提示，不影响行为
+        return th
 
     def save(self, path: str) -> None:
         with open(path, "w", encoding="utf-8") as f:
@@ -46,13 +98,22 @@ class Thresholds:
 
     @classmethod
     def load(cls, path: str) -> Thresholds:
-        if path and os.path.exists(path):
+        """读配置文件。
+
+        **不再吞掉解析/校验错误。** 早期 `except (OSError, ValueError): pass`
+        会让"文件写坏了"退化成"悄悄用默认值"，用户以为自己的阈值生效了。
+        现在：文件不存在 → 用默认值；文件存在但坏 → 抛出，由调用方报给用户。
+        """
+        if not path or not os.path.exists(path):
+            return cls()
+        with open(path, encoding="utf-8") as f:
             try:
-                with open(path, encoding="utf-8") as f:
-                    return cls.from_dict(json.load(f))
-            except (OSError, ValueError):
-                pass
-        return cls()
+                d = json.load(f)
+            except ValueError as e:
+                raise ValueError("配置文件不是合法 JSON：%s（%s）" % (path, e)) from None
+        if not isinstance(d, dict):
+            raise ValueError("配置文件的顶层必须是对象，实得 %s" % type(d).__name__)
+        return cls.from_dict(d)
 
 
 #: 默认阈值（引擎在不显式传入时使用）

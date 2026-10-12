@@ -126,7 +126,20 @@ def main(argv=None) -> int:
         print("没找到可分析的音频文件", file=sys.stderr)
         return 2
 
-    th = Thresholds.load(args.config) if args.config else Thresholds()
+    # 配置错误必须**在分析之前**报出来并退出。
+    # 早期 Thresholds.load 会吞掉一切异常，坏配置退化成"悄悄用默认值"，
+    # 而非法类型还会一路带到判定器里抛 TypeError、被引擎吞成"分析器告警"——
+    # 最终表现是判定整段消失、汇总全 0、退出码仍是 0。
+    try:
+        th = Thresholds.load(args.config) if args.config else Thresholds()
+    except (ValueError, OSError) as e:
+        print("[X] %s" % e, file=sys.stderr)
+        return 2
+    unk = getattr(th, "__dict__", {}).get("_unknown_keys")
+    if unk:
+        print("[!] 配置里有无法识别的键，已忽略：%s（检查是否拼错）"
+              % "、".join(unk), file=sys.stderr)
+
     only = [s.strip() for s in args.only.split(",")] if args.only else None
     print("待检测 %d 个文件\n" % len(files))
 
@@ -176,6 +189,24 @@ def main(argv=None) -> int:
     if args.csv:
         _csv(rows, args.csv)
         print("CSV 已写入 %s" % args.csv)
+
+    # ---- 退出码 ----
+    # 分析器报错必须反映到退出码。早期无论发生什么都 return 0，
+    # 于是"判定整段消失、汇总全 0"这种事在脚本/CI 里完全看不出来。
+    # 实测场景：配置里一个阈值类型写错，判定器抛 TypeError 被引擎吞成
+    # "分析器告警"，而退出码仍是 0 —— 一个静默的错误结果。
+    #
+    # 0 = 全部正常 ｜ 2 = 输入/配置有问题（含"没找到文件"）｜ 3 = 分析已完成但有告警
+    errs = [r for r in rows if r.get("errors")]
+    if errs:
+        print("\n[X] %d 个文件有分析器告警，结果可能不完整：" % len(errs),
+              file=sys.stderr)
+        for r in errs[:5]:
+            for e in (r.get("errors") or [])[:2]:
+                print("      %-34s %s" % (r["file"][:34], e), file=sys.stderr)
+        if len(errs) > 5:
+            print("      ……另有 %d 个" % (len(errs) - 5), file=sys.stderr)
+        return 3
     return 0
 
 
