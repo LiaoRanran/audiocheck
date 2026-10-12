@@ -435,7 +435,7 @@ class MainWindow(FramelessWindow):
         row1 = QHBoxLayout()
         row1.setSpacing(8)
         self.lbl_verdict = QLabel("—")
-        self.lbl_verdict.setStyleSheet("font-size:%dpx;font-weight:600"
+        self.lbl_verdict.setStyleSheet("font-size:%dpx;font-weight:700"
                                        % int(self.theme.type.body_md))
         self.badge = Badge("—", "warn", self.theme)
         row1.addWidget(self.badge)
@@ -751,7 +751,7 @@ class MainWindow(FramelessWindow):
         self.badge.setText(LEVEL_CN.get(lv, lv))
         self.badge.set_level(lv, self.theme)
         self.lbl_verdict.setText(r.get("verdict", ""))
-        self.lbl_verdict.setStyleSheet("font-size:%dpx;font-weight:600;color:%s"
+        self.lbl_verdict.setStyleSheet("font-size:%dpx;font-weight:700;color:%s"
                                        % (int(self.theme.type.body_md), p.text))
         self.lbl_file.setText("%s · %s · %s" % (
             r["file"], meta_brief(r.get("meta") or {}), os.path.dirname(r["path"])))
@@ -947,7 +947,7 @@ class MainWindow(FramelessWindow):
                "table{width:100%%;border-collapse:collapse;font-size:12.5px;background:%s;"
                "border:1px solid %s;border-radius:12px;overflow:hidden}" % (p.surface, p.border),
                "th,td{padding:9px 11px;text-align:left;border-bottom:1px solid %s}" % p.border,
-               "th{color:%s;font-weight:600;font-size:11.5px;background:%s}"
+               "th{color:%s;font-weight:700;font-size:11.5px;background:%s}"
                % (p.text_dim, p.surface_hi),
                ".ok{color:%s;font-weight:700}.warn{color:%s;font-weight:700}"
                ".bad{color:%s;font-weight:700}" % (p.success, p.warning, p.danger),

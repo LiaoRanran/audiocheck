@@ -156,15 +156,24 @@ class SpectrumCanvas(BaseCanvas):
         lo = max(top - 95, float(db.min()) - 3)
         ax.clear()
         self._ax_style(ax, "频率 Hz", "相对电平 dB")
-        # 频段分界（与推荐引擎 band_def 一致）
+
+        # ---- 频段分界（与推荐引擎 band_def 一致）----
+        # 原来用 grid 色画，与背景几乎同色 —— 宣称的功能实际看不见。
+        # 改用 border_hi 并在顶部标出边界值，让"分了几段、界在哪"可直接读。
         for edge in (60, 250, 500, 2000, 6000, 16000):
             if edge < nyq:
-                ax.axvline(edge, color=p["grid"], lw=.8, ls="-", zorder=1)
+                ax.axvline(edge, color=p["border_hi"], lw=.9, zorder=1)
+                ax.text(edge, top + (top - lo) * .012,
+                        ("%gk" % (edge / 1000) if edge >= 1000 else "%g" % edge),
+                        color=p["text_faint"], fontsize=7, ha="center", va="bottom",
+                        clip_on=False)
+
         ax.axvline(nyq, color=p["text_faint"], lw=1.0, ls=":", zorder=2)
         ax.text(nyq, lo + (top - lo) * .02, " 奈奎斯特 %.1fk" % (nyq / 1000),
                 color=p["text_faint"], fontsize=7.5, va="bottom", ha="right", rotation=90)
 
-        ax.fill_between(f, db, lo, color=p["accent"], alpha=.16, lw=0, zorder=2)
+        # 填充 .16→.10：原来低频段糊成一块，把曲线本身盖住了
+        ax.fill_between(f, db, lo, color=p["accent"], alpha=.10, lw=0, zorder=2)
         ax.semilogx(f, db, lw=1.15, color=p["accent"], zorder=3)
 
         cut = self.r.get("cutoff_hz")
@@ -173,13 +182,32 @@ class SpectrumCanvas(BaseCanvas):
             col = p[lv] if lv in p else p["accent"]
             ax.axvline(cut, color=col, lw=1.4, ls="--", zorder=4)
             ax.fill_betweenx([lo, top], cut, nyq, color=col, alpha=.07, lw=0, zorder=1)
+            # 标注靠右时向左展开，否则顶出绘图区被裁掉
+            # （实测 20.27kHz 就在最右侧，原来的 xytext=(8,0) 把框推了出去）
+            right_side = cut > nyq * 0.62
             ax.annotate("真实截止 %.2f kHz" % ((cut or 0) / 1000),
                         xy=(cut, top - (top - lo) * .04),
-                        xytext=(8, 0), textcoords="offset points",
+                        xytext=(-8 if right_side else 8, 0),
+                        textcoords="offset points",
+                        ha="right" if right_side else "left",
                         color=col, fontsize=9, fontweight="bold", va="top",
                         bbox=dict(boxstyle="round,pad=0.32", fc=p["surface2"], ec=col, lw=.9))
+        # ---- x 轴刻度：**这张图的全部意义是「内容停在哪」** ----
+        # 默认对数轴只标注 10²/10³/10⁴ 三个点，关键区（10k–22k）一个刻度都没有，
+        # 读者无法判断截止点是 18k 还是 21k —— 只能信标注框里那个数字，
+        # 而"读数能自证"正是这张图该提供的东西。
+        #
+        # **位置必须在这里、不能提前**：semilogx() 内部会 set_xscale('log')，
+        # 顺手重置定位器与格式器 —— 早先把刻度配置写在绘图之前，全部被冲掉，
+        # 底轴照样只显示 10²/10³/10⁴（一跑图就看出来了）。
+        ticks = [t for t in (20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000)
+                 if t <= nyq]
+        ax.set_xticks(ticks)
+        ax.set_xticklabels([("%gk" % (t / 1000) if t >= 1000 else "%g" % t) for t in ticks])
+        ax.minorticks_off()                 # 关掉默认密集次刻度，避免与上面打架
         ax.set_xlim(20, nyq)
-        ax.set_ylim(lo, top + 6)
+        # 顶部多留 14% 给频段标签，否则标签与截止标注挤在一起
+        ax.set_ylim(lo, top + (top - lo) * 0.14)
 
     def _hover_layer(self):
         """竖线 + 读数点 + 数值气泡。鼠标移动只走这一层。"""
@@ -295,7 +323,7 @@ class BandCanvas(BaseCanvas):
         bars = ax.bar(range(len(keys)), vals, color=colors, width=.68, zorder=3)
         for rect, v in zip(bars, vals):
             ax.text(rect.get_x() + rect.get_width() / 2, v + max(vals + [1]) * .025,
-                    "%.0f%%" % v, ha="center", color=p["text"], fontsize=9.5, fontweight="600")
+                    "%.0f%%" % v, ha="center", color=p["text"], fontsize=9.5, fontweight="bold")
         for i, (_k, lo, hi) in enumerate(BANDS):
             ax.text(i, -max(vals + [1]) * .085, "%s–%s" % (
                 lo if lo < 1000 else "%dk" % (lo // 1000),

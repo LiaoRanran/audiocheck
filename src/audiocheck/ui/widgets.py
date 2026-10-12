@@ -310,7 +310,7 @@ class EmptyState(QWidget):
         v.addWidget(self.icon)
         self.title = QLabel(title)
         self.title.setAlignment(Qt.AlignCenter)
-        self.title.setStyleSheet("font-size:%dpx;font-weight:600" % int(theme.type.body_md))
+        self.title.setStyleSheet("font-size:%dpx;font-weight:700" % int(theme.type.body_md))
         v.addWidget(self.title)
         self.hint = QLabel(hint)
         self.hint.setAlignment(Qt.AlignCenter)
@@ -328,7 +328,7 @@ class EmptyState(QWidget):
 
     def apply_theme(self, t: T.Theme, icon_name: str = "folder") -> None:
         self.icon.setPixmap(T.make_pixmap(icon_name, t.p.text_faint, 48, 1.4))
-        self.title.setStyleSheet("font-size:%dpx;font-weight:600;color:%s"
+        self.title.setStyleSheet("font-size:%dpx;font-weight:700;color:%s"
                                  % (int(t.type.body_md), t.p.text))
         self.hint.setStyleSheet("color:%s;font-size:%dpx" % (t.p.text_faint, int(t.type.caption)))
 
@@ -366,7 +366,7 @@ class StatCard(QFrame):
         # 数值用等宽 QFont，**不靠 QSS 的 font-family**：
         # 部件自带 setStyleSheet 与 app 级 `QLabel#Hero` 规则并存时，
         # Qt 对各属性的合并行为并不明确，实测出现过等宽没生效的情况。
-        # 另外这里原来写 font-weight:600 —— 中文字体只有 400/700 两档，
+        # 另外这里原来写 font-weight:700 —— 中文字体只有 400/700 两档，
         # 600 会被吸附到 700 并打 findfont 告警，等于写了个假层级。
         self.v.setFont(T.mono_qfont(t.type.body_md))
         self.v.setStyleSheet("color:%s" % t.p.text)
@@ -486,7 +486,7 @@ class Badge(QLabel):
         p = t.p
         self.setStyleSheet(
             "background:%s;color:%s;border:1px solid %s;border-radius:%dpx;"
-            "padding:3px 10px;font-weight:600;font-size:%dpx"
+            "padding:3px 10px;font-weight:700;font-size:%dpx"
             % (p.level_bg(self._level), p.level_color(self._level),
                p.level_bd(self._level), t.radius.pill, int(t.type.caption)))
 

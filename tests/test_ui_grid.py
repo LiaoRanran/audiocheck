@@ -37,7 +37,7 @@ if _SRC not in sys.path:
 from audiocheck.ui import theme as T  # noqa: E402
 
 UI = os.path.join(_SRC, "audiocheck", "ui")
-FILES = ["window.py", "widgets.py", "charts.py", "chrome.py"]
+FILES = ["window.py", "widgets.py", "charts.py", "chrome.py", "theme.py"]
 
 GRID = 4
 #: 光学例外必须在调用点前若干行内出现这个词
@@ -45,14 +45,39 @@ OPTICAL_MARK = "光学间距"
 LOOKBACK = 4
 
 
-def _lines_of(fn):
+def _raw_lines(fn):
+    """原始行（**保留注释**）。用于查「光学间距」这类写在注释里的登记标记。"""
     with open(os.path.join(UI, fn), encoding="utf-8") as f:
         return f.read().splitlines()
 
 
-def _is_registered_optical(lines, idx) -> bool:
-    """该行是否被「光学间距」注释显式登记过。"""
-    for j in range(max(0, idx - LOOKBACK), idx + 1):
+def _lines_of(fn):
+    """去注释后的行。用于扫数值。
+
+    **为什么扫数值必须去注释**：规则说明本身就是以 `font-weight:600`
+    这种形式写在注释里的（"不要写 600"），不去注释的话测试会把自己的
+    说明当成违规——第一次跑就撞上了这个假阳性。
+
+    **为什么不能只留这一份**：光学间距的登记标记也在注释里，
+    删了注释就找不到了（第二次跑又撞上）。所以两份都要。
+    """
+    with open(os.path.join(UI, fn), encoding="utf-8") as f:
+        txt = f.read()
+    txt = re.sub(r"/\*.*?\*/", "", txt, flags=re.S)      # CSS 块注释
+    out = []
+    for line in txt.splitlines():
+        i = line.find("#")                                # 行内 Python 注释
+        out.append(line if i < 0 else line[:i])
+    return out
+
+
+def _is_registered_optical(fn, idx) -> bool:
+    """该行是否被「光学间距」注释显式登记过。
+
+    查的是**原始行**（含注释）—— 登记标记本身就写在注释里。
+    """
+    lines = _raw_lines(fn)
+    for j in range(max(0, idx - LOOKBACK), min(idx + 1, len(lines))):
         if OPTICAL_MARK in lines[j]:
             return True
     return False
@@ -70,7 +95,7 @@ class TestSpacingGrid(unittest.TestCase):
                     raw = m.group(group)
                     vals = [int(x) for x in re.findall(r"\d+", raw)]
                     off = [v for v in vals if v % GRID != 0]
-                    if off and not _is_registered_optical(lines, i):
+                    if off and not _is_registered_optical(fn, i):
                         bad.append("%s:%d  %s  → 非 %d 倍数 %s"
                                    % (fn, i + 1, line.strip(), GRID, off))
         return bad
@@ -97,7 +122,7 @@ class TestSpacingGrid(unittest.TestCase):
                     continue
                 vals = [int(x) for x in re.findall(r"\d+", line)]
                 off = [v for v in vals if v % GRID != 0]
-                if off and _is_registered_optical(lines, i):
+                if off and _is_registered_optical(fn, i):
                     unregistered.append((fn, i + 1, line.strip()))
         # 光学例外数量应当**很少**。超过 8 处说明有人开始滥用这个后门。
         self.assertLessEqual(
@@ -123,7 +148,7 @@ class TestSpacingGrid(unittest.TestCase):
                 for m in re.finditer(r"setFixed(?:Width|Height|Size)\(([^)]*)\)", line):
                     vals = [int(x) for x in re.findall(r"\d+", m.group(1))]
                     off = [v for v in vals if v >= 20 and v % GRID != 0]
-                    if off and not _is_registered_optical(lines, i):
+                    if off and not _is_registered_optical(fn, i):
                         bad.append("%s:%d  %s" % (fn, i + 1, line.strip()))
         self.assertEqual(bad, [], "较大固定尺寸脱离栅格：\n" + "\n".join(bad))
 
@@ -140,6 +165,43 @@ class TestSpacingGrid(unittest.TestCase):
             v = getattr(sp, name)
             self.assertGreater(v, 0)
             self.assertLess(v, GRID, "Space.%s 应小于栅格步进" % name)
+
+
+class TestFontWeights(unittest.TestCase):
+    """字重只能用字体真实拥有的档位。
+
+    **本机中文字体（Microsoft YaHei）只有 Regular(400) / Bold(700) / Light(300)。**
+    请求 600 会被 Qt 吸附到 700、还会让 matplotlib 打 findfont 告警——
+    于是"600"和"700"渲染出来一模一样，那个层级是假的。
+
+    这条测试是补上去的：第一轮只修了 theme.py 里 QSS 模板的 6 处，
+    **内联样式表里的 8 处漏了整整一轮**（widgets.py 4、window.py 3、charts.py 1），
+    直到渲染图表时看到 findfont 告警才发现。所以检查必须是全局的，
+    不能只查模板。
+    """
+    #: 字体真实拥有的档位
+    ALLOWED = {"300", "400", "700", "normal", "bold", "lighter", "bolder",
+               "light", "black", "b"}
+
+    def test_no_fake_intermediate_weights(self):
+        import re
+        bad = []
+        for fn in FILES:
+            for i, line in enumerate(_lines_of(fn), 1):
+                for m in re.finditer(r"font-weight:\s*(\d+)", line):
+                    if m.group(1) not in self.ALLOWED:
+                        bad.append("%s:%d  font-weight:%s" % (fn, i, m.group(1)))
+                for m in re.finditer(r'fontweight="(\d+)"', line):
+                    if m.group(1) not in self.ALLOWED:
+                        bad.append("%s:%d  fontweight=%s" % (fn, i, m.group(1)))
+        self.assertEqual(bad, [], "使用了字体不存在的字重（会被静默吸附）：\n"
+                         + "\n".join(bad))
+
+    def test_theme_qss_has_no_intermediate_weights(self):
+        import re
+        q = re.sub(r"/\*.*?\*/", "", T.qss(T.DARK), flags=re.S)   # 去 CSS 注释
+        bad = {m for m in re.findall(r"font-weight:\s*(\d+)", q) if m not in self.ALLOWED}
+        self.assertEqual(bad, set(), "主题 QSS 里有字体不存在的字重：%s" % sorted(bad))
 
 
 class TestTypeScale(unittest.TestCase):
