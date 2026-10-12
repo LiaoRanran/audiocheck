@@ -1,16 +1,32 @@
-"""判定规则 —— 表驱动测试，覆盖"同一截止点在不同容器里含义不同"这一核心设计。"""
+"""判定规则 —— 表驱动测试，覆盖两条核心设计：
+
+  1. 「同一截止点在不同容器里含义不同」
+  2. 「保真」与「可用性」是两件事，判定必须多轴
+
+早期版本只有一个带宽轴定等级、其余维度降级为"标签"，
+于是削波严重/动态压平/单声道的文件照样能拿 ok。
+"""
 from __future__ import annotations
 
 import pytest
 
 from audiocheck.config import Thresholds
-from audiocheck.core.analyzers.verdict import advice, bandwidth_verdict, quality_tags
+from audiocheck.core.analyzers.verdict import (
+    advice,
+    axis_bandwidth,
+    axis_bitdepth,
+    axis_channels,
+    axis_dynamics,
+    axis_level,
+    cross_checks,
+)
 
 TH = Thresholds()
 
 
+# ============================================================ 轴一：带宽
 @pytest.mark.parametrize("fs,cutoff,expect_level,keyword", [
-    # 44.1k 容器
+    # 44.1k 容器（砖墙陡 = 上游低通的硬证据）
     (44100, 22000, "ok", "CD 级满带宽"),
     (44100, 19500, "warn", "轻微带限"),
     (44100, 17000, "bad", "有损溯源"),
@@ -22,54 +38,197 @@ TH = Thresholds()
     (48000, 17000, "bad", "有损溯源"),
     # >48k 容器
     (96000, 19000, "bad", "伪 Hi-Res"),
-    (96000, 44000, "ok", "真 Hi-Res"),        # ≥ 85% × 48k
-    (96000, 25000, "warn", "半 Hi-Res"),      # 上端大片留空
+    (96000, 44000, "ok", "真 Hi-Res"),
+    (96000, 25000, "warn", "半 Hi-Res"),
     # 无内容
     (44100, None, "warn", "无法判定"),
 ])
-def test_bandwidth_verdict(fs, cutoff, expect_level, keyword):
-    text, level = bandwidth_verdict(fs, cutoff, TH)
+def test_axis_bandwidth_table(fs, cutoff, expect_level, keyword):
+    level, text, _conf = axis_bandwidth(fs, cutoff, 113.0, TH)
     assert level == expect_level
     assert keyword in text, "期望包含 %r，实得 %r" % (keyword, text)
 
 
 def test_same_cutoff_differs_by_container():
     """21.4kHz：在 44.1k 容器里是"轻微带限"，在 48k 容器里是"疑似升频"。"""
-    a, _ = bandwidth_verdict(44100, 21400, TH)
-    b, _ = bandwidth_verdict(48000, 21400, TH)
+    _, a, _ = axis_bandwidth(44100, 21400, 113.0, TH)
+    _, b, _ = axis_bandwidth(48000, 21400, 113.0, TH)
     assert "升频" in b, "48k 容器的 21.4kHz 应判为升频，实得 %r" % b
     assert "升频" not in a, "44.1k 容器的 21.4kHz 不该判为升频，实得 %r" % a
 
 
-def test_quality_tags_detect_brickwall_and_clipping():
-    r = {"brickwall_db_per_oct": 113.0, "cutoff_khz": 19.0,
-         "clip_pct": 0.5, "true_peak_dbfs": 1.2, "lufs": -7.4, "lra": 1.7}
-    tags = quality_tags(r, TH)
-    joined = "｜".join(tags)
-    assert "砖墙" in joined
-    assert "削波" in joined
-    assert "采样间过载" in joined
-    assert "响度战" in joined
-    assert "动态压平" in joined
+def test_brickwall_steepness_changes_wording_and_confidence():
+    """**同一截止点，砖墙陡缓要给不同强度的结论。**
+
+    陡断崖（≥24 dB/oct）是"上游做了低通"的硬证据；平缓滚降可能
+    只是母带/录音链本身的频响，不能当成转码的硬结论。
+    """
+    _, hard, conf_h = axis_bandwidth(44100, 19000, 113.0, TH)
+    _, soft, conf_s = axis_bandwidth(44100, 19000, 5.0, TH)
+    assert "砖墙" in hard and "陡" in hard
+    assert "滚降平缓" in soft
+    assert conf_h > conf_s, "陡砖墙的证据强度应更高：%.2f vs %.2f" % (conf_h, conf_s)
 
 
-def test_quality_tags_quiet_material_has_no_tags():
-    r = {"brickwall_db_per_oct": 5.0, "cutoff_khz": 21.0, "clip_pct": 0.0,
-         "true_peak_dbfs": -3.0, "lufs": -16.0, "lra": 12.0}
-    assert quality_tags(r, TH) == []
+def test_confidence_is_none_without_brickwall_data():
+    """没有砖墙数据时不能编造证据强度。"""
+    _, _, conf = axis_bandwidth(44100, 19000, None, TH)
+    assert conf is None
 
 
+def test_thresholds_are_overridable():
+    th = Thresholds(cd_full=18.0, ltd=15.0)
+    level, text, _ = axis_bandwidth(44100, 19000, 113.0, th)
+    assert level == "ok", "放宽阈值后 19k 应算满带宽，实得 %s / %s" % (level, text)
+
+
+# ============================================================ 轴二：位深
+def test_bitdepth_flags_padded_container():
+    """24bit 容器装 16bit 内容 → 必须判出来（早期完全没进判定）。"""
+    r = {"bits": "PCM_24", "bit_padded": True, "bit_origin": 16,
+         "bit_note": "样本最低 8 位恒为零"}
+    lv, txt = axis_bitdepth(r, TH)
+    assert lv == "warn"
+    assert "伪位深" in txt and "16" in txt
+
+
+def test_bitdepth_ok_for_honest_container():
+    assert axis_bitdepth({"bits": "PCM_16", "bit_effective": 16}, TH) == ("ok", "")
+
+
+def test_bitdepth_flags_ineffective_low_bits():
+    lv, txt = axis_bitdepth({"bits": "PCM_24", "bit_effective": 18}, TH)
+    assert lv == "warn" and "有效位深" in txt
+
+
+def test_bitdepth_honest_24bit_passes():
+    assert axis_bitdepth({"bits": "PCM_24", "bit_effective": 23}, TH)[0] == "ok"
+
+
+# ============================================================ 轴三：电平
+def test_level_flags_severe_clipping_as_bad():
+    lv, txt = axis_level({"clip_pct": 1.2}, TH)
+    assert lv == "bad" and "削波严重" in txt
+
+
+def test_intersample_overload_is_advisory_not_a_downgrade():
+    """**采样间过载只提示、不降级。**
+
+    它与削波性质不同：削波是样本被截平、信息真的丢了（文件的问题）；
+    dBTP>0 是样本都好好的、DAC 重建时过冲（播放链的问题）。
+    而且现代母带里极常见，拿它降级会让大半个曲库都"不达标"。
+
+    早先把它当降级项，结果**所有合成回归用例**（满刻度正弦恒有 +0.48 dBTP）
+    从 ok 变 warn —— 它们本来没问题。这条测试钉住修正后的行为。
+    """
+    lv, txt = axis_level({"clip_pct": 0.0, "true_peak_dbfs": 1.2}, TH)
+    assert lv == "ok", "采样间过载不该降级，实得 %s" % lv
+    assert "采样间过载" in txt, "仍应提示出来"
+    assert "播放链" in txt, "并说明它属于播放链而非文件问题"
+
+
+def test_real_clipping_still_downgrades():
+    """真削波仍然降级——它确实是文件的问题。"""
+    assert axis_level({"clip_pct": 0.05}, TH)[0] == "warn"
+    assert axis_level({"clip_pct": 1.2}, TH)[0] == "bad"
+
+
+def test_level_clean_signal_is_ok():
+    assert axis_level({"clip_pct": 0.0, "true_peak_dbfs": -1.0}, TH)[0] == "ok"
+
+
+# ============================================================ 轴四：动态
+def test_dynamics_flags_loudness_war():
+    lv, txt = axis_dynamics({"lra": 1.7, "dr_db": 5.0, "lufs": -7.4}, TH)
+    assert lv == "warn"
+    assert "动态压平" in txt and "响度战" in txt
+
+
+def test_dynamics_good_master_is_ok():
+    assert axis_dynamics({"lra": 12.0, "dr_db": 14.0, "lufs": -16.0}, TH)[0] == "ok"
+
+
+# ============================================================ 轴五：声道
+def test_channels_flags_near_mono():
+    # width_narrow_db = -18 dB（这是个负值阈值：越负越窄）
+    lv, txt = axis_channels({"width_db": -25.0}, TH)
+    assert lv == "warn" and "近乎单声道" in txt
+
+
+def test_channels_does_not_drive_level():
+    """**可用性轴不得驱动等级。**
+
+    单声道、LRA=0 的合成测试信号曾被判成 warn —— 那不是文件不达标，
+    是它的用途有限。等级必须只由保真轴（带宽/位深/削波）决定。
+    """
+    import inspect
+
+    from audiocheck.core.analyzers.verdict import VerdictAnalyzer
+    src = inspect.getsource(VerdictAnalyzer.run)
+    assert "drives" in src, "聚合必须区分保真轴与可用性轴"
+    for line in src.splitlines():
+        if "level = _worst" in line:
+            assert "if drives" in line, "_worst 只能聚合 drives=True 的轴，实得：%s" % line
+
+
+def test_channels_wide_is_ok():
+    assert axis_channels({"width_db": -3.0}, TH)[0] == "ok"
+
+
+# ============================================================ 交叉核对
+def test_cross_check_detects_bit_depth_fraud():
+    r = {"bits": "PCM_24", "bit_padded": True, "bit_origin": 16}
+    cc = cross_checks(r, 96000, 19000.0)
+    assert any("位深造假" in x for x in cc)
+
+
+def test_cross_check_detects_sample_rate_upsampling():
+    """高采样率容器 + 内容止于 44.1k 系 → 采样率造假。"""
+    cc = cross_checks({}, 96000, 21000.0)
+    assert any("采样率造假" in x for x in cc)
+
+
+def test_cross_check_warns_when_evidence_is_weak():
+    """截止点低但滚降平缓 → 明确说"证据不足"，不硬下转码结论。"""
+    cc = cross_checks({"brickwall_db_per_oct": 5.0}, 44100, 17000.0)
+    assert any("证据不足" in x for x in cc)
+
+
+def test_cross_check_detects_vendor_mismatch():
+    r = {"format": "FLAC", "meta": {"vendor": "LAME 3.100"}}
+    cc = cross_checks(r, 44100, 21000.0)
+    assert any("编码器串可疑" in x for x in cc)
+
+
+def test_cross_checks_clean_file_returns_nothing():
+    r = {"format": "FLAC", "meta": {"vendor": "reference libFLAC 1.3.1"},
+         "brickwall_db_per_oct": 30.0}
+    assert cross_checks(r, 44100, 21500.0) == []
+
+
+# ============================================================ 建议
 def test_advice_mentions_hf_limit():
     txt = advice({"cutoff_hz": 19000, "bands_pct": {"bass": 70}}, TH)
     assert "高频延伸" in txt and "低频" in txt
 
 
-def test_advice_flags_inaudiible_dynamics():
+def test_advice_flags_inaudible_dynamics():
     txt = advice({"cutoff_hz": 21000, "lra": 1.5, "lufs": -7.0}, TH)
     assert "动态" in txt
 
 
-def test_thresholds_are_overridable():
-    th = Thresholds(cd_full=18.0, ltd=15.0)
-    text, level = bandwidth_verdict(44100, 19000, th)
-    assert level == "ok", "放宽阈值后 19k 应算满带宽，实得 %s / %s" % (level, text)
+def test_advice_flags_near_mono_for_soundstage():
+    txt = advice({"cutoff_hz": 21000, "width_db": -25.0}, TH)
+    assert "声场" in txt
+
+
+# ============================================================ 依赖声明
+def test_verdict_declares_real_dependencies():
+    """**requires 参与拓扑调度，必须声明真实依赖。**
+
+    早期只写了 basic/spectrum，却读了 loudness/stereo/codec/bitdepth 的字段，
+    靠 order=90 恰好最大才没出事——那是运气不是契约。
+    """
+    from audiocheck.core.analyzers.verdict import VerdictAnalyzer
+    for dep in ("basic", "spectrum", "loudness", "stereo", "codec", "bitdepth"):
+        assert dep in VerdictAnalyzer.requires, "verdict 应声明依赖 %s" % dep
