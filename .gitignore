@@ -27,3 +27,12 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+
+# 构建/调试日志（临时产物，不进库）
+pk*.log
+pk*.err
+_audit_*.py
+_probe_*.py
+_zoom_*.py
+shots/_crop_*.png
+shots/_card_zoom*.png
