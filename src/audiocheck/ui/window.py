@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -175,6 +175,9 @@ class MainWindow(FramelessWindow):
     # 视图数据缓存的**字节**上限：一份频谱图 (t,f,S) 约 0.7–3 MB、瀑布图约 0.2 MB。
     # 96 MB 够留住几十次点选，又不会把常驻内存顶上去（实测连点 40 个文件稳定在 +60 MB）。
     CACHE_MAX_BYTES = 96 << 20
+    # 表格刷新的合并窗口（见 _schedule_refresh）：120 ms ≈ 8 行/秒地长出来，
+    # 肉眼与"每来一个文件刷一次"没有区别，但把 N 次全表重建压成与文件数无关的常数级。
+    REFRESH_COALESCE_MS = 120
     # 视图 key → QStackedWidget 的索引。**顺序必须与 _stack() 里 addWidget 的
     # 真实顺序一致**：overview, spectrum, spectro, waterfall, bands,
     # compare(cv_cmp), batch(cv_ovw), meta(两个 KVTable)。
@@ -202,6 +205,11 @@ class MainWindow(FramelessWindow):
         self._view_workers: dict[tuple[str, str], ViewWorker] = {}
         self._cache: dict[tuple[str, str], tuple] = {}
         self._last_sig: tuple | None = None
+        # 表格刷新的合并节流（见 _schedule_refresh）
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setSingleShot(True)
+        self._refresh_timer.setInterval(self.REFRESH_COALESCE_MS)
+        self._refresh_timer.timeout.connect(self.refresh_table)
 
         self._build()
         self._commands()
@@ -601,9 +609,21 @@ class MainWindow(FramelessWindow):
         i = self._idx.get(r["path"])
         if i is not None:
             self.items[i]["result"] = r
-            self.refresh_table()
+            self._schedule_refresh()
+
+    def _schedule_refresh(self):
+        """把短时间内的多次刷新合并成一次。
+
+        每次 `refresh_table()` 的代价与**行数**成正比（200 行实测 214 ms），
+        而分析时每回来一个文件都会触发一次：100 个文件就是 100 次全表重建，
+        且每次要重建的行越来越多 —— 界面在分析过程中越拖越卡。
+        合并到 120 ms 一次后，总代价与文件数无关，观感不变（照样一行行长出来）。
+        """
+        if not self._refresh_timer.isActive():
+            self._refresh_timer.start()
 
     def _finish(self, n):
+        self._refresh_timer.stop()          # 收尾立刻刷，不等节流窗口
         self.act["run"].setEnabled(True)
         self.act["stop"].setEnabled(False)
         self.pb.setVisible(False)

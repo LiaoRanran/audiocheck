@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg  # noqa: E402
 from matplotlib.figure import Figure  # noqa: E402
 from matplotlib.gridspec import GridSpec  # noqa: E402
-from PySide6.QtCore import QRectF, Qt  # noqa: E402
+from PySide6.QtCore import QRectF, Qt, QTimer  # noqa: E402
 from PySide6.QtGui import QColor, QFont, QPainter, QPen  # noqa: E402
 from PySide6.QtWidgets import QStyle, QStyledItemDelegate  # noqa: E402
 
@@ -42,6 +42,11 @@ CYCLE = ["#3d7dff", "#8b5cf6", "#06b6d4", "#22c55e", "#eab308", "#ec4899",
 
 
 class BaseCanvas(FigureCanvasQTAgg):
+    # 内容已变但当前不可见 → 标脏，等 showEvent 再画。
+    # 放在类属性上：WaterfallCanvas 直接调 FigureCanvasQTAgg.__init__、不走
+    # super().__init__，类属性是它唯一能稳定拿到该字段的途径。
+    _stale = False
+
     def __init__(self, w=6.0, h=3.4, dpi=100):
         self.fig = Figure(figsize=(w, h), dpi=dpi, layout="constrained")
         super().__init__(self.fig)
@@ -57,14 +62,34 @@ class BaseCanvas(FigureCanvasQTAgg):
         """
         return False
 
+    def redraw_if_visible(self):
+        """看得见就立刻画，看不见只标脏。
+
+        画布在 QStackedWidget 里，同一时刻**只有一页可见**（实测
+        `isVisible()`：切换前 6 张全 False，切到频谱图后才 1 张 True）。
+        而一次重绘在本机要 90–370 ms（频谱图 90、瀑布图 370，见
+        packaging/perf_probe.py），所以给看不见的画布喂数据/换肤纯属白付：
+        换肤 1.6 s 里绝大部分花在 5 张看不见的画布上。
+        """
+        if self.isVisible():
+            self.redraw()
+        else:
+            self._stale = True
+
     def apply_theme(self, p):
         self.p = p
         self.fig.set_facecolor(p["surface"])
-        if self._has_data():
-            self.redraw()
-        else:
+        if not self._has_data():
             # 没有数据也要让背景色立刻跟上，否则深/浅主题切换时会闪一下旧底色
             self.draw_idle()
+        else:
+            self.redraw_if_visible()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        if self._stale:
+            self._stale = False
+            self.redraw()
 
     def redraw(self):
         pass
@@ -95,6 +120,7 @@ class SpectrumCanvas(BaseCanvas):
         self.r = None
         self._hover = None
         self._static_ok = False        # 静态内容是否已按当前数据画好
+        self._bg = None                # 静态层的栅格快照，悬停 blit 用
         self._hline = self._hdot = self._hann = None   # 常驻悬停图元
         self.mpl_connect("motion_notify_event", self._on_move)
         self.mpl_connect("axes_leave_event", lambda e: self._set_hover(None))
@@ -108,8 +134,13 @@ class SpectrumCanvas(BaseCanvas):
         if r is not self.r:
             # 数据换了，静态内容（曲线/频段线/截止标注）必须重画
             self._static_ok = False
+            self._bg = None
         self.r = r
-        self.redraw()
+        self.redraw_if_visible()
+
+    def resizeEvent(self, e):
+        self._bg = None                # 尺寸变了，快照会错位
+        super().resizeEvent(e)
 
     def _has_data(self):
         return bool(self.r and self.r.get("curve"))
@@ -119,19 +150,60 @@ class SpectrumCanvas(BaseCanvas):
             return
         self._hover = f
         if self._has_data():
-            # **只重画悬停图元，不动静态内容**。早先每次鼠标移动都
-            # ax.clear() 全量重建（曲线是几百个点 + fill_between + 6 条频段线
-            # + 截止标注），单次约 30ms，鼠标划过时图表明显发涩。
+            # 只重建那 3 个悬停图元，再把它们**补画到静态快照上**。
             self._hover_layer()
-            self.draw_idle()
+            self._blit()
+
+    def _blit(self):
+        """把悬停层补画到静态快照上，而不是重画整张图。
+
+        测量依据（packaging/perf_probe.py，本机 = 自由线程 3.14、单核约为常规桌面 1/3）：
+            整图 `draw()`        90 ms（其中 33 个刻度文本占一半）
+            `_hover_layer()`    0.3 ms（建图元）
+            blit 本路径          ~1 ms
+        差两个数量级。上一轮"静态层 / 悬停层分离"只省下建图元那部分（90 → 60 ms 量级），
+        大头始终是整图重画——所以这里必须走 blit。
+        QtAgg 的 `paintEvent` 只从 Agg 缓冲拷像素、不重渲染，`blit()` 因此是纯像素搬运。
+        快照失效时**当场补一张再走快路径**，而不是退回 `draw_idle()`：
+        窗口一缩放就会作废快照（`resizeEvent`），若只退回异步重画，
+        那之后每一次悬停都会是整图重画——等于这个优化白做。
+        """
+        if self._bg is None:
+            self._drop_hover()
+            self.draw()
+            self._snapshot()
+            if self._bg is None:               # 拿不到缓冲（无 renderer）：只能走慢路
+                self._hover_layer()
+                self.draw_idle()
+                return
+            self._hover_layer()                # 刚为拍照把它摘了，补回来
+        self.restore_region(self._bg)
+        for art in (self._hline, self._hdot, self._hann):
+            if art is not None:
+                self.ax.draw_artist(art)
+        self.blit(self.fig.bbox)
+
+    def _snapshot(self):
+        """把当前画面（此刻没有悬停图元）存成栅格快照。
+
+        取整个 figure 而不是 `ax.bbox`：悬停气泡贴着左右边缘时会探出坐标区，
+        只 blit 坐标区会把它裁掉。
+        """
+        try:
+            self._bg = self.copy_from_bbox(self.fig.bbox)
+        except Exception:                                  # noqa: BLE001
+            self._bg = None
 
     def redraw(self):
+        self._stale = False
         p, ax = self.p, self.ax
         if p is None:
             return
         self.fig.set_facecolor(p["surface"])
         if not self._has_data():
             self._static_ok = False
+            self._bg = None
+            self._drop_hover()
             ax.clear()
             self._ax_style(ax, "频率 Hz", "相对电平 dB")
             ax.text(.5, .5, "选择左侧条目以查看频谱", ha="center", va="center",
@@ -143,8 +215,13 @@ class SpectrumCanvas(BaseCanvas):
         if not self._static_ok:
             self._static_layer()
             self._static_ok = True
-        self._hover_layer()
+        # 顺序要紧：先摘掉悬停图元再拍快照，否则快照里会烙进上一帧的悬停层
+        self._drop_hover()
         self.draw()
+        self._snapshot()
+        if self._hover is not None:
+            self._hover_layer()
+            self._blit()
 
     def _static_layer(self):
         """曲线 + 频段分界 + 截止标注。**只有数据变化才重画。**"""
@@ -209,13 +286,8 @@ class SpectrumCanvas(BaseCanvas):
         # 顶部多留 14% 给频段标签，否则标签与截止标注挤在一起
         ax.set_ylim(lo, top + (top - lo) * 0.14)
 
-    def _hover_layer(self):
-        """竖线 + 读数点 + 数值气泡。鼠标移动只走这一层。"""
-        p, ax = self.p, self.ax
-        arr = np.asarray(self.r["curve"], dtype=float)
-        f = arr[:, 0]
-        nyq = (self.r.get("sr") or 48000) / 2
-        # 只删自己加的三个图元，不碰静态内容
+    def _drop_hover(self):
+        """只删自己加的三个图元，不碰静态内容。"""
         for art in (self._hline, self._hdot, self._hann):
             if art is not None:
                 try:
@@ -223,6 +295,16 @@ class SpectrumCanvas(BaseCanvas):
                 except (ValueError, NotImplementedError):
                     pass
         self._hline = self._hdot = self._hann = None
+
+    def _hover_layer(self):
+        """竖线 + 读数点 + 数值气泡。鼠标移动只重建这三个。"""
+        p, ax = self.p, self.ax
+        self._drop_hover()
+        if not self._has_data():
+            return
+        arr = np.asarray(self.r["curve"], dtype=float)
+        f = arr[:, 0]
+        nyq = (self.r.get("sr") or 48000) / 2
         if not (self._hover and 20 <= self._hover <= nyq):
             return
         i = int(np.argmin(np.abs(f - self._hover)))
@@ -247,15 +329,21 @@ class SpectrogramCanvas(BaseCanvas):
         self._cbar = None            # 色条只建一次，之后只换 mappable（见 _colorbar）
 
     def set_data(self, r=None, data=None, msg=None):
+        # 同一份数据（对象身份相同）再喂一次不必重画：`_load_view` 命中缓存时
+        # 每次切页都会重复喂一遍，而这张图重绘一次要 470 ms（实测）。
+        same = (r is self.r and data is self.data
+                and (msg is None or msg == self._msg))
         self.r, self.data = r, data
         if msg:
             self._msg = msg
-        self.redraw()
+        if not (same and not self._stale):
+            self.redraw_if_visible()
 
     def _has_data(self):
         return self.data is not None   # data=None 表示还没生成
 
     def redraw(self):
+        self._stale = False
         p, ax = self.p, self.ax
         if p is None:
             return
@@ -318,12 +406,13 @@ class BandCanvas(BaseCanvas):
 
     def set_data(self, r):
         self.r = r
-        self.redraw()
+        self.redraw_if_visible()
 
     def _has_data(self):
         return bool(self.r)   # r 为 None 表示未选中
 
     def redraw(self):
+        self._stale = False
         p, ax = self.p, self.ax
         if p is None:
             return
@@ -376,14 +465,22 @@ class WaterfallCanvas(BaseCanvas):
         self._msg = "选择条目后自动生成"
         self._elev, self._azim = 26, -58
         self._drag = None
+        # 拖拽节流：3D 重绘在本机实测 367 ms/帧（2.7 fps），不节流的话
+        # 每个鼠标移动事件都排一次重绘，越拖越卡、松手后还在补画。
+        self._drag_timer = QTimer(self)
+        self._drag_timer.setSingleShot(True)
+        self._drag_timer.setInterval(120)
         self.mpl_connect("button_press_event", self._on_press)
         self.mpl_connect("motion_notify_event", self._on_drag)
 
     def set_data(self, r=None, data=None, msg=None):
+        same = (r is self.r and data is self.data
+                and (msg is None or msg == self._msg))
         self.r, self.data = r, data
         if msg:
             self._msg = msg
-        self.redraw()
+        if not (same and not self._stale):
+            self.redraw_if_visible()
 
     def _on_press(self, ev):
         if ev.inaxes is self.ax and ev.button == 1:
@@ -395,19 +492,28 @@ class WaterfallCanvas(BaseCanvas):
         x0, y0, e0, a0 = self._drag
         self._elev = max(4, min(88, e0 + (ev.y - y0) * 0.35))
         self._azim = a0 - (ev.x - x0) * 0.35
-        self.redraw()
+        # 角度**每次都更新**（状态无损），只把重绘限流到 ~8 fps。
+        # 先画一帧再启动计时器：跟手感来自"按下即有响应"。
+        if not self._drag_timer.isActive():
+            self.redraw()
+            self._drag_timer.start()
 
     def _release(self, ev):
         self._drag = None
 
     def mouseReleaseEvent(self, ev):
+        was_dragging = self._drag is not None
         self._drag = None
+        self._drag_timer.stop()
+        if was_dragging:
+            self.redraw()              # 松手补一帧最终角度（拖拽期间被节流掉的那部分）
         super().mouseReleaseEvent(ev)
 
     def _has_data(self):
         return self.data is not None   # data=None 表示还没生成
 
     def redraw(self):
+        self._stale = False
         p = self.p
         if p is None:
             return
@@ -478,12 +584,13 @@ class CompareCanvas(BaseCanvas):
 
     def set_data(self, items):
         self.items = items or []
-        self.redraw()
+        self.redraw_if_visible()
 
     def _has_data(self):
         return bool(self.items)   # items 空表示没有多选
 
     def redraw(self):
+        self._stale = False
         p, ax = self.p, self.ax
         if p is None:
             return
@@ -532,12 +639,15 @@ class OverviewCanvas(BaseCanvas):
 
     def set_data(self, rows):
         self.rows = rows or []
-        self.redraw()
+        # 批次概览只在「批次概览」页可见，而 `refresh_table()` 每刷新一次就会喂一次数据
+        # （分析时每个文件回来都刷）。不可见时只存数据、标脏，切过去再画。
+        self.redraw_if_visible()
 
     def _has_data(self):
         return bool(self.rows)   # rows 空表示没有已分析文件
 
     def redraw(self):
+        self._stale = False
         p = self.p
         if p is None:
             return

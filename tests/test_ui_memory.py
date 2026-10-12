@@ -32,6 +32,7 @@ import sys
 import tempfile
 import time
 import unittest
+from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -40,13 +41,19 @@ if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
 import numpy as np  # noqa: E402
+from PySide6.QtCore import QEvent, QPointF, Qt  # noqa: E402
+from PySide6.QtGui import QMouseEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 APP = QApplication.instance() or QApplication([])
 
 from audiocheck.ui import theme as T  # noqa: E402
 from audiocheck.ui import window as W  # noqa: E402
-from audiocheck.ui.charts import SpectrogramCanvas, SpectrumCanvas  # noqa: E402
+from audiocheck.ui.charts import (  # noqa: E402
+    SpectrogramCanvas,
+    SpectrumCanvas,
+    WaterfallCanvas,
+)
 
 PP = T.plot_palette(T.DARK.p)
 
@@ -58,6 +65,13 @@ def spec_like(cols: int = 171, bins: int = 2049):
     f = np.linspace(0, 22050, bins)
     S = (rng.standard_normal((bins, cols)) * 12 - 60).astype(np.float32)
     return t, f, S
+
+
+def curve_result() -> dict:
+    """一份频谱曲线结果（`curve` 是 engine 产出的 [[f, dB], …] 形式）。"""
+    f = np.geomspace(20, 22050, 600)
+    return {"file": "a.wav", "sr": 44100, "level": "ok", "cutoff_hz": 18000,
+            "curve": [[float(a), float(b)] for a, b in zip(f, -20 - np.log10(f))]}
 
 
 def artist_count(ax) -> int:
@@ -80,6 +94,9 @@ class TestSpectrogramArtistsAreBounded(unittest.TestCase):
     def setUp(self):
         self.cv = SpectrogramCanvas()
         self.cv.apply_theme(PP)
+        # 必须真的显示：画布是惰性重画的（不可见时只标脏，等 showEvent 补画），
+        # 不 show 的话 set_data 不会画任何东西，测出来的"稳定"是假的稳定。
+        self.cv.show()
         self.data = spec_like()
 
     def test_colorbar_is_built_once(self):
@@ -126,10 +143,9 @@ class TestHoverArtistsAreBounded(unittest.TestCase):
     def test_hover_does_not_accumulate_artists(self):
         cv = SpectrumCanvas()
         cv.apply_theme(PP)
-        f = np.geomspace(20, 22050, 600)
-        r = {"file": "a.wav", "sr": 44100, "level": "ok", "cutoff_hz": 18000,
-             "curve": [[float(a), float(b)] for a, b in zip(f, -20 - np.log10(f))]}
-        cv.set_data(r)
+        cv.resize(900, 500)
+        cv.show()
+        cv.set_data(curve_result())
         n0 = artist_count(cv.ax)
         for i in range(200):
             cv._set_hover(20 * (1.28 ** (i % 60)))
@@ -224,6 +240,73 @@ class TestViewWorkersAreBounded(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.w.close()
+
+
+class TestRedrawIsLazy(unittest.TestCase):
+    """看不见的画布不重画 —— 一次重绘 90–370 ms，白付不起。"""
+
+    def test_hidden_canvas_defers_until_shown(self):
+        cv = SpectrogramCanvas()
+        cv.apply_theme(PP)
+        cv.set_data(None, spec_like())
+        self.assertTrue(cv._stale, "不可见的画布不该立刻重画")
+        self.assertIsNone(cv._cbar, "不可见时连图元都不该建")
+        cv.show()
+        self.assertFalse(cv._stale, "show() 时必须把欠的画补上")
+        self.assertIsNotNone(cv._cbar, "补画后该有色条")
+
+    def test_theme_switch_does_not_redraw_hidden_canvas(self):
+        cv = SpectrumCanvas()
+        cv.apply_theme(T.plot_palette(T.LIGHT.p))
+        cv.resize(900, 500)
+        cv.show()
+        cv.set_data(curve_result())
+        self.assertFalse(cv._stale)
+        cv.hide()                              # 等价于"切到别的页去了"
+        cv.apply_theme(PP)
+        self.assertTrue(cv._stale, "看不见的画布不该在换肤时重画")
+        cv.show()
+        self.assertFalse(cv._stale, "切回来必须重画")
+
+
+class TestWaterfallDragIsThrottled(unittest.TestCase):
+    """3D 拖拽必须限流：本机实测一帧 367 ms（2.7 fps），不限流会越拖越卡。"""
+
+    def setUp(self):
+        self.cv = WaterfallCanvas()
+        self.cv.apply_theme(PP)
+        self.cv.resize(900, 500)
+        self.cv.show()
+        t = np.linspace(0, 25, 44)
+        f = np.linspace(0, 22050, 512)
+        S = (np.random.default_rng(3).standard_normal((512, 44)) * 10 - 60).astype(np.float32)
+        self.cv.set_data(None, (t, f, S))
+        self.calls: list[int] = []
+        self.cv.redraw = lambda: self.calls.append(1)   # 真画一帧 367 ms，这里只数次数
+
+    def _ev(self, x, y):
+        return SimpleNamespace(x=x, y=y, button=1, inaxes=self.cv.ax, xdata=None)
+
+    def test_drag_redraws_are_coalesced(self):
+        self.cv._on_press(self._ev(100, 100))
+        for i in range(20):                    # 20 次连续移动 = 一次快速拖拽
+            self.cv._on_drag(self._ev(100 + i, 100))
+        self.assertGreaterEqual(len(self.calls), 1, "按下拖拽后至少要有一帧响应")
+        self.assertLessEqual(len(self.calls), 2,
+                             "20 次移动触发了 %d 次重绘：拖拽没有限流" % len(self.calls))
+
+    def test_every_move_still_updates_angle_and_release_draws_final(self):
+        """限流只限重绘，不能丢状态：松手那一帧必须是最终角度。"""
+        self.cv._on_press(self._ev(100, 100))
+        for i in range(1, 21):
+            self.cv._on_drag(self._ev(100 + i * 3, 100))
+        self.assertAlmostEqual(self.cv._azim, -58 - 60 * 0.35, places=6,
+                               msg="被节流掉的移动也必须更新角度")
+        self.cv.mouseReleaseEvent(QMouseEvent(
+            QEvent.Type.MouseButtonRelease, QPointF(10, 10),
+            Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier))
+        self.assertEqual(len(self.calls), 2, "松手要补一帧最终画面")
 
 
 if __name__ == "__main__":

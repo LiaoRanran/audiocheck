@@ -108,6 +108,27 @@ class PolarityAnalyzer(Analyzer):
 
 ---
 
+## UI 层的时间预算（改动前必读）
+
+一次 matplotlib 重绘的代价按图分：频谱曲线 ~90 ms、频谱图 ~470 ms、3D 瀑布 ~370 ms
+（本机实测，环境见 `packaging/perf_probe.py` 头部）。**任何"每次鼠标移动/每次数据回来"
+都会触发的路径，都不能包含整图 `draw()`。** 四条约束：
+
+| 约束 | 位置 | 做法 |
+| --- | --- | --- |
+| 悬停走 blit | `charts.SpectrumCanvas._blit` | 静态层画完拍一张栅格快照，悬停只 `restore_region` + `draw_artist`(3 个图元) + `blit`（0.15 ms）。**不要**退回 `draw_idle()` 当常态——快照失效时应当场重建一张 |
+| 看不见就不画 | `charts.BaseCanvas.redraw_if_visible` | 画布在 `QStackedWidget` 里同一时刻只有一张可见，其余标脏、等 `showEvent` 补画。6 张全量重画是换肤 1.6 s 的主因 |
+| 同数据不重画 | `charts.SpectrogramCanvas.set_data` | 对象身份相同的 `(r, data)` 再喂一次直接返回——`_load_view` 命中缓存时每次切页都会重复喂（曾值 438 ms/次） |
+| 高频路径要限流/合并 | `WaterfallCanvas._drag_timer`、`MainWindow._schedule_refresh` | 拖拽 3D 旋转限流到 ~8 fps、松手补一帧（角度每次都更新，只限重绘）；分析时每文件的表格刷新合并到 120 ms 一次 |
+
+配套工具：`python packaging/perf_probe.py [--strict]`（9 个场景，含悬停三版对照）。
+
+**已知成本**（有数字，别靠感觉）：频谱图一次重绘 470 ms = `draw()` 370 ms
+（mesh 83 + constrained layout 70 + 刻度文本）+ pcolormesh 83 + `ax.clear` 15。
+下一步若还要压，方向是把 S 重采样到对数频轴后用 `imshow`（会动观感，需谨慎）。
+
+---
+
 ## 为什么截止点检测这么绕（三代演进）
 
 这是本项目最关键也最容易写错的算法。三代实现都留在了注释与测试里：
