@@ -9,7 +9,15 @@ from __future__ import annotations
 
 import os
 
-from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from PySide6.QtCore import (
+    QEasingCurve,
+    QPropertyAnimation,
+    QSequentialAnimationGroup,
+    Qt,
+    QThread,
+    QTimer,
+    Signal,
+)
 from PySide6.QtGui import QColor, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -19,6 +27,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFrame,
+    QGraphicsOpacityEffect,
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
@@ -36,6 +45,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from shiboken6 import isValid  # noqa: E402
 
 from ..config import BAND_CN, BANDS, Thresholds
 from ..core.analyzers.metadata import brief as meta_brief
@@ -61,6 +71,7 @@ from .widgets import (
     EmptyState,
     Gauge,
     KVTable,
+    SeedDialog,
     SideBar,
     StatCard,
     ToastHost,
@@ -196,6 +207,9 @@ class MainWindow(FramelessWindow):
         super().__init__(title="audiocheck", subtitle="音源质量检测")
 
         self.theme: T.Theme = T.DARK
+        # 由种子色生成的主题（`ui/palette.py`）。None = 用内置 DARK/LIGHT。
+        self.seed: str | None = None
+        self.seed_mode: str | None = None
         self.items: list[dict] = []
         self._idx: dict[str, int] = {}
         self.queue: list[str] = []
@@ -462,6 +476,53 @@ class MainWindow(FramelessWindow):
         h.addWidget(self.gauge, 0, Qt.AlignVCenter)
         return f
 
+    # ============================================================ 动效
+
+    def _fade(self, widget, ms: int = 170, start: float = 0.12, delay: int = 0):
+        """一次性淡入（可错峰）。**用完即拆**：效果与动画都 `deleteLater`。
+
+        为什么要拆干净：`QGraphicsOpacityEffect` 会让部件多一层合成，
+        一直挂着就是一直付出代价；而这项目刚修过"色条永不回收"那类泄漏——
+        动画相关的对象同属"用完必须回收"的一类，不然内存探针会抓到。
+
+        另：动画走 **Qt 属性动画**，不碰 matplotlib。画布一次重画是百毫秒量级，
+        用它做动画会直接顶穿帧预算（见 `packaging/perf_probe.py`）。
+        """
+        if widget is None:
+            return
+        eff = QGraphicsOpacityEffect(widget)
+        widget.setGraphicsEffect(eff)
+        anim = QPropertyAnimation(eff, b"opacity", self)
+        anim.setStartValue(start)
+        anim.setEndValue(1.0)
+        anim.setDuration(ms)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        if delay:
+            seq = QSequentialAnimationGroup(self)
+            seq.addPause(delay)
+            seq.addAnimation(anim)
+            group = seq
+        else:
+            group = anim
+
+        def _cleanup(_=None):
+            # **必须查对象还活着没有**：卡片可能在动画结束前就被下一轮
+            # `_cards()` 用 deleteLater 摘掉了（那时 effect 跟着没了），
+            # 而 `setGraphicsEffect(None)` 本身也会让 Qt 释放旧效果——
+            # 再对它 deleteLater 就会打在已删除的 C++ 对象上（实测 RuntimeError）。
+            if isValid(widget):
+                widget.setGraphicsEffect(None)
+            if isValid(group):
+                group.deleteLater()
+
+        group.finished.connect(_cleanup)
+        group.start()
+
+    def _stagger(self, widgets, step: int = 14) -> None:
+        """一屏卡片依次浮现：让"数据在这"这件事有一次视觉上的到达感。"""
+        for i, w in enumerate(widgets):
+            self._fade(w, ms=170, start=0.0, delay=i * step)
+
     def _section(self, text: str) -> QLabel:
         lab = QLabel(text)
         lab.setObjectName("SectionTitle")
@@ -526,6 +587,7 @@ class MainWindow(FramelessWindow):
         if key in self.VIEW_KEYS:
             self.stack.setCurrentIndex(self.VIEW_KEYS.index(key))
             self.sidebar.set_active(key)
+            self._fade(self.stack.currentWidget())
             self._load_visible_view()          # 切到频谱图/瀑布图时才补算数据
 
     def _commands(self):
@@ -537,6 +599,7 @@ class MainWindow(FramelessWindow):
             ("导出报告", "Ctrl+E", self.export),
             ("清空列表", "Ctrl+L", self.clear),
             ("切换主题", "Ctrl+D", self.toggle_theme),
+            ("换个种子色（生成整套配色）", "Ctrl+G", self.pick_seed),
             ("阈值设置", "Ctrl+T", self.open_settings),
             ("跳转到 总览", "", lambda: self._navigate("overview")),
             ("跳转到 频谱曲线", "", lambda: self._navigate("spectrum")),
@@ -550,6 +613,7 @@ class MainWindow(FramelessWindow):
                         ("F5", self.start), ("Ctrl+R", self.start), ("Esc", self.stop),
                         ("Ctrl+E", self.export), ("Ctrl+L", self.clear),
                         ("Ctrl+D", self.toggle_theme), ("Ctrl+T", self.open_settings),
+                        ("Ctrl+G", self.pick_seed),
                         ("Ctrl+K", self._palette), ("Delete", self._remove_selected),
                         ("Ctrl+F", lambda: self.ed_search.setFocus())):
             QShortcut(QKeySequence(seq), self).activated.connect(fn)
@@ -560,7 +624,29 @@ class MainWindow(FramelessWindow):
         p.exec()
 
     def toggle_theme(self):
+        # 用着种子色主题时按 Ctrl+D 就换该种子的另一套（深↔浅），
+        # 而不是跳回内置的 DARK/LIGHT——否则"换了个种子色"会被一次换肤冲掉。
+        if self.seed:
+            self.pick_seed(mode=("light" if self.seed_mode == "dark" else "dark"))
+            return
         self.apply_theme(T.LIGHT if self.theme.name == "dark" else T.DARK)
+
+    def pick_seed(self, mode: str | None = None):
+        """从种子色生成整套主题（`ui/palette.py`：OKLCH + WCAG 自审）。"""
+        d = SeedDialog(self, self.theme, self.seed or "#3d7dff",
+                       mode or self.seed_mode or self.theme.name)
+        if d.exec() != QDialog.Accepted:
+            return
+        from .palette import theme_from_seed
+        try:
+            th = theme_from_seed("seed", d.seed, d.mode)
+        except ValueError as e:                                # noqa: BLE001
+            self.toasts.notify(str(e).splitlines()[0][:60], "bad")
+            return
+        self.seed, self.seed_mode = d.seed, d.mode
+        self.apply_theme(th)
+        self.toasts.notify("已按种子色 %s 生成%s主题" % (d.seed, "深色" if d.mode == "dark"
+                                                   else "浅色"), "ok")
 
     def open_settings(self):
         d = SettingsDialog(self, self.theme)
@@ -844,10 +930,13 @@ class MainWindow(FramelessWindow):
             ("频段重心", human_khz(r.get("centroid_hz"))),
             ("编码器串", (r.get("meta") or {}).get("vendor") or "—"),
         ]
+        cards = []
         for i, (k, v) in enumerate(pairs):
             c = StatCard(self.theme)
             c.set(k, str(v))
             self.grid.addWidget(c, i // 6, i % 6)
+            cards.append(c)
+        self._stagger(cards)
 
     def _metric_rows(self, r):
         g = r.get
@@ -1084,12 +1173,25 @@ class MainWindow(FramelessWindow):
             # 实测症状：深色底上画出 #141a26 的数值，几乎不可见——
             # 指标卡的数字是仪表盘的重点，结果它最不显眼。
             self.apply_theme(T.THEMES[n])
+        # 种子色主题：记住上一次用过的种子，否则"换了个配色"关掉程序就没了。
+        seed = s.value("seed")
+        if seed:
+            from .palette import theme_from_seed
+            try:
+                self.seed = seed
+                self.seed_mode = s.value("seed_mode", "dark")
+                self.apply_theme(theme_from_seed("seed", seed, self.seed_mode))
+            except ValueError:                                 # noqa: BLE001
+                # 生成不达标（理论上不会发生：`build()` 内部就 strict 自审）
+                self.seed = self.seed_mode = None
 
     def closeEvent(self, e):
         from PySide6.QtCore import QSettings
         s = QSettings("audiocheck", "gui")
         s.setValue("geometry", self.saveGeometry())
         s.setValue("theme", self.theme.name)
+        s.setValue("seed", self.seed or "")
+        s.setValue("seed_mode", self.seed_mode or "")
         for w in ([self.worker] if self.worker else []) + list(self._view_workers.values()):
             if w and w.isRunning():
                 try:
@@ -1120,8 +1222,34 @@ def main(argv=None):
     w = MainWindow()
     w.setWindowIcon(T.app_icon(w.theme.p))
     w.resize(1460, 900)
+
+    # --seed / --mode：启动时就按种子色生成主题（`ui/palette.py`）。
+    # 这两个参数与"把后面的参数当文件"不能混，先挑出来再处理文件。
+    raw = list(argv or sys.argv[1:])
+    seed = mode = None
+    rest, i = [], 0
+    while i < len(raw):
+        a = raw[i]
+        if a in ("--seed", "--mode") and i + 1 < len(raw):
+            if a == "--seed":
+                seed = raw[i + 1]
+            else:
+                mode = raw[i + 1]
+            i += 2
+            continue
+        rest.append(a)
+        i += 1
+    if seed:
+        from .palette import theme_from_seed
+        try:
+            w.seed = seed
+            w.seed_mode = mode or "dark"
+            w.apply_theme(theme_from_seed("seed", seed, w.seed_mode))
+        except ValueError as e:                                # noqa: BLE001
+            print("种子色 %s 生成不达标：%s" % (seed, e))
+
     w.show()
-    args = [a for a in (argv or sys.argv[1:]) if os.path.exists(a)]
+    args = [a for a in rest if os.path.exists(a)]
     if args:
         files = collect_files(args)
         if files:

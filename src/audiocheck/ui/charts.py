@@ -94,6 +94,17 @@ class BaseCanvas(FigureCanvasQTAgg):
     def redraw(self):
         pass
 
+    def _plot_is_dark(self) -> bool:
+        """绘图区底色是深还是浅——决定配色往哪个方向走。
+
+        为什么算而不是写死：主题现在是**生成**出来的（`ui/palette.py`），
+        同一个代码路径要能同时服务深色与浅色，硬编码"深色"会重演
+        "写死 #1c212b"那类 bug。
+        """
+        from .palette import relative_luminance
+
+        return relative_luminance(self.p.get("plot_bg", "#000000")) < 0.18
+
     # ---- 公共样式 ----
     def _ax_style(self, ax, xlabel=None, ylabel=None):
         p = self.p
@@ -110,12 +121,67 @@ class BaseCanvas(FigureCanvasQTAgg):
             ax.set_ylabel(ylabel, color=p["text_faint"], fontsize=9, labelpad=4)
 
 
+# --------------------------------------------------------------------- Bark 标度
+# Traunmüller (1990) 的解析式：z = 26.81·f/(1960+f) − 0.53。
+# 与 headphone-lab 的 `perceptual.py` 同一套（两个项目各自独立实现，
+# 因为它们是分开的仓库，但口径必须一致，否则跨项目的数字没法对）。
+def bark(f: float) -> float:
+    return 26.81 * f / (1960.0 + f) - 0.53
+
+
+def bark_to_hz(z: float) -> float:
+    return 1960.0 * (z + 0.53) / (26.28 - z)
+
+
+def bark_edges(lo: float = 20.0, hi: float = 20000.0) -> list[float]:
+    """把 [lo, hi] 按 Bark 等宽切分，返回边界频率（首尾即 lo / hi）。"""
+    z0, z1 = bark(lo), bark(hi)
+    n = max(1, int(round(z1 - z0)))
+    edges = [bark_to_hz(z0 + (z1 - z0) * i / n) for i in range(n + 1)]
+    return [lo] + [e for e in edges if lo < e < hi] + [hi]
+
+
+def third_octave_smooth(f, db):
+    """1/3 倍频程滑动平滑：把曲线里的毛刺压掉，露出宏观走向。
+
+    为什么要单独画一条：**原始曲线的毛刺是内容**（共振、噪声），
+    平滑线看的是"整体倾斜"。两张信息叠在一张图上，谁也不替谁。
+    """
+    import numpy as np
+    f = np.asarray(f, dtype=float)
+    db = np.asarray(db, dtype=float)
+    out = np.empty_like(db)
+    for i in range(len(f)):
+        lo, hi = f[i] / (2 ** (1 / 6)), f[i] * (2 ** (1 / 6))
+        m = (f >= lo) & (f <= hi)
+        out[i] = db[m].mean() if m.any() else db[i]
+    return out
+
+
+def semantic_ramp(n: int, seed_hex: str, *, dark: bool) -> list[str]:
+    """从主色派生的**顺序渐变**（低频→高频）。
+
+    为什么不用 viridis：柱状图的类别是**有序**的（频段从低到高），
+    顺序型数据配顺序型色阶才对——彩虹色会暗示"这几段是并列类别"，那是错的。
+    这里用 OKLCH 做等 L 步长，因此每一档的视觉差是均匀的（HSL 做不到）。
+    """
+    from .palette import oklch_to_srgb, srgb_to_oklch
+
+    _, c, h = srgb_to_oklch(seed_hex)
+    c = max(0.09, min(0.16, c))
+    l0, l1 = (0.82, 0.46) if dark else (0.62, 0.34)
+    return [oklch_to_srgb((l0 + (l1 - l0) * (i / max(1, n - 1)), c, h))
+            for i in range(n)]
+
+
 # --------------------------------------------------------------------- 频谱曲线
 class SpectrumCanvas(BaseCanvas):
     """真实截止点 + 频段刻度 + 悬停读数（本工具的核心证据图）。"""
 
     def __init__(self):
-        super().__init__(6.2, 3.6)
+        # 这张图是全工具的**主证据**，给它更大的画幅（用户明确要求"大一点没问题"）。
+        # 代价是 blit 每次要多拷一些像素——实测仍在帧预算内（`perf_probe.py` P1）。
+        super().__init__(7.0, 4.4)
         self.ax = self.fig.add_subplot(111)
         self.r = None
         self._hover = None
@@ -234,6 +300,16 @@ class SpectrumCanvas(BaseCanvas):
         ax.clear()
         self._ax_style(ax, "频率 Hz", "相对电平 dB")
 
+        # ---- Bark 临界频带底纹 ----
+        # 人耳的频率分辨率是按临界频带走的下（<500Hz 约 100Hz 恒定，>500Hz 约 0.2·f），
+        # 而这张图的横轴是对数——**对数轴的等距在感知上并不等距**。铺一层 Bark 带，
+        # 读者才看得出"这一段在耳朵里算多宽一处"。交替深浅只作底纹，不抢曲线。
+        edges = bark_edges(20.0, nyq)
+        for i in range(len(edges) - 1):
+            if i % 2:
+                ax.axvspan(edges[i], edges[i + 1], color=p["surface2"],
+                           alpha=.55, lw=0, zorder=0)
+
         # ---- 频段分界（与推荐引擎 band_def 一致）----
         # 原来用 grid 色画，与背景几乎同色 —— 宣称的功能实际看不见。
         # 改用 border_hi 并在顶部标出边界值，让"分了几段、界在哪"可直接读。
@@ -251,7 +327,17 @@ class SpectrumCanvas(BaseCanvas):
 
         # 填充 .16→.10：原来低频段糊成一块，把曲线本身盖住了
         ax.fill_between(f, db, lo, color=p["accent"], alpha=.10, lw=0, zorder=2)
-        ax.semilogx(f, db, lw=1.15, color=p["accent"], zorder=3)
+        # 1/3 倍频程平滑线：**宏观走向**（原曲线的毛刺是内容，不替它）
+        ax.semilogx(f, third_octave_smooth(f, db), lw=1.9, color=p["accent_hi"],
+                    alpha=.85, zorder=3)
+        ax.semilogx(f, db, lw=.85, color=p["accent"], alpha=.95, zorder=3)
+
+        # ---- 噪底：动态范围的下边界（有测量值才画，没测就不画）----
+        nf = self.r.get("noise_floor_db")
+        if nf and lo < nf < top:
+            ax.axhline(nf, color=p["text_faint"], lw=.8, ls=":", zorder=2)
+            ax.text(22, nf + (top - lo) * .012, "噪底 %.0f dB" % nf,
+                    color=p["text_faint"], fontsize=7, va="bottom")
 
         cut = self.r.get("cutoff_hz")
         if cut:
@@ -281,7 +367,12 @@ class SpectrumCanvas(BaseCanvas):
                  if t <= nyq]
         ax.set_xticks(ticks)
         ax.set_xticklabels([("%gk" % (t / 1000) if t >= 1000 else "%g" % t) for t in ticks])
-        ax.minorticks_off()                 # 关掉默认密集次刻度，避免与上面打架
+        # 次刻度只留 2/5 两档（对数频率轴的惯例）：既够精读，又不会糊成一片。
+        # 早先 `minorticks_off()` 是因为**默认**次刻度太密——那是关错了对象。
+        minor = [float(t * m)
+                 for t in (20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000)
+                 for m in (2, 5)]
+        ax.set_xticks([v for v in minor if 20 < v <= nyq], minor=True)
         ax.set_xlim(20, nyq)
         # 顶部多留 14% 给频段标签，否则标签与截止标注挤在一起
         ax.set_ylim(lo, top + (top - lo) * 0.14)
@@ -431,8 +522,10 @@ class BandCanvas(BaseCanvas):
         names = [BAND_CN[k] for k, _, _ in BANDS]
         keys = [k for k, _, _ in BANDS]
         vals = [b.get(k, 0) for k in keys]
-        cmap = plt.get_cmap("viridis")
-        colors = [cmap(0.10 + 0.80 * i / (len(keys) - 1)) for i in range(len(keys))]
+        # 频段是**有序**类别（低→高），配顺序型色阶才对；色阶从当前主色派生
+        # （OKLCH 等 L 步长），于是换种子色时这张图也跟着变，而不是永远 viridis。
+        dark = self._plot_is_dark()
+        colors = semantic_ramp(len(keys), self.p["accent"], dark=dark)
         bars = ax.bar(range(len(keys)), vals, color=colors, width=.68, zorder=3)
         for rect, v in zip(bars, vals):
             ax.text(rect.get_x() + rect.get_width() / 2, v + max(vals + [1]) * .025,

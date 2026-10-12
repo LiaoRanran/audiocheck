@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import (
+    Property,
     QAbstractAnimation,
     QEasingCurve,
     QPropertyAnimation,
@@ -17,8 +18,11 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QColor, QConicalGradient, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QComboBox,
     QDialog,
+    QDialogButtonBox,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -305,6 +309,117 @@ class ToastHost(QWidget):
             self.setGeometry(p.rect())
 
 
+class SeedDialog(QDialog):
+    """从种子色生成整套主题：预设 / 手输 / 深浅切换，**并实时预览生成结果**。
+
+    为什么要能预览：这套配色是**算出来的**，不是挑出来的。让用户先看到
+    "这个种子色生成的正文对比度是多少"，比让他挑一个好看的色块更有用——
+    也顺手把"配色要达标"这件事变成看得见的界面。
+    """
+
+    PRESETS = (("#3d7dff", "蓝"), ("#00b4d8", "青"), ("#35c46a", "绿"),
+               ("#e0a92e", "琥珀"), ("#f0524a", "砖红"), ("#8b5cf6", "紫"),
+               ("#e879a6", "粉"), ("#5b6478", "石墨"))
+    SWATCHES = ("bg", "surface", "border", "text", "primary", "success", "warning", "danger")
+
+    def __init__(self, parent, theme: T.Theme, seed: str = "#3d7dff", mode: str = "dark"):
+        super().__init__(parent)
+        self.setWindowTitle("从种子色生成主题")
+        self.setMinimumWidth(460)
+        self._mode = mode
+        v = QVBoxLayout(self)
+        v.setSpacing(12)
+
+        g = QGridLayout()
+        g.setSpacing(8)
+        self.btns = []
+        for i, (hexv, name) in enumerate(self.PRESETS):
+            b = QPushButton(name)
+            b.setFixedHeight(32)        # 4 的倍数：`tests/test_ui_grid.py` 会查
+            b.setCursor(Qt.PointingHandCursor)
+            b.setStyleSheet("background:%s;color:%s;border:0;border-radius:6px"
+                            % (hexv, "#0d0f13" if _luma(hexv) > 0.45 else "#ffffff"))
+            b.clicked.connect(lambda _=False, h=hexv: (self.ed.setText(h), self._preview()))
+            self.btns.append(b)
+            g.addWidget(b, i // 4, i % 4)
+        v.addLayout(g)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel("种子色"))
+        self.ed = QLineEdit(seed)
+        self.ed.setFixedWidth(112)
+        self.ed.textChanged.connect(self._preview)
+        row.addWidget(self.ed)
+        self.cb_mode = QComboBox()
+        self.cb_mode.addItems(["深色", "浅色"])
+        self.cb_mode.setCurrentIndex(0 if mode == "dark" else 1)
+        self.cb_mode.setFixedWidth(88)
+        self.cb_mode.currentIndexChanged.connect(self._preview)
+        row.addWidget(self.cb_mode)
+        row.addStretch(1)
+        v.addLayout(row)
+
+        self.preview = QWidget()
+        pv = QHBoxLayout(self.preview)
+        pv.setSpacing(4)
+        pv.setContentsMargins(0, 0, 0, 0)
+        self.cells = []
+        for role in self.SWATCHES:
+            c = QLabel(role)
+            c.setAlignment(Qt.AlignCenter)
+            c.setFixedHeight(36)
+            self.cells.append(c)
+            pv.addWidget(c)
+        v.addWidget(self.preview)
+
+        self.lbl = QLabel("")
+        self.lbl.setObjectName("Caption")
+        self.lbl.setWordWrap(True)
+        v.addWidget(self.lbl)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        v.addWidget(bb)
+        self._preview()
+
+    @property
+    def mode(self) -> str:
+        return "dark" if self.cb_mode.currentIndex() == 0 else "light"
+
+    @property
+    def seed(self) -> str:
+        return self.ed.text().strip()
+
+    def _preview(self) -> None:
+        from .palette import audit, build
+
+        try:
+            pal = build(self.seed, self.mode)
+        except Exception:                                      # noqa: BLE001
+            self.lbl.setText("这个种子色生成不达标（或格式不对），换一个试试")
+            return
+        for role, cell in zip(self.SWATCHES, self.cells):
+            bg = pal["surface"] if role in ("text", "border") else pal["bg"]
+            cell.setStyleSheet("background:%s;color:%s;border-radius:5px"
+                               % (pal[role] if role != "border" else pal["surface_hi"],
+                                  pal["text"] if role != "text" else bg))
+        # 只看**文字类**判据（要求 ≥4.5 的那些）：装饰性描边那条要求只有 1.0，
+        # 混进"最弱一环"会让人以为配色不达标——报告口径要跟结论一致。
+        text_findings = [f for f in audit(pal) if f.required >= 4.5]
+        worst = min(text_findings, key=lambda f: f.ratio)
+        self.lbl.setText("全部 %d 条 WCAG 判据通过 ✓ ｜ 文字类最弱一环 %.1f:1（%s，要求 %.1f）"
+                         % (len(audit(pal)), worst.ratio, worst.pair.split(" / ")[0],
+                            worst.required))
+
+
+def _luma(hexv: str) -> float:
+    """sRGB 相对亮度粗算（只用于决定按钮上该用白字还是墨字）。"""
+    r, g, b = (int(hexv[i:i + 2], 16) / 255.0 for i in (1, 3, 5))
+    f = lambda c: c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4  # noqa: E731
+    return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
+
+
 # ------------------------------------------------------------------ 空状态
 
 class EmptyState(QWidget):
@@ -395,10 +510,31 @@ class Gauge(QWidget):
         self.main = "—"
         self.sub = "真实截止"
         self.caption = ""
+        # 环形进度的**缓动值**：数字跳变看不出"变了多少"，指针扫过去才看得出。
+        # 走 Qt 属性动画（不碰 matplotlib）——画布重绘是按百毫秒计的，
+        # 而这只小部件的动画每帧只是几个 drawArc，代价可以忽略。
+        self._anim = 0.0
+        self._ease = QPropertyAnimation(self, b"anim", self)
+        self._ease.setDuration(430)
+        self._ease.setEasingCurve(QEasingCurve.OutCubic)
+
+    def _get_anim(self) -> float:
+        return self._anim
+
+    def _set_anim(self, v: float) -> None:
+        self._anim = float(v)
+        self.update()
+
+    anim = Property(float, _get_anim, _set_anim)
 
     def set_data(self, ratio, level: str | None, main: str, sub: str, caption: str = "") -> None:
         self.value, self.level = ratio, level
         self.main, self.sub, self.caption = main, sub, caption
+        target = float(ratio) if ratio else 0.0
+        self._ease.stop()
+        self._ease.setStartValue(self._anim)
+        self._ease.setEndValue(target)
+        self._ease.start()
         self.update()
 
     def apply_theme(self, t: T.Theme) -> None:
@@ -424,7 +560,8 @@ class Gauge(QWidget):
             grad.setColorAt(0.5, col)
             grad.setColorAt(1.0, col.darker(115))
             pr.setPen(QPen(grad, thick, Qt.SolidLine, Qt.RoundCap))
-            frac = max(0.0, min(1.0, float(self.value)))
+            # 用缓动值画弧（`_anim`），文字仍用真实值——读数不能跟着动画变
+            frac = max(0.0, min(1.0, self._anim))
             pr.drawArc(rect, int(start * 16), int(span * frac * 16))
 
         f = QFont(self.font())
