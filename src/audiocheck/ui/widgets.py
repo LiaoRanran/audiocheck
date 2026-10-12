@@ -355,9 +355,15 @@ class StatCard(QFrame):
         self.setToolTip(tooltip or value)
 
     def apply_theme(self, t: T.Theme) -> None:
-        self.k.setStyleSheet("color:%s;font-size:%dpx" % (t.p.text_faint, int(t.type.caption)))
-        self.v.setStyleSheet("color:%s;font-size:%dpx;font-weight:600"
-                             % (t.p.text, int(t.type.body_md)))
+        self.k.setStyleSheet("color:%s;font-size:%dpx;letter-spacing:.6px"
+                             % (t.p.text_faint, int(t.type.caption)))
+        # 数值用等宽 QFont，**不靠 QSS 的 font-family**：
+        # 部件自带 setStyleSheet 与 app 级 `QLabel#Hero` 规则并存时，
+        # Qt 对各属性的合并行为并不明确，实测出现过等宽没生效的情况。
+        # 另外这里原来写 font-weight:600 —— 中文字体只有 400/700 两档，
+        # 600 会被吸附到 700 并打 findfont 告警，等于写了个假层级。
+        self.v.setFont(T.mono_qfont(t.type.body_md))
+        self.v.setStyleSheet("color:%s" % t.p.text)
 
 
 class Gauge(QWidget):

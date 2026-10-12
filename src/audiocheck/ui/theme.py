@@ -164,6 +164,16 @@ class Theme:
     def font(self) -> str:
         return '"%s","Microsoft YaHei","Segoe UI",sans-serif' % self.font_family
 
+    @property
+    def mono(self) -> str:
+        """等宽字体族名（带引号，可直接进 QSS）。
+
+        必须是**实测存在**的族。早先这里写死 "Cascadia Mono"，而本机只装了
+        Consolas —— QSS 的 font-family 不支持多族回退，于是静默落回比例字体，
+        "数字等宽"这件事看起来做了、实际没生效。
+        """
+        return '"%s",monospace' % (mono_family() or "Consolas")
+
 
 DARK_P = Palette()
 LIGHT_P = Palette(
@@ -214,16 +224,20 @@ QToolTip {{ background:{surface_raised}; color:{text}; border:1px solid {border_
 #NavItem {{ background:transparent; border:0; border-radius:{lg}px;
             padding:{sm}px {md}px; color:{text_dim}; text-align:left; font-size:{body}px; }}
 #NavItem:hover {{ background:{hover}; color:{text}; }}
-#NavItem[active="true"] {{ background:{primary_soft}; color:{primary_hi}; font-weight:600; }}
-#NavSection {{ color:{text_faint}; font-size:{micro}px; font-weight:600; padding:{md}px {md}px {xs}px; }}
+#NavItem[active="true"] {{ background:{primary_soft}; color:{primary_hi}; font-weight:700; }}
+#NavSection {{ color:{text_faint}; font-size:{micro}px; font-weight:700;
+              letter-spacing:1.1px; padding:{md}px {md}px {xs}px; }}
 
 /* ===== 卡片 / 分区 ===== */
 QFrame#Card, QWidget#Card {{ background:{surface}; border:1px solid {border};
                              border-radius:{xl}px; }}
-QLabel#SectionTitle {{ color:{text_dim}; font-size:{caption}px; font-weight:600;
-                       letter-spacing:.5px; }}
-QLabel#Hero {{ font-size:{display}px; font-weight:700; color:{text}; }}
-QLabel#HeroUnit {{ color:{text_faint}; font-size:{caption}px; }}
+/* SectionTitle 用字距而不是字重做层级：本机中文字体只有 400/700 两档，
+   原来写 font-weight:600 会被 Qt 吸附到 700（还会打 findfont 告警），
+   于是"600"和"700"渲染出来一模一样——那个层级是假的。 */
+QLabel#SectionTitle {{ color:{text_dim}; font-size:{caption}px; font-weight:700;
+                       letter-spacing:1.2px; }}
+QLabel#Hero {{ font-size:{display}px; font-weight:700; color:{text}; font-family:{mono}; }}
+QLabel#HeroUnit {{ color:{text_faint}; font-size:{caption}px; font-family:{mono}; }}
 QLabel#Caption {{ color:{text_faint}; font-size:{caption}px; }}
 
 /* ===== 按钮 ===== */
@@ -232,14 +246,14 @@ QPushButton {{ background:{surface_hi}; border:1px solid {border_hi};
 QPushButton:hover {{ background:#1c212b; border-color:{border_focus}; }}
 QPushButton:pressed {{ background:{surface}; }}
 QPushButton:disabled {{ color:{text_disabled}; border-color:{border}; background:{surface}; }}
-QPushButton#Primary {{ background:{primary}; border-color:{primary}; color:#fff; font-weight:600; }}
+QPushButton#Primary {{ background:{primary}; border-color:{primary}; color:#fff; font-weight:700; }}
 QPushButton#Primary:hover {{ background:{primary_hi}; border-color:{primary_hi}; }}
 QPushButton#Ghost {{ background:transparent; border-color:transparent; color:{text_dim}; }}
 QPushButton#Ghost:hover {{ background:{hover}; color:{text}; }}
 QToolButton {{ background:transparent; border:1px solid transparent;
                border-radius:{lg}px; padding:{xs}px {md}px; color:{text}; font-size:{body}px; }}
 QToolButton:hover {{ background:{hover}; border-color:{border_hi}; }}
-QToolButton#Primary {{ background:{primary}; border-color:{primary}; color:#fff; font-weight:600; }}
+QToolButton#Primary {{ background:{primary}; border-color:{primary}; color:#fff; font-weight:700; }}
 QToolButton:disabled {{ color:{text_disabled}; }}
 
 /* ===== 输入 ===== */
@@ -257,13 +271,17 @@ QCheckBox::indicator {{ width:16px; height:16px; border-radius:{sm}px;
 QCheckBox::indicator:checked {{ background:{primary}; border-color:{primary}; }}
 
 /* ===== 表格 ===== */
+/* 表格整体走等宽：规格/截止/DR/削波全是数字，比例数字会让列宽抖动、
+   读数时眼睛没法沿竖线扫。中文列（文件名/判定）仍用比例字体，
+   由 ItemDelegate 按列切换。 */
 QTableWidget {{ background:{surface}; alternate-background-color:{surface_hi};
     gridline-color:transparent; border:1px solid {border}; border-radius:{xl}px;
-    selection-background-color:{selection}; selection-color:{text}; font-size:{body_sm}px; }}
+    selection-background-color:{selection}; selection-color:{text};
+    font-size:{body_sm}px; font-family:{mono}; }}
 QTableWidget::item {{ padding:{xs}px {sm}px; border:0; }}
 QHeaderView::section {{ background:{surface_hi}; color:{text_dim}; border:0;
     border-bottom:1px solid {border}; padding:{sm}px {md}px;
-    font-weight:600; font-size:{caption}px; }}
+    font-weight:700; font-size:{caption}px; letter-spacing:.6px; }}
 QHeaderView::section:hover {{ color:{text}; }}
 QTableCornerButton::section {{ background:{surface_hi}; border:0; }}
 
@@ -272,7 +290,7 @@ QTabWidget::pane {{ border:1px solid {border}; border-radius:{xl}px; background:
 QTabBar::tab {{ background:transparent; color:{text_dim}; padding:{xs}px {lg}px;
     border:0; border-bottom:2px solid transparent; font-size:{body}px; }}
 QTabBar::tab:hover {{ color:{text}; }}
-QTabBar::tab:selected {{ color:{text}; border-bottom-color:{primary}; font-weight:600; }}
+QTabBar::tab:selected {{ color:{text}; border-bottom-color:{primary}; font-weight:700; }}
 
 /* ===== 滚动条（细、圆角、悬停才明显） ===== */
 QScrollBar:vertical {{ background:transparent; width:10px; margin:0; }}
@@ -314,10 +332,62 @@ QSplitter::handle:hover {{ background:{primary_soft}; }}
         text=p.text, text_dim=p.text_dim, text_faint=p.text_faint, text_disabled=p.text_disabled,
         primary=p.primary, primary_hi=p.primary_hi, primary_soft=p.primary_soft,
         danger=p.danger, hover=p.hover, selection=p.selection,
-        font=t.font, body=int(ty.body), body_sm=int(ty.body_sm), body_md=int(ty.body_md),
+        font=t.font, mono=t.mono, body=int(ty.body), body_sm=int(ty.body_sm), body_md=int(ty.body_md),
         caption=int(ty.caption), micro=int(ty.micro), display=int(ty.display),
         xs=sp.xs, sm=sp.sm, md=sp.md, lg=sp.lg, xl=sp.xl,
         )
+
+
+# ------------------------------------------------------------------ 字体
+
+#: 等宽字体栈。**工业仪表的底线**：数字必须等宽，否则列宽会随读数抖动
+#: （"1" 和 "8" 宽度不同），而且眼睛没法沿竖线扫一列数。
+#: QSS 的 font-family 不支持多族回退链，所以这里只取栈首，配合
+#: mono_qfont() 的 styleHint 做双保险（族名找不到时 Qt 自动落系统等宽）。
+MONO_STACK = ("Cascadia Mono", "Cascadia Code", "Consolas", "SF Mono", "Menlo",
+              "DejaVu Sans Mono", "Liberation Mono", "Courier New")
+
+
+def mono_family() -> str:
+    """返回本机真实可用的等宽字体族名。
+
+    与 load_cjk_fonts() 同理：**先显式注册字体文件再查**。只查
+    QFontDatabase.families() 是不够的——离屏/未初始化时它可能返回空，
+    而直接写死族名（如 "Cascadia Mono"）在本机没装时会静默回退。
+    """
+    from PySide6.QtGui import QFontDatabase
+    for path in _MONO_FILES:
+        if os.path.exists(path):
+            idx = QFontDatabase.addApplicationFont(path)
+            if idx >= 0:
+                QFontDatabase.applicationFontFamilies(idx)
+    have = set(QFontDatabase.families())
+    for f in MONO_STACK:
+        if f in have:
+            return f
+    return ""
+
+
+#: 常见等宽字体文件（Windows / macOS / Linux 各给一个）
+_MONO_FILES = [
+    r"C:\Windows\Fonts\consola.ttf",
+    r"C:\Windows\Fonts\Consolas.ttf",
+    r"C:\Windows\Fonts\lucon.TTF",
+    r"C:\Windows\Fonts\cour.ttf",
+    "/System/Library/Fonts/Menlo.ttc",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+]
+
+
+def mono_qfont(size_pt: float):
+    """构造一个等宽 QFont。用 styleHint 兜底，不依赖族名一定存在。"""
+    from PySide6.QtGui import QFont
+    f = QFont()
+    f.setStyleHint(QFont.Monospace)          # 族名缺失时落到系统等宽
+    f.setFamilies(list(MONO_STACK))
+    f.setFixedPitch(True)
+    f.setPointSizeF(size_pt)
+    return f
 
 
 # ------------------------------------------------------------------ 字体

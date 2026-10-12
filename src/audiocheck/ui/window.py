@@ -462,7 +462,7 @@ class MainWindow(FramelessWindow):
         if app is not None:
             app.setStyleSheet(T.qss(t))
         self.sidebar.apply_theme(t)
-        self.delegate.apply_theme(T.plot_palette(t.p))   # 委托仍按旧字典键取值
+        self.delegate.apply_theme(T.plot_palette(t.p), t)   # 委托仍按旧字典键取值
         pp = T.plot_palette(t.p)
         for cv in (self.cv_spec, self.cv_spectro, self.cv_wfall, self.cv_band,
                    self.cv_cmp, self.cv_ovw):

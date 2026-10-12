@@ -16,6 +16,7 @@ from PySide6.QtGui import QColor, QFont, QPainter, QPen  # noqa: E402
 from PySide6.QtWidgets import QStyle, QStyledItemDelegate  # noqa: E402
 
 from ..config import BAND_CN, BANDS  # noqa: E402
+from . import theme as T  # noqa: E402
 from .theme import LEVEL_CN, LEVEL_COLOR_KEY  # noqa: E402
 
 
@@ -47,10 +48,23 @@ class BaseCanvas(FigureCanvasQTAgg):
         self.setStyleSheet("background:transparent;")
         self.p = None
 
+    def _has_data(self) -> bool:
+        """当前画布是否已有可画的内容。子类按自己的数据字段覆写。
+
+        构造期 MainWindow 会对 6 个画布各调一次 apply_theme，若每次都全量重建
+        matplotlib 图元，实测白付约 470ms，而且画出来的是随即被丢弃的空图
+        （数据要等用户选文件才有）。没有数据时换肤只存色板即可。
+        """
+        return False
+
     def apply_theme(self, p):
         self.p = p
         self.fig.set_facecolor(p["surface"])
-        self.redraw()
+        if self._has_data():
+            self.redraw()
+        else:
+            # 没有数据也要让背景色立刻跟上，否则深/浅主题切换时会闪一下旧底色
+            self.draw_idle()
 
     def redraw(self):
         pass
@@ -80,44 +94,68 @@ class SpectrumCanvas(BaseCanvas):
         self.ax = self.fig.add_subplot(111)
         self.r = None
         self._hover = None
+        self._static_ok = False        # 静态内容是否已按当前数据画好
+        self._hline = self._hdot = self._hann = None   # 常驻悬停图元
         self.mpl_connect("motion_notify_event", self._on_move)
         self.mpl_connect("axes_leave_event", lambda e: self._set_hover(None))
 
-    def set_data(self, r):
-        self.r = r
-        self.redraw()
-
     def _on_move(self, ev):
-        if ev.inaxes is not self.ax or self.r is None or not self.r.get("curve"):
+        if ev.inaxes is not self.ax or not self._has_data():
             return
         self._set_hover(ev.xdata)
 
-    def _set_hover(self, f):
-        self._hover = f
+    def set_data(self, r):
+        if r is not self.r:
+            # 数据换了，静态内容（曲线/频段线/截止标注）必须重画
+            self._static_ok = False
+        self.r = r
         self.redraw()
+
+    def _has_data(self):
+        return bool(self.r and self.r.get("curve"))
+
+    def _set_hover(self, f):
+        if f == self._hover:
+            return
+        self._hover = f
+        if self._has_data():
+            # **只重画悬停图元，不动静态内容**。早先每次鼠标移动都
+            # ax.clear() 全量重建（曲线是几百个点 + fill_between + 6 条频段线
+            # + 截止标注），单次约 30ms，鼠标划过时图表明显发涩。
+            self._hover_layer()
+            self.draw_idle()
 
     def redraw(self):
         p, ax = self.p, self.ax
         if p is None:
             return
         self.fig.set_facecolor(p["surface"])
-        ax.clear()
-        self._ax_style(ax, "频率 Hz", "相对电平 dB")
-        r = self.r
-        if not r or not r.get("curve"):
+        if not self._has_data():
+            self._static_ok = False
+            ax.clear()
+            self._ax_style(ax, "频率 Hz", "相对电平 dB")
             ax.text(.5, .5, "选择左侧条目以查看频谱", ha="center", va="center",
                     color=p["text_faint"], transform=ax.transAxes, fontsize=11)
             ax.set_xticks([])
             ax.set_yticks([])
             self.draw()
             return
+        if not self._static_ok:
+            self._static_layer()
+            self._static_ok = True
+        self._hover_layer()
+        self.draw()
 
-        arr = np.asarray(r["curve"], dtype=float)
+    def _static_layer(self):
+        """曲线 + 频段分界 + 截止标注。**只有数据变化才重画。**"""
+        p, ax = self.p, self.ax
+        arr = np.asarray(self.r["curve"], dtype=float)
         f, db = arr[:, 0], arr[:, 1]
-        nyq = (r.get("sr") or 48000) / 2
+        nyq = (self.r.get("sr") or 48000) / 2
         top = float(np.percentile(db, 99.8))
         lo = max(top - 95, float(db.min()) - 3)
-
+        ax.clear()
+        self._ax_style(ax, "频率 Hz", "相对电平 dB")
         # 频段分界（与推荐引擎 band_def 一致）
         for edge in (60, 250, 500, 2000, 6000, 16000):
             if edge < nyq:
@@ -129,9 +167,9 @@ class SpectrumCanvas(BaseCanvas):
         ax.fill_between(f, db, lo, color=p["accent"], alpha=.16, lw=0, zorder=2)
         ax.semilogx(f, db, lw=1.15, color=p["accent"], zorder=3)
 
-        cut = r.get("cutoff_hz")
+        cut = self.r.get("cutoff_hz")
         if cut:
-            lv = LEVEL_COLOR_KEY.get(r.get("level"), "accent")
+            lv = LEVEL_COLOR_KEY.get(self.r.get("level"), "accent")
             col = p[lv] if lv in p else p["accent"]
             ax.axvline(cut, color=col, lw=1.4, ls="--", zorder=4)
             ax.fill_betweenx([lo, top], cut, nyq, color=col, alpha=.07, lw=0, zorder=1)
@@ -140,19 +178,34 @@ class SpectrumCanvas(BaseCanvas):
                         xytext=(8, 0), textcoords="offset points",
                         color=col, fontsize=9, fontweight="bold", va="top",
                         bbox=dict(boxstyle="round,pad=0.32", fc=p["surface2"], ec=col, lw=.9))
-
-        if self._hover and 20 <= self._hover <= nyq:
-            i = int(np.argmin(np.abs(f - self._hover)))
-            ax.axvline(f[i], color=p["text_dim"], lw=.8, zorder=5)
-            ax.plot([f[i]], [db[i]], "o", ms=4, color=p["text"], zorder=6)
-            txt = "%.0f Hz    %.1f dB" % (f[i], db[i])
-            ax.annotate(txt, xy=(f[i], db[i]), xytext=(9, 9), textcoords="offset points",
-                        fontsize=8.5, color=p["text"],
-                        bbox=dict(boxstyle="round,pad=0.34", fc=p["surface3"], ec=p["border_hi"], lw=.8))
-
         ax.set_xlim(20, nyq)
         ax.set_ylim(lo, top + 6)
-        self.draw()
+
+    def _hover_layer(self):
+        """竖线 + 读数点 + 数值气泡。鼠标移动只走这一层。"""
+        p, ax = self.p, self.ax
+        arr = np.asarray(self.r["curve"], dtype=float)
+        f = arr[:, 0]
+        nyq = (self.r.get("sr") or 48000) / 2
+        # 只删自己加的三个图元，不碰静态内容
+        for art in (self._hline, self._hdot, self._hann):
+            if art is not None:
+                try:
+                    art.remove()
+                except (ValueError, NotImplementedError):
+                    pass
+        self._hline = self._hdot = self._hann = None
+        if not (self._hover and 20 <= self._hover <= nyq):
+            return
+        i = int(np.argmin(np.abs(f - self._hover)))
+        self._hline = ax.axvline(f[i], color=p["text_dim"], lw=.8, zorder=5)
+        self._hdot, = ax.plot([f[i]], [arr[i, 1]], "o", ms=4, color=p["text"], zorder=6)
+        self._hann = ax.annotate("%.0f Hz    %.1f dB" % (f[i], arr[i, 1]),
+                                 xy=(f[i], arr[i, 1]), xytext=(9, 9),
+                                 textcoords="offset points", fontsize=8.5,
+                                 color=p["text"],
+                                 bbox=dict(boxstyle="round,pad=0.34",
+                                           fc=p["surface3"], ec=p["border_hi"], lw=.8))
 
 
 # --------------------------------------------------------------------- 频谱图
@@ -169,6 +222,9 @@ class SpectrogramCanvas(BaseCanvas):
         if msg:
             self._msg = msg
         self.redraw()
+
+    def _has_data(self):
+        return self.data is not None   # data=None 表示还没生成
 
     def redraw(self):
         p, ax = self.p, self.ax
@@ -211,6 +267,9 @@ class BandCanvas(BaseCanvas):
     def set_data(self, r):
         self.r = r
         self.redraw()
+
+    def _has_data(self):
+        return bool(self.r)   # r 为 None 表示未选中
 
     def redraw(self):
         p, ax = self.p, self.ax
@@ -293,6 +352,9 @@ class WaterfallCanvas(BaseCanvas):
         self._drag = None
         super().mouseReleaseEvent(ev)
 
+    def _has_data(self):
+        return self.data is not None   # data=None 表示还没生成
+
     def redraw(self):
         p = self.p
         if p is None:
@@ -366,6 +428,9 @@ class CompareCanvas(BaseCanvas):
         self.items = items or []
         self.redraw()
 
+    def _has_data(self):
+        return bool(self.items)   # items 空表示没有多选
+
     def redraw(self):
         p, ax = self.p, self.ax
         if p is None:
@@ -416,6 +481,9 @@ class OverviewCanvas(BaseCanvas):
     def set_data(self, rows):
         self.rows = rows or []
         self.redraw()
+
+    def _has_data(self):
+        return bool(self.rows)   # rows 空表示没有已分析文件
 
     def redraw(self):
         p = self.p
@@ -479,9 +547,21 @@ class VerdictDelegate(QStyledItemDelegate):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.p = None
+        self.f_cjk = None          # 中文列用比例字体
+        self.f_mono = None         # 数字列用等宽
 
-    def apply_theme(self, p):
+    def apply_theme(self, p, theme=None):
         self.p = p
+        if theme is not None:
+            # 表格整体在 QSS 里设了等宽，但 Consolas 没有中文字形，
+            # 文件名/判定两列会走 Qt 逐字形回退，落到哪个字体不可控。
+            # 这里按列显式指定：中文列给比例字体，数字列给等宽。
+            self.f_cjk = QFont(theme.font_family or "Microsoft YaHei")
+            self.f_cjk.setPointSizeF(theme.type.body_sm)
+            self.f_mono = T.mono_qfont(theme.type.body_sm)
+
+    def _font_for(self, col: int, last: int):
+        return self.f_cjk if col in (0, last) else (self.f_mono or self.f_cjk)
 
     def paint(self, painter, opt, index):
         p = self.p
@@ -490,6 +570,9 @@ class VerdictDelegate(QStyledItemDelegate):
             return
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing, True)
+        fnt = self._font_for(index.column(), index.model().columnCount() - 1)
+        if fnt is not None:
+            painter.setFont(fnt)
         r = opt.rect
         selected = bool(opt.state & QStyle.StateFlag.State_Selected)
         if selected:                                  # 自定义绘制需自己铺选中背景
