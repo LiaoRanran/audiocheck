@@ -172,8 +172,13 @@ class SettingsDialog(QDialog):
 class MainWindow(FramelessWindow):
     COLS = ["文件名", "规格", "截止", "DR", "削波", "判定"]
     COL_W = {1: 74, 2: 62, 3: 46, 4: 62, 5: 78}
-    VIEW_KEYS = ["overview", "spectrum", "spectro", "waterfall", "bands", "meta",
-                 "compare", "batch"]
+    # 视图 key → QStackedWidget 的索引。**顺序必须与 _stack() 里 addWidget 的
+    # 真实顺序一致**：overview, spectrum, spectro, waterfall, bands,
+    # compare(cv_cmp), batch(cv_ovw), meta(两个 KVTable)。
+    # 曾把 meta/compare/batch 三者顺序写错，症状是侧边栏点「元数据」显示的是
+    # 对比画布、而真正的元数据页永远到不了（tests/test_ui_views.py 钉住此映射）。
+    VIEW_KEYS = ["overview", "spectrum", "spectro", "waterfall", "bands",
+                 "compare", "batch", "meta"]
 
     def __init__(self):
         # 高 DPI：必须在创建 QApplication 之后、创建窗口之前设置
@@ -191,7 +196,7 @@ class MainWindow(FramelessWindow):
         self.worker: AnalyzeWorker | None = None
         self._view_workers: list[ViewWorker] = []
         self._cache: dict[tuple[str, str], tuple] = {}
-        self._last_path: str | None = None
+        self._last_sig: tuple | None = None
 
         self._build()
         self._commands()
@@ -650,6 +655,22 @@ class MainWindow(FramelessWindow):
         self.lbl_count.setText("%d / %d" % (len(items), len(self.items)))
         self.cv_ovw.set_data([i["result"] for i in self.items if i["result"]])
         self.status("已分析 %d / %d ｜ 队列 %d" % (done, len(self.items), len(self.queue)))
+        # 分析完自动选中第一行。否则详情面板（结论条 / 环形仪表 / 曲线）全是「—」——
+        # 用户按下「开始分析」看到的是一片空白，还得自己想起来去点某一行。
+        # 只在**没有选中**时才选中，不覆盖用户已经做出的选择；
+        # 只选**已有结果**的行：选到「待分析」行会让 on_select 把 _last_path 记下来，
+        # 等结果回来再选中同一行时，on_select 的 `if self._last_path == p: return`
+        # 会直接返回，详情面板从此再也不更新（实测踩过）。
+        if not self.table.selectedItems():
+            for r in range(self.table.rowCount()):
+                it = self.table.item(r, 0)
+                if it is None:
+                    continue
+                p = it.data(Qt.UserRole)
+                k = self._idx.get(p) if p else None
+                if k is not None and self.items[k]["result"]:
+                    self.table.setCurrentItem(it)
+                    break
 
     def _row(self, it):
         r = it["result"]
@@ -691,11 +712,16 @@ class MainWindow(FramelessWindow):
                 self._navigate("compare")
             return
         p = mine[0].data(Qt.UserRole)
-        if self._last_path == p:
-            return
-        self._last_path = p
         i = self._idx.get(p)
         r = self.items[i]["result"] if i is not None else None
+        # 早退优化：同一个文件且**同一份结果**就不重画。必须把结果对象的
+        # 身份也纳入判断——只比路径的话，用户在结果回来前点过这一行，
+        # _last_path 已经记上，等分析完成再选中同一行就会永远停在旧画面
+        # （实测：详情面板一片「—」，且此后任何重选都刷不过来）。
+        sig = (p, id(r) if r else None)
+        if self._last_sig == sig:
+            return
+        self._last_sig = sig
         if not r:
             self.stack.setCurrentIndex(self._empty_idx)
             return
@@ -852,7 +878,7 @@ class MainWindow(FramelessWindow):
         self.items = [i for i in self.items if i["path"] not in drop]
         self.queue = [q for q in self.queue if q not in drop]
         self._idx = {it["path"]: k for k, it in enumerate(self.items)}
-        self._last_path = None
+        self._last_sig = None
         self.refresh_table()
 
     def export(self):

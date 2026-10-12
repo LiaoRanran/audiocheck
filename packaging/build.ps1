@@ -18,9 +18,22 @@ $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
 
+# 归档旧产物，而不是删除。
+# 用重命名不用 Remove-Item：环境的安全删除策略会把 Remove-Item 改成"移入回收站"，
+# 而回收站操作在 dist 这种深层目录上会失败，导致整个构建中止（实测踩过）。
+# 顺带的好处是上一个构建留作回滚。
+function Clear-Dir([string]$Path) {
+    if (-not (Test-Path $Path)) { return }
+    $n = 1
+    while (Test-Path "${Path}_old$n") { $n++ }
+    Rename-Item $Path "${Path}_old$n" -Force
+    Write-Host "  旧产物已归档为 ${Path}_old$n"
+}
+
 if ($Clean) {
-    Write-Host "清理 build/ dist/ ..."
-    Remove-Item build, dist -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host "归档构建产物（不清空回收站，见 Clear-Dir 注释）..."
+    Clear-Dir build
+    Clear-Dir dist
     exit 0
 }
 
@@ -47,7 +60,8 @@ python -m ruff check src tests
 if ($LASTEXITCODE -ne 0) { Write-Host "lint 未过，中止打包"; exit 1 }
 
 Write-Host "=== 3/4 构建 ==="
-Remove-Item build, $OutDir -Recurse -Force -ErrorAction SilentlyContinue
+Clear-Dir build
+Clear-Dir $OutDir
 
 if ($OneFile) {
     # 单文件模式：复用同一份 spec，但用 --onefile 覆盖（spec 里是目录版）
