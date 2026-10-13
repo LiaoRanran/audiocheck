@@ -229,6 +229,7 @@ CHECKS: tuple[tuple[str, str, str, float], ...] = (
     ("主按钮悬停 on_primary / primary_hi", "on_primary", "primary_hi", 4.5),
     ("激活导航 primary_text / primary_soft", "primary_text", "primary_soft", 4.5),
     ("主色自身 / surface（非文本 3:1）", "primary", "surface", 3.0),
+    ("次级强调 / plot_bg（非文本 3:1）", "accent2", "plot_bg", 3.0),
     ("合格胶囊 success / success_bg", "success", "success_bg", 4.5),
     ("有疑胶囊 warning / warning_bg", "warning", "warning_bg", 4.5),
     ("不达标胶囊 danger / danger_bg", "danger", "danger_bg", 4.5),
@@ -387,6 +388,16 @@ def build(seed: str, mode: str = "dark") -> dict:
     idx["primary_text"] = fit_contrast(idx["primary_hi"], idx["primary_soft"],
                                        4.5, lighter=dark)
     idx["border_focus"] = idx["primary"]
+
+    # ---- 3b. 次级强调色：**分裂互补**（色相 +150°）----
+    # 同一明度、同一彩度，只转色相 → 两条曲线/两个高亮在视觉上"等重"。
+    # +150° 是配色理论里最稳的一档：有变化，但不像 +180° 那样正面对撞。
+    # 它只用于数据可视化与装饰强调，**不承担语义**（语义色必须固定色相）。
+    a2 = oklch_to_srgb((srgb_to_oklch(idx["primary"])[0], prim_c,
+                        (hue + 150.0) % 360.0))
+    if contrast(a2, idx["plot_bg"]) < 3.0:
+        a2 = fit_contrast(a2, idx["plot_bg"], 3.0, lighter=dark)
+    idx["accent2"] = a2
 
     # ---- 4. 语义色：色相固定，明度按背景调 ----
     for key in ("success", "warning", "danger", "info"):

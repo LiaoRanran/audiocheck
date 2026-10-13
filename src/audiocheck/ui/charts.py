@@ -759,9 +759,13 @@ class CompareCanvas(BaseCanvas):
             self.draw()
             return
         nyq = 48000
+        # 前两条曲线用**当前主题的主色 / 次级强调色**（分裂互补），
+        # 后面才轮到通用色板：这样"这一批里最重要的两条"看起来是同一套
+        # 配色里的两个声音，而不是从通用色板里各抓一个。
+        seq = (p["accent"], p.get("accent2", p["accent"])) + tuple(CYCLE)
         for i, (r, cur) in enumerate(self.items[:10]):
             arr = np.asarray(cur, dtype=float)
-            col = CYCLE[i % len(CYCLE)]
+            col = seq[i % len(seq)]
             nyq = max(nyq, r.get("sr", 48000) / 2)
             top = float(np.percentile(arr[:, 1], 99.5))
             ax.semilogx(arr[:, 0], arr[:, 1] - top, lw=1.15, color=col, alpha=.95,

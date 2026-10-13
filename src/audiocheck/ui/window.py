@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QKeySequence, QShortcut
+from PySide6.QtGui import QColor, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -1231,9 +1231,10 @@ def main(argv=None):
     app.setApplicationName("audiocheck")
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    # 字体三件事必须一起做（注册字体文件 → 设应用字体 → 写进主题令牌）：
+    # 只做前两件而 QSS 里仍写着对不上的族名，中文照样是方框。见 `T.init_fonts`。
     fams = T.load_cjk_fonts()
-    fam = T.pick_family(fams)
-    app.setFont(QFont(fam, 10))
+    T.init_fonts(app)
     import matplotlib
     mf = T.mpl_font(fams)
     if mf:

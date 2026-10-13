@@ -477,6 +477,7 @@ class StatCard(QFrame):
         self.v = QLabel("—")
         self.k.setObjectName("Caption")
         self.v.setObjectName("Hero")
+        self._t = theme
         v.addWidget(self.k)
         v.addWidget(self.v)
         self.apply_theme(theme)
@@ -484,17 +485,19 @@ class StatCard(QFrame):
     def set(self, key: str, value: str, tooltip: str = "") -> None:
         self.k.setText(key)
         self.v.setText(value)
+        # 值里可能是中文（厂牌 / 编码器串）→ 按内容选字体。
+        # 让中文落在等宽族上，靠的就是"逐字形回退"，部分机器直接给方框。
+        self.v.setFont(T.pick_text_font(value, self._t.type.body_md, self._t.font_family))
         self.setToolTip(tooltip or value)
 
     def apply_theme(self, t: T.Theme) -> None:
+        self._t = t
         self.k.setStyleSheet("color:%s;font-size:%dpx;letter-spacing:.6px"
                              % (t.p.text_faint, int(t.type.caption)))
-        # 数值用等宽 QFont，**不靠 QSS 的 font-family**：
-        # 部件自带 setStyleSheet 与 app 级 `QLabel#Hero` 规则并存时，
-        # Qt 对各属性的合并行为并不明确，实测出现过等宽没生效的情况。
-        # 另外这里原来写 font-weight:700 —— 中文字体只有 400/700 两档，
-        # 600 会被吸附到 700 并打 findfont 告警，等于写了个假层级。
-        self.v.setFont(T.mono_qfont(t.type.body_md))
+        # 数值字体**按内容选**（ASCII → 等宽 / 含中文 → 中文比例字体），
+        # 且不靠 QSS 的 font-family：部件自带 setStyleSheet 与 app 级
+        # `QLabel#Hero` 规则并存时，Qt 对各属性的合并行为并不明确。
+        self.v.setFont(T.pick_text_font(self.v.text(), t.type.body_md, t.font_family))
         self.v.setStyleSheet("color:%s" % t.p.text)
 
 
@@ -604,7 +607,7 @@ class KVTable(QTableWidget):
     def apply_theme(self, t: T.Theme) -> None:
         self._t = t
 
-    def set_rows(self, rows, mono_keys=()) -> None:
+    def set_rows(self, rows) -> None:
         self.setRowCount(0)
         for k, v in rows:
             i = self.rowCount()
@@ -612,10 +615,10 @@ class KVTable(QTableWidget):
             a = QTableWidgetItem(str(k))
             b = QTableWidgetItem(str(v))
             b.setToolTip(str(v))
-            if str(k) in mono_keys:
-                f = QFont("Consolas")
-                f.setPointSizeF(9.0)
-                b.setFont(f)
+            # **按值的实际内容**选字体：数值给等宽（好沿竖线扫），含中文的
+            # （厂牌、编码器串、标题）给中文比例字体。早先按**键名**判断，
+            # 等于给中文值套了没有汉字字形的等宽族 → 方框。
+            b.setFont(T.pick_text_font(str(v), 9.0, self._t.font_family))
             self.setItem(i, 0, a)
             self.setItem(i, 1, b)
 

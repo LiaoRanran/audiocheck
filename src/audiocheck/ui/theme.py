@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (
     QColor,
+    QFont,
     QFontDatabase,
     QIcon,
     QPainter,
@@ -114,6 +115,10 @@ class Palette:
     primary_hi: str = "#5a92ff"
     primary_text: str = "#5a92ff"
     primary_soft: str = "#16243d"
+    # 次级强调色（分裂互补色相 +150°）：只用于数据可视化与装饰，**不承担语义**。
+    # 有了它，多文件对比图的第一条/第二条曲线才是"同一套配色里的两个声音"，
+    # 而不是从通用色板里各抓一个。
+    accent2: str = "#a06cf0"
     # 主按钮上的文字。**不是所有主色都配得起白字**：白字压在 #3d7dff 上只有
     # 3.77:1（低于 AA 4.5），压在悬停色 #5a92ff 上只有 3.00:1。
     # 两条路——压深主色（品牌色变闷）或改用墨字。选后者：种子色/品牌色的
@@ -173,11 +178,47 @@ def plot_palette(p: Palette) -> dict:
         "border": p.border, "border_hi": p.border_hi,
         "text": p.text, "text_dim": p.text_dim, "text_faint": p.text_faint,
         "accent": p.primary, "accent_hi": p.primary_hi, "accent_soft": p.primary_soft,
+        "accent2": p.accent2,
         "ok": p.success, "warn": p.warning, "bad": p.danger,
         "ok_bg": p.success_bg, "warn_bg": p.warning_bg, "bad_bg": p.danger_bg,
         "ok_border": p.success_bd, "warn_border": p.warning_bd, "bad_border": p.danger_bd,
         "grid": p.grid, "plot_bg": p.plot_bg, "selection": p.selection,
     }
+
+
+#: **运行时解析出来的**中文字体族。空串 = 还没解析（用 Theme 自带的默认值）。
+#: 为什么要有这个全局：QSS 的 `font-family` **不支持多族回退链**——`"A","B",sans-serif`
+#: 里的逗号链在 Qt 里是无效/不可靠的（本项目在等宽字体上已经踩过一次：
+#: 写死 "Cascadia Mono" 而本机只有 Consolas → 静默回退成比例字体）。
+#: 而主题里写死 "Microsoft YaHei UI" 一旦与系统实际族名对不上，Qt 会回退到
+#: **默认字体**——若那个默认字体没有汉字字形，**整屏中文都是方框**（用户报的乱码）。
+#: 结论：族名必须在运行时从已注册的字体里解析出来，不能写死。
+_UI_FAMILY = ""
+
+
+def set_ui_family(fam: str) -> None:
+    """把**实测存在**的中文字体族写进主题令牌（建窗口之前调用）。"""
+    global _UI_FAMILY
+    if fam:
+        _UI_FAMILY = fam
+
+
+def ui_family() -> str:
+    return _UI_FAMILY
+
+
+def init_fonts(app=None) -> str:
+    """加载中文字体 → 设成应用字体 → 写进主题令牌。**必须在建窗口之前调用。**
+
+    这三件事必须一起做：只注册字体文件（`load_cjk_fonts`）而 QSS 里仍写着
+    对不上的族名，等于没做（中文照样方框）。
+    """
+    fams = load_cjk_fonts()
+    fam = pick_family(fams)
+    if app is not None:
+        app.setFont(QFont(fam, 10))
+    set_ui_family(fam)
+    return fam
 
 
 @dataclass(frozen=True)
@@ -192,7 +233,12 @@ class Theme:
 
     @property
     def font(self) -> str:
-        return '"%s","Microsoft YaHei","Segoe UI",sans-serif' % self.font_family
+        """QSS 用的字体族。**只写一族名**——写链是假回退（见 `_UI_FAMILY` 的说明）。
+
+        优先用运行时解析出来的族（`init_fonts()` 写入），没有才退回实例默认值。
+        """
+        fam = _UI_FAMILY or self.font_family
+        return '"%s",sans-serif' % fam
 
     @property
     def mono(self) -> str:
@@ -218,7 +264,7 @@ LIGHT_P = Palette(
     # 后者是全应用最关键的一行信息（判定结论），而它在浅色主题下原本**低于 AA**。
     text="#141a26", text_dim="#5b6478", text_faint="#6d778a", text_disabled="#b2bac8",
     primary="#2563eb", primary_hi="#1d4fd8", primary_text="#1d4fd8", primary_soft="#e3ecff",
-    on_primary="#ffffff",
+    on_primary="#ffffff", accent2="#7c3aed",
     success="#008137", warning="#9b6500", danger="#d61e21", info="#0284c7",
     success_bg="#e7f8ee", warning_bg="#fdf4e3", danger_bg="#fdeceb", info_bg="#e5f4fd",
     success_bd="#a9e3c2", warning_bd="#f0dcae", danger_bd="#f5c6c2", info_bd="#a8d8f0",
@@ -247,7 +293,10 @@ QToolTip {{ background:{surface_raised}; color:{text}; border:1px solid {border_
             padding:{xs}px {sm}px; border-radius:{md}px; }}
 
 /* ===== 标题栏（无边框窗口自绘） ===== */
-#TitleBar {{ background:{surface}; border-bottom:1px solid {border}; }}
+/* 光的方向：窗口自上而下变亮一档，读起来像"光从上面来"。
+   整块纯色会很呆；而渐变只用了两个已有令牌，没有新增任何色号。 */
+#TitleBar {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+           stop:0 {surface_hi}, stop:1 {surface}); border-bottom:1px solid {border}; }}
 #TitleText {{ font-size:{body_sm}px; color:{text_dim}; }}
 #WinBtn {{ background:transparent; border:0; border-radius:{md}px; }}
 #WinBtn:hover {{ background:{hover}; }}
@@ -255,7 +304,8 @@ QToolTip {{ background:{surface_raised}; color:{text}; border:1px solid {border_
 #WinBtn#Close:hover {{ color:#fff; }}
 
 /* ===== 侧边栏 ===== */
-#SideBar {{ background:{surface}; border-right:1px solid {border}; }}
+#SideBar {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+           stop:0 {surface}, stop:1 {bg}); border-right:1px solid {border}; }}
 #BrandName {{ font-size:{body_md}px; font-weight:700; color:{text}; }}
 #BrandSub {{ font-size:{micro}px; color:{text_faint}; }}
 #NavItem {{ background:transparent; border:0; border-radius:{lg}px;
@@ -266,15 +316,19 @@ QToolTip {{ background:{surface_raised}; color:{text}; border:1px solid {border_
               letter-spacing:1.1px; padding:{md}px {md}px {xs}px; }}
 
 /* ===== 卡片 / 分区 ===== */
-QFrame#Card, QWidget#Card {{ background:{surface}; border:1px solid {border};
+QFrame#Card, QWidget#Card {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+    stop:0 {surface_hi}, stop:1 {surface}); border:1px solid {border};
                              border-radius:{xl}px; }}
 /* SectionTitle 用字距而不是字重做层级：本机中文字体只有 400/700 两档，
    原来写 font-weight:600 会被 Qt 吸附到 700（还会打 findfont 告警），
    于是"600"和"700"渲染出来一模一样——那个层级是假的。 */
 QLabel#SectionTitle {{ color:{text_dim}; font-size:{caption}px; font-weight:700;
                        letter-spacing:1.2px; }}
-QLabel#Hero {{ font-size:{display}px; font-weight:700; color:{text}; font-family:{mono}; }}
-QLabel#HeroUnit {{ color:{text_faint}; font-size:{caption}px; font-family:{mono}; }}
+/* #Hero 的等宽**由代码按值内容指定**（`theme.pick_text_font`），QSS 不设族名：
+   值里可能有中文（厂牌、编码器串），而 QSS 的族名是"一律套用"、没有回退链，
+   中文一旦落上去就得靠逐字形回退——那是不可控的。 */
+QLabel#Hero {{ font-size:{display}px; font-weight:700; color:{text}; }}
+QLabel#HeroUnit {{ color:{text_faint}; font-size:{caption}px; }}
 QLabel#Caption {{ color:{text_faint}; font-size:{caption}px; }}
 
 /* ===== 按钮 ===== */
@@ -312,10 +366,13 @@ QCheckBox::indicator:checked {{ background:{primary}; border-color:{primary}; }}
 /* 表格整体走等宽：规格/截止/DR/削波全是数字，比例数字会让列宽抖动、
    读数时眼睛没法沿竖线扫。中文列（文件名/判定）仍用比例字体，
    由 ItemDelegate 按列切换。 */
+/* 表格**不设整体等宽**：等宽是给数字列的（那几列由委托显式指定字体），
+   而这张表里有中文文件名、有整页中文的元数据表——整体等宽等于把中文
+   全部推给"逐字形回退"，落到哪个字体不可控，部分机器上直接是方框。 */
 QTableWidget {{ background:{surface}; alternate-background-color:{surface_hi};
     gridline-color:transparent; border:1px solid {border}; border-radius:{xl}px;
     selection-background-color:{selection}; selection-color:{text};
-    font-size:{body_sm}px; font-family:{mono}; }}
+    font-size:{body_sm}px; }}
 QTableWidget::item {{ padding:{xs}px {sm}px; border:0; }}
 QHeaderView::section {{ background:{surface_hi}; color:{text_dim}; border:0;
     border-bottom:1px solid {border}; padding:{sm}px {md}px;
@@ -347,7 +404,10 @@ QStatusBar {{ background:{surface}; border-top:1px solid {border};
 QStatusBar::item {{ border:0; }}
 QProgressBar {{ background:{surface_hi}; border:0; border-radius:3px; height:4px;
                 color:transparent; }}
-QProgressBar::chunk {{ background:{primary}; border-radius:3px; }}
+/* 进度条走到哪一目了然还不够——它得**看起来在动**：
+   主色 → 次级强调色（分裂互补）的横向渐变给出一段"流向"。 */
+QProgressBar::chunk {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+    stop:0 {primary}, stop:1 {accent2}); border-radius:3px; }}
 
 /* ===== 菜单 / 命令面板 ===== */
 QMenu {{ background:{surface_raised}; border:1px solid {border_hi};
@@ -370,8 +430,9 @@ QSplitter::handle:hover {{ background:{primary_soft}; }}
         text=p.text, text_dim=p.text_dim, text_faint=p.text_faint, text_disabled=p.text_disabled,
         primary=p.primary, primary_hi=p.primary_hi, primary_soft=p.primary_soft,
         primary_text=p.primary_text, on_primary=p.on_primary, hover_hi=p.hover_hi,
+        accent2=p.accent2,
         danger=p.danger, hover=p.hover, selection=p.selection,
-        font=t.font, mono=t.mono, body=int(ty.body), body_sm=int(ty.body_sm), body_md=int(ty.body_md),
+        font=t.font, body=int(ty.body), body_sm=int(ty.body_sm), body_md=int(ty.body_md),
         caption=int(ty.caption), micro=int(ty.micro), display=int(ty.display),
         xs=sp.xs, sm=sp.sm, md=sp.md, lg=sp.lg, xl=sp.xl,
         )
@@ -436,6 +497,26 @@ _MONO_FILES = [
     "/System/Library/Fonts/Menlo.ttc",
     "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
 ]
+
+
+def pick_text_font(text: str, size_pt: float, family: str = ""):
+    """按**内容**选字体：纯 ASCII 才给等宽，含中文就走中文比例字体。
+
+    为什么按内容而不是按列、更不是按键名：等宽是为了"数字沿竖线对齐"，
+    中文没有对齐需求；而等宽族（Consolas / DejaVu Sans Mono）**没有汉字字形**，
+    中文落在上面只能靠 Qt 的逐字形回退——**落到哪个字体不可控**，实测在部分
+    机器上直接是方框（用户报的"字乱码"就是这个）。
+
+    早先两处踩了同一个坑：`KVTable` 按**键名**决定等宽（给中文值套了等宽），
+    QSS 又把整张表设成等宽（元数据页成片中文全走回退路径）。
+    """
+    from PySide6.QtGui import QFont
+
+    if text.isascii():
+        return mono_qfont(size_pt)
+    f = QFont(family or "Microsoft YaHei")
+    f.setPointSizeF(size_pt)
+    return f
 
 
 def mono_qfont(size_pt: float):

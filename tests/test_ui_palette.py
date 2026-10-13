@@ -110,6 +110,30 @@ class TestTemperatureLayering(unittest.TestCase):
         self.assertLess(abs(dark_bg - 250), abs(light_bg - 250))
 
 
+class TestAccent2(unittest.TestCase):
+    """次级强调色：**分裂互补**（色相 +150°），同明度同彩度。"""
+
+    def test_hue_is_split_complementary(self):
+        for seed in ("#3d7dff", "#e0a92e", "#35c46a"):
+            pal = P.build(seed, "dark")
+            h1 = P.srgb_to_oklch(pal["primary"])[2]
+            h2 = P.srgb_to_oklch(pal["accent2"])[2]
+            delta = (h2 - h1) % 360
+            self.assertAlmostEqual(delta, 150.0, delta=8.0, msg="%s → %.1f°" % (seed, delta))
+
+    def test_same_visual_weight_as_primary(self):
+        """明度相近才有"等重"观感——否则一条曲线天然比另一条显眼。"""
+        pal = P.build("#3d7dff", "dark")
+        l1 = P.srgb_to_oklch(pal["primary"])[0]
+        l2 = P.srgb_to_oklch(pal["accent2"])[0]
+        self.assertLess(abs(l1 - l2), 0.12)
+
+    def test_visible_on_plot_background(self):
+        for mode in ("dark", "light"):
+            pal = P.build("#8b5cf6", mode)
+            self.assertGreaterEqual(P.contrast(pal["accent2"], pal["plot_bg"]), 3.0)
+
+
 class TestContrast(unittest.TestCase):
     """WCAG 2.1 对比度的边界值。"""
 

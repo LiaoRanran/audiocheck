@@ -104,7 +104,34 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _setup_console() -> None:
+    """让中文在 Windows 控制台里不乱码、也不因编码编不出来而崩。
+
+    Windows 默认代码页是 GBK(936)，而本程序所有文案都是 UTF-8 源码里的中文，
+    其中还有 `｜`、`…` 这类 GBK 编不出来的符号——`print()` 会直接抛
+    `UnicodeEncodeError`，用户看到的是 traceback 而不是报告。
+
+    两步：把控制台切到 UTF-8（现代终端都支持，其它平台是 no-op）；
+    再给 stdout/stderr 挂 `errors="replace"` 兜底——**宁可有问号，也不能崩**。
+    """
+    import sys
+
+    try:
+        if sys.platform == "win32":
+            import ctypes
+
+            ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+    except Exception:                                          # noqa: BLE001
+        pass
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:                                      # noqa: BLE001
+            pass
+
+
 def main(argv=None) -> int:
+    _setup_console()
     args = build_parser().parse_args(argv)
 
     if args.doctor:
