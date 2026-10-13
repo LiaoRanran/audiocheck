@@ -118,6 +118,25 @@ class TestThemeConsistency(unittest.TestCase):
 
     # ---------------------------------------------------------------- 装饰色阶
 
+    def test_every_dialog_preset_builds(self):
+        """对话框里每一个预设种子（含 ACG 那一排）都必须能生成。
+
+        挡的是"加了个预设但它生成不达标"——那种失败只有用户点下去的那一刻
+        才看得见，而那时他看到的是一句"换一个试试"。
+        """
+        from audiocheck.ui import palette as P
+        from audiocheck.ui.widgets import SeedDialog
+        presets = [h for h, _ in SeedDialog.PRESETS + SeedDialog.ACG_PRESETS]
+        self.assertTrue(presets, "对话框应当有预设")
+        for hexv in presets:
+            for mode in ("dark", "light"):
+                for vibe in ("calm", "pop"):
+                    pal = P.build(hexv, mode, vibe)
+                    self.assertEqual([f for f in P.audit(pal) if not f.ok], [],
+                                     "%s / %s / %s 不达标" % (hexv, mode, vibe))
+                    self.assertEqual([f for f in P.deco_checks(pal) if not f.ok], [],
+                                     "%s / %s / %s 装饰色阶不可见" % (hexv, mode, vibe))
+
     def test_sidebar_nav_icons_use_the_deco_ramp(self):
         """侧边栏导航项按顺序取自装饰色阶。
 

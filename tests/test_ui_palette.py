@@ -32,6 +32,9 @@ from audiocheck.ui import palette as P  # noqa: E402
 # 生成器要用到的种子：含 4 个有彩色 + 灰/黑/白（无色相，走回退色相）+ 两个极端
 SEEDS = ("#3d7dff", "#35c46a", "#e0a92e", "#f0524a", "#8b5cf6",
          "#000000", "#ffffff", "#808080", "#7f2a00")
+#: **对话框里能点到的每一个 ACG 预设**都要能生成——用户会真的去点它们，
+#: 而"某个预设种子生成不达标"这种失败只有在点下去的那一刻才看得见。
+ACG_SEEDS = ("#e879a6", "#39c5bb", "#7c5cff", "#4f8cff", "#ff9f45", "#5fd6a0")
 
 
 class TestColorSpace(unittest.TestCase):
@@ -215,7 +218,7 @@ class TestVibeLayers(unittest.TestCase):
     def test_both_vibes_pass_strict_audit(self):
         for mode in ("dark", "light"):
             for vibe in P.VIBES:
-                for seed in SEEDS:
+                for seed in SEEDS + ACG_SEEDS:
                     pal = P.build(seed, mode, vibe)
                     bad = [f for f in P.audit(pal) if not f.ok]
                     self.assertEqual(bad, [], "%s / %s / %s 不达标：%s"
