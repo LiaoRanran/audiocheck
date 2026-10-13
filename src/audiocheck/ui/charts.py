@@ -19,6 +19,7 @@ from PySide6.QtWidgets import QStyle, QStyledItemDelegate  # noqa: E402
 
 from ..config import BAND_CN, BANDS  # noqa: E402
 from . import theme as T  # noqa: E402
+from . import zoom as Z  # noqa: E402
 from .theme import LEVEL_CN, LEVEL_COLOR_KEY  # noqa: E402
 
 
@@ -220,10 +221,118 @@ class SpectrumCanvas(BaseCanvas):
         self._static_ok = False        # 静态内容是否已按当前数据画好
         self._bg = None                # 静态层的栅格快照，悬停 blit 用
         self._hline = self._hdot = self._hann = None   # 常驻悬停图元
+        # ---- 缩放 / 平移状态 ----
+        # 数据全距（进栈时由 _static_layer 填），视野初始 = 全距
+        self._full_x = (20.0, 20000.0)
+        # None = 用户还没缩放过（或数据刚换过）→ 下一次重画时回全距。
+        # 不用"跨度≈全距"来判断：20000 与 22050 只差 1.4%，
+        # 任何固定阈值都会把这种占位值误判成缩放态。
+        self._view_x = None
+        self._view_dirty = False
+        self._pan_from = None          # 拖拽起点 (xdata, ydata)
+        self._view_timer = None        # 重画合并计时器
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         self.mpl_connect("motion_notify_event", self._on_move)
         self.mpl_connect("axes_leave_event", lambda e: self._set_hover(None))
+        self.mpl_connect("scroll_event", self._on_scroll)
+        self.mpl_connect("button_press_event", self._on_press)
+        self.mpl_connect("button_release_event", self._on_release)
+        self.mpl_connect("key_press_event", self._on_key)
+
+    # ---- 缩放 / 平移 -------------------------------------------------------
+    # 为什么重画要走合并计时器：滚轮是连续事件，一路滚下去会触发十几次重画，
+    # 而每次重画是整图（本图实测 ~90 ms）。合成一帧再画，与瀑布图拖拽限流
+    # 是同一个思路——不是"少画"，是"别把同一帧画两遍"。
+    VIEW_DEBOUNCE_MS = 28
+
+    def _schedule_view(self):
+        if self._view_timer is None:
+            self._view_timer = QTimer(self)
+            self._view_timer.setSingleShot(True)
+            self._view_timer.setInterval(self.VIEW_DEBOUNCE_MS)
+            self._view_timer.timeout.connect(self._apply_view)
+        self._view_timer.start()
+
+    def _apply_view(self):
+        if not self._has_data():
+            return
+        lo, hi = self._view_x or self._full_x
+        self.ax.set_xlim(lo, hi)
+        # 视野变了，刻度与 Bark 底纹都要按新区间重挑（见 zoom.pick_ticks）
+        self._static_ok = False
+        self._bg = None
+        self.redraw_if_visible()
+
+    def _zoom(self, step: int, anchor=None):
+        if not self._has_data():
+            return
+        lo, hi = self._view_x or self._full_x
+        mid = (lo + hi) / 2 if anchor is None else anchor
+        self._view_x = Z.zoom_step(lo, hi, self._full_x[0], self._full_x[1], step, mid,
+                                   log=True)
+        self._schedule_view()
+
+    def _pan_by(self, frac: float):
+        if not self._has_data():
+            return
+        lo, hi = self._view_x or self._full_x
+        a, b = Z.pan_span(lo, hi, frac, log=True)
+        self._view_x = Z.clamp_span(a, b, self._full_x[0], self._full_x[1], log=True)
+        self._schedule_view()
+
+    def reset_view(self):
+        self._view_x = self._full_x
+        self._view_dirty = False
+        self._schedule_view()
+
+    def _on_scroll(self, ev):
+        if ev.inaxes is not self.ax or not self._has_data():
+            return
+        step = getattr(ev, "step", 0) or (1 if getattr(ev, "button", "") == "up" else -1)
+        self._zoom(step, ev.xdata)
+        self.setFocus()
+
+    def _on_press(self, ev):
+        if ev.inaxes is not self.ax or not self._has_data():
+            return
+        if ev.button == 1:
+            self._pan_from = (ev.xdata, ev.ydata)
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        elif ev.button == 3:                     # 右键 = 放大一级（触板/无滚轮环境）
+            self._zoom(1, ev.xdata)
+
+    def _on_release(self, ev):
+        if self._pan_from is not None:
+            self._pan_from = None
+            self.unsetCursor()
+
+    def _on_key(self, ev):
+        if not self._has_data():
+            return
+        k = (ev.key or "").lower()
+        if k in ("+", "="):
+            self._zoom(1)
+        elif k in ("-", "_"):
+            self._zoom(-1)
+        elif k in ("0", "r"):
+            self.reset_view()
+        elif k in ("left", "right"):
+            self._pan_by(0.25 if k == "right" else -0.25)
 
     def _on_move(self, ev):
+        if self._pan_from is not None:
+            if ev.inaxes is not self.ax or ev.xdata is None or ev.xdata <= 0:
+                return
+            lo, hi = self._view_x
+            # 位移要按**对数空间**算比例：横轴是对数的，
+            # 直接拿数据差除以跨度会让"拖过同样的像素"在高低频表现不一致。
+            span_l = math.log10(hi) - math.log10(lo)
+            if span_l <= 0:
+                return
+            frac = -(math.log10(ev.xdata) - math.log10(self._pan_from[0])) / span_l
+            self._pan_from = (ev.xdata, self._pan_from[1])
+            self._pan_by(frac)
+            return
         if ev.inaxes is not self.ax or not self._has_data():
             return
         self._set_hover(ev.xdata)
@@ -233,6 +342,9 @@ class SpectrumCanvas(BaseCanvas):
             # 数据换了，静态内容（曲线/频段线/截止标注）必须重画
             self._static_ok = False
             self._bg = None
+            # 换文件 = 换全距（奈奎斯特随采样率变），视野回全距。
+            # 留着上一个文件的缩放区会把新文件显示成"空白的低频段"。
+            self._view_dirty = True
         self.r = r
         self.redraw_if_visible()
 
@@ -395,8 +507,15 @@ class SpectrumCanvas(BaseCanvas):
         # **位置必须在这里、不能提前**：semilogx() 内部会 set_xscale('log')，
         # 顺手重置定位器与格式器 —— 早先把刻度配置写在绘图之前，全部被冲掉，
         # 底轴照样只显示 10²/10³/10⁴（一跑图就看出来了）。
-        ticks = [t for t in (20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000)
-                 if t <= nyq]
+        #
+        # 刻度按**当前视野**挑（zoom.pick_ticks）：缩放后如果还按全距那张表，
+        # 放大到 100–200 Hz 时只剩两个刻度，等于"能放大但读不了数"。
+        self._full_x = (20.0, float(nyq))
+        if self._view_x is None or self._view_dirty:
+            self._view_x = self._full_x
+            self._view_dirty = False
+        v0, v1 = self._view_x
+        ticks = [t for t in Z.pick_ticks(v0, v1, log=True) if t <= nyq]
         ax.set_xticks(ticks)
         ax.set_xticklabels([("%gk" % (t / 1000) if t >= 1000 else "%g" % t) for t in ticks])
         # 次刻度只留 2/5 两档（对数频率轴的惯例）：既够精读，又不会糊成一片。
@@ -404,8 +523,8 @@ class SpectrumCanvas(BaseCanvas):
         minor = [float(t * m)
                  for t in (20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000)
                  for m in (2, 5)]
-        ax.set_xticks([v for v in minor if 20 < v <= nyq], minor=True)
-        ax.set_xlim(20, nyq)
+        ax.set_xticks([v for v in minor if v0 < v <= nyq], minor=True)
+        ax.set_xlim(v0, v1)
         # 顶部多留 14% 给频段标签，否则标签与截止标注挤在一起
         ax.set_ylim(lo, top + (top - lo) * 0.14)
 
@@ -728,19 +847,150 @@ class WaterfallCanvas(BaseCanvas):
 
 # --------------------------------------------------------------------- 多文件对比
 class CompareCanvas(BaseCanvas):
-    """把多个文件的频谱叠在一张图上——判断「同专辑/同批源」的最快方式。"""
+    """把多个文件的频谱叠在一张图上——判断「同专辑/同批源」的最快方式。
+
+    十条曲线叠在一起时，**关掉几条**比放大更常用：先排到只剩两条可疑的，
+    再放大细看。所以这里同时给了图例开关（点图例）与缩放/平移。
+    """
 
     def __init__(self):
         super().__init__(6.2, 3.6)
         self.ax = self.fig.add_subplot(111)
         self.items = []
+        # ---- 缩放 / 平移（与频谱曲线同一套逻辑，见 SpectrumCanvas）----
+        self._full_x = (20.0, 24000.0)
+        self._view_x = None            # None = 未缩放 / 数据刚换过（见 SpectrumCanvas）
+        self._view_dirty = False
+        self._pan_from = None
+        self._view_timer = None
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        self.mpl_connect("scroll_event", self._on_scroll)
+        self.mpl_connect("button_press_event", self._on_press)
+        self.mpl_connect("button_release_event", self._on_release)
+        self.mpl_connect("motion_notify_event", self._on_move)
+        self.mpl_connect("key_press_event", self._on_key)
+        self.mpl_connect("pick_event", self._on_pick)
 
     def set_data(self, items):
+        if items is not self.items:
+            self._view_dirty = True
         self.items = items or []
         self.redraw_if_visible()
 
     def _has_data(self):
         return bool(self.items)   # items 空表示没有多选
+
+    # ---- 缩放 / 平移 ------------------------------------------------------
+    VIEW_DEBOUNCE_MS = 28
+
+    def _schedule_view(self):
+        if self._view_timer is None:
+            self._view_timer = QTimer(self)
+            self._view_timer.setSingleShot(True)
+            self._view_timer.setInterval(self.VIEW_DEBOUNCE_MS)
+            self._view_timer.timeout.connect(self._apply_view)
+        self._view_timer.start()
+
+    def _apply_view(self):
+        if not self._has_data():
+            return
+        self.ax.set_xlim(*self._view_x)
+        self.draw_idle()
+
+    def _zoom(self, step: int, anchor=None):
+        if not self._has_data():
+            return
+        lo, hi = self._view_x
+        mid = (lo + hi) / 2 if anchor is None else anchor
+        self._view_x = Z.zoom_step(lo, hi, self._full_x[0], self._full_x[1], step, mid,
+                                   log=True)
+        self._schedule_view()
+
+    def _pan_by(self, frac: float):
+        if not self._has_data():
+            return
+        a, b = Z.pan_span(*self._view_x, frac, log=True)
+        self._view_x = Z.clamp_span(a, b, self._full_x[0], self._full_x[1], log=True)
+        self._schedule_view()
+
+    def reset_view(self):
+        self._view_x = self._full_x
+        self._schedule_view()
+
+    def _on_scroll(self, ev):
+        if ev.inaxes is not self.ax or not self._has_data():
+            return
+        step = getattr(ev, "step", 0) or (1 if getattr(ev, "button", "") == "up" else -1)
+        self._zoom(step, ev.xdata)
+        self.setFocus()
+
+    def _on_press(self, ev):
+        if ev.inaxes is not self.ax or not self._has_data():
+            return
+        if ev.button == 1:
+            self._pan_from = (ev.xdata, ev.ydata)
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        elif ev.button == 3:
+            self._zoom(1, ev.xdata)
+
+    def _on_release(self, ev):
+        if self._pan_from is not None:
+            self._pan_from = None
+            self.unsetCursor()
+
+    def _on_move(self, ev):
+        if self._pan_from is not None:
+            if ev.inaxes is not self.ax or not ev.xdata or ev.xdata <= 0:
+                return
+            lo, hi = self._view_x
+            span_l = math.log10(hi) - math.log10(lo)
+            if span_l <= 0:
+                return
+            frac = -(math.log10(ev.xdata) - math.log10(self._pan_from[0])) / span_l
+            self._pan_from = (ev.xdata, self._pan_from[1])
+            self._pan_by(frac)
+            return
+        # 拖拽提示：十条曲线叠着时给个抓手提示，否则用户不知道能平移
+        if ev.inaxes is self.ax and self._has_data():
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+        else:
+            self.unsetCursor()
+
+    def _on_key(self, ev):
+        if not self._has_data():
+            return
+        k = (ev.key or "").lower()
+        if k in ("+", "="):
+            self._zoom(1)
+        elif k in ("-", "_"):
+            self._zoom(-1)
+        elif k in ("0", "r"):
+            self.reset_view()
+        elif k in ("left", "right"):
+            self._pan_by(0.25 if k == "right" else -0.25)
+
+    def _on_pick(self, ev):
+        """点图例 = 开关对应曲线。
+
+        十条曲线叠在一张图上时，第一件事是"关掉几条"。matplotlib 的
+        legend 支持 `set_picker(True)` + pick_event，但那样拿不到
+        "哪一条被点了"的稳定标识——这里改成直接命中测试：
+        图例文字的画布坐标落在鼠标位置上，就开关那一组。
+        """
+        leg = getattr(self, "_legend", None)
+        mouse = getattr(ev, "mouseevent", None)
+        if leg is None or mouse is None or mouse.inaxes is not self.ax:
+            return
+        for text, line in zip(leg.get_texts(), self._lines):
+            if not text.get_visible():
+                continue
+            bb = text.get_window_extent()
+            if bb.contains(mouse.x, mouse.y):
+                vis = not line.get_visible()
+                line.set_visible(vis)
+                text.set_alpha(1.0 if vis else 0.35)
+                self.draw_idle()
+                return
 
     def redraw(self):
         self._stale = False
@@ -768,23 +1018,31 @@ class CompareCanvas(BaseCanvas):
         # 所以十条曲线叠在一张图上仍然条条可辨——不用再逐条肉眼核。
         seq = (p["accent"], p.get("accent2", p["accent"])) \
             + tuple(p.get("deco") or ())[1:] + tuple(CYCLE)
+        self._lines = []
         for i, (r, cur) in enumerate(self.items[:10]):
             arr = np.asarray(cur, dtype=float)
             col = seq[i % len(seq)]
             nyq = max(nyq, r.get("sr", 48000) / 2)
             top = float(np.percentile(arr[:, 1], 99.5))
-            ax.semilogx(arr[:, 0], arr[:, 1] - top, lw=1.15, color=col, alpha=.95,
-                        label="%s  ｜ %.1fk" % (r["file"][:30], (r.get("cutoff_khz") or 0)),
-                        zorder=3)
+            ln, = ax.semilogx(arr[:, 0], arr[:, 1] - top, lw=1.15, color=col, alpha=.95,
+                              label="%s  ｜ %.1fk" % (r["file"][:30], (r.get("cutoff_khz") or 0)),
+                              zorder=3)
+            self._lines.append(ln)
             cut = r.get("cutoff_hz")
             if cut:
                 ax.axvline(cut, color=col, lw=1.0, ls="--", alpha=.55, zorder=2)
         ax.axhline(0, color=p["text_faint"], lw=.7, ls=":", zorder=1)
-        ax.set_xlim(20, nyq)
+        # 全距按当前数据的最大奈奎斯特算；换一批文件要回全距
+        self._full_x = (20.0, float(nyq))
+        if self._view_x is None or self._view_dirty:
+            self._view_x = self._full_x
+            self._view_dirty = False
+        ax.set_xlim(*self._view_x)
         ax.set_ylim(-80, 8)
         leg = ax.legend(loc="lower left", fontsize=7.8, framealpha=.92, ncol=1,
                         facecolor=p["surface2"], edgecolor=p["border_hi"], labelcolor=p["text"])
         leg.get_frame().set_linewidth(.8)
+        self._legend = leg
         self.draw()
 
 
