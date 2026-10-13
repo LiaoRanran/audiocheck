@@ -114,14 +114,14 @@ class BaseCanvas(FigureCanvasQTAgg):
         ax.set_facecolor(p["plot_bg"])
         ax.grid(True, which="major", color=p["grid"], lw=.7, zorder=0)
         ax.grid(True, which="minor", color=p["grid"], lw=.35, alpha=.5, zorder=0)
-        ax.tick_params(colors=p["text_faint"], labelsize=8, length=3)
+        ax.tick_params(colors=p["text_faint"], labelsize=p['fs_tick'], length=3)
         for s in ax.spines.values():
             s.set_color(p["border"])
             s.set_linewidth(.9)
         if xlabel:
-            ax.set_xlabel(xlabel, color=p["text_faint"], fontsize=9, labelpad=4)
+            ax.set_xlabel(xlabel, color=p["text_faint"], fontsize=p['fs_tick'], labelpad=4)
         if ylabel:
-            ax.set_ylabel(ylabel, color=p["text_faint"], fontsize=9, labelpad=4)
+            ax.set_ylabel(ylabel, color=p["text_faint"], fontsize=p['fs_tick'], labelpad=4)
 
 
 # --------------------------------------------------------------------- 时频重采样
@@ -417,7 +417,7 @@ class SpectrumCanvas(BaseCanvas):
             ax.clear()
             self._ax_style(ax, "频率 Hz", "相对电平 dB")
             ax.text(.5, .5, "选择左侧条目以查看频谱", ha="center", va="center",
-                    color=p["text_faint"], transform=ax.transAxes, fontsize=11)
+                    color=p["text_faint"], transform=ax.transAxes, fontsize=p['fs_caption'])
             ax.set_xticks([])
             ax.set_yticks([])
             self.draw()
@@ -462,12 +462,12 @@ class SpectrumCanvas(BaseCanvas):
                 ax.axvline(edge, color=p["border_hi"], lw=.9, zorder=1)
                 ax.text(edge, top + (top - lo) * .012,
                         ("%gk" % (edge / 1000) if edge >= 1000 else "%g" % edge),
-                        color=p["text_faint"], fontsize=7, ha="center", va="bottom",
+                        color=p["text_faint"], fontsize=p['fs_tick'], ha="center", va="bottom",
                         clip_on=False)
 
         ax.axvline(nyq, color=p["text_faint"], lw=1.0, ls=":", zorder=2)
         ax.text(nyq, lo + (top - lo) * .02, " 奈奎斯特 %.1fk" % (nyq / 1000),
-                color=p["text_faint"], fontsize=7.5, va="bottom", ha="right", rotation=90)
+                color=p["text_faint"], fontsize=p['fs_tick'], va="bottom", ha="right", rotation=90)
 
         # 填充 .16→.10：原来低频段糊成一块，把曲线本身盖住了
         ax.fill_between(f, db, lo, color=p["accent"], alpha=.10, lw=0, zorder=2)
@@ -481,7 +481,7 @@ class SpectrumCanvas(BaseCanvas):
         if nf and lo < nf < top:
             ax.axhline(nf, color=p["text_faint"], lw=.8, ls=":", zorder=2)
             ax.text(22, nf + (top - lo) * .012, "噪底 %.0f dB" % nf,
-                    color=p["text_faint"], fontsize=7, va="bottom")
+                    color=p["text_faint"], fontsize=p['fs_tick'], va="bottom")
 
         cut = self.r.get("cutoff_hz")
         if cut:
@@ -497,7 +497,7 @@ class SpectrumCanvas(BaseCanvas):
                         xytext=(-8 if right_side else 8, 0),
                         textcoords="offset points",
                         ha="right" if right_side else "left",
-                        color=col, fontsize=9, fontweight="bold", va="top",
+                        color=col, fontsize=p['fs_tick'], fontweight="bold", va="top",
                         bbox=dict(boxstyle="round,pad=0.32", fc=p["surface2"], ec=col, lw=.9))
         # ---- x 轴刻度：**这张图的全部意义是「内容停在哪」** ----
         # 默认对数轴只标注 10²/10³/10⁴ 三个点，关键区（10k–22k）一个刻度都没有，
@@ -554,7 +554,7 @@ class SpectrumCanvas(BaseCanvas):
         self._hdot, = ax.plot([f[i]], [arr[i, 1]], "o", ms=4, color=p["text"], zorder=6)
         self._hann = ax.annotate("%.0f Hz    %.1f dB" % (f[i], arr[i, 1]),
                                  xy=(f[i], arr[i, 1]), xytext=(9, 9),
-                                 textcoords="offset points", fontsize=8.5,
+                                 textcoords="offset points", fontsize=p['fs_tick'],
                                  color=p["text"],
                                  bbox=dict(boxstyle="round,pad=0.34",
                                            fc=p["surface3"], ec=p["border_hi"], lw=.8))
@@ -599,7 +599,7 @@ class SpectrogramCanvas(BaseCanvas):
             if self._cbar is not None:
                 self._cbar.ax.set_visible(False)   # 空数据不该留着一条没有含义的色条
             ax.text(.5, .5, self._msg, ha="center", va="center", color=p["text_faint"],
-                    transform=ax.transAxes, fontsize=11)
+                    transform=ax.transAxes, fontsize=p['fs_caption'])
             ax.set_xticks([])
             ax.set_yticks([])
             self.draw()
@@ -656,9 +656,9 @@ class SpectrogramCanvas(BaseCanvas):
             # NotImplementedError: cannot remove artist（实测）。
             self._cbar.update_normal(mesh)
         cb = self._cbar
-        cb.ax.tick_params(colors=p["text_faint"], labelsize=7.5)
+        cb.ax.tick_params(colors=p["text_faint"], labelsize=p['fs_tick'])
         cb.outline.set_edgecolor(p["border"])
-        cb.set_label("dB", color=p["text_faint"], fontsize=8)
+        cb.set_label("dB", color=p["text_faint"], fontsize=p['fs_tick'])
 
 
 # --------------------------------------------------------------------- 频段能量
@@ -687,7 +687,7 @@ class BandCanvas(BaseCanvas):
         b = (r or {}).get("bands_pct") or {}
         if not b:
             ax.text(.5, .5, "选择左侧条目以查看频段分布", ha="center", va="center",
-                    color=p["text_faint"], transform=ax.transAxes, fontsize=11)
+                    color=p["text_faint"], transform=ax.transAxes, fontsize=p['fs_caption'])
             ax.set_xticks([])
             ax.set_yticks([])
             self.draw()
@@ -702,14 +702,14 @@ class BandCanvas(BaseCanvas):
         bars = ax.bar(range(len(keys)), vals, color=colors, width=.68, zorder=3)
         for rect, v in zip(bars, vals):
             ax.text(rect.get_x() + rect.get_width() / 2, v + max(vals + [1]) * .025,
-                    "%.0f%%" % v, ha="center", color=p["text"], fontsize=9.5, fontweight="bold")
+                    "%.0f%%" % v, ha="center", color=p["text"], fontsize=p['fs_tick'], fontweight="bold")
         for i, (_k, lo, hi) in enumerate(BANDS):
             ax.text(i, -max(vals + [1]) * .085, "%s–%s" % (
                 lo if lo < 1000 else "%dk" % (lo // 1000),
                 hi if hi < 1000 else "%dk" % (hi // 1000)),
-                ha="center", color=p["text_faint"], fontsize=7.5)
+                ha="center", color=p["text_faint"], fontsize=p['fs_tick'])
         ax.set_xticks(range(len(keys)))
-        ax.set_xticklabels(names, color=p["text_dim"], fontsize=9.5)
+        ax.set_xticklabels(names, color=p["text_dim"], fontsize=p['fs_tick'])
         ax.set_ylim(0, max(vals + [1]) * 1.20)
         ax.tick_params(axis="x", pad=14)
         self.draw()
@@ -799,7 +799,7 @@ class WaterfallCanvas(BaseCanvas):
         if not self.data:
             ax.set_axis_off()
             ax.text2D(.5, .5, self._msg, ha="center", va="center", transform=ax.transAxes,
-                      color=p["text_faint"], fontsize=11)
+                      color=p["text_faint"], fontsize=p['fs_caption'])
             self.draw()
             return
         t, f, S = self.data
@@ -831,15 +831,15 @@ class WaterfallCanvas(BaseCanvas):
         ticks = [v for v in (1, 2, 3, 4) if lf[0] <= v <= lf[-1]]
         ax.set_xticks(ticks)
         ax.set_xticklabels(["%g" % (10 ** v) if v < 3 else "%gk" % (10 ** (v - 3)) for v in ticks],
-                           fontsize=8)
+                           fontsize=p['fs_tick'])
         ax.set_yticks([0, n // 2, n])
         ax.set_yticklabels(["0", "%.0fs" % (t[len(t) // 2] if len(t) else 0),
-                            "%.0fs" % (t[-1] if len(t) else 0)], fontsize=7.5)
+                            "%.0fs" % (t[-1] if len(t) else 0)], fontsize=p['fs_tick'])
         ax.set_zticks([-80, -60, -40, -20, 0])
-        ax.set_zticklabels(["-80", "-60", "-40", "-20", "0"], fontsize=7.5)
-        ax.set_xlabel("Hz", color=p["text_dim"], fontsize=8.5, labelpad=-2)
-        ax.set_ylabel("时间", color=p["text_dim"], fontsize=8.5, labelpad=-2)
-        ax.set_zlabel("dB", color=p["text_dim"], fontsize=8.5, labelpad=-4)
+        ax.set_zticklabels(["-80", "-60", "-40", "-20", "0"], fontsize=p['fs_tick'])
+        ax.set_xlabel("Hz", color=p["text_dim"], fontsize=p['fs_tick'], labelpad=-2)
+        ax.set_ylabel("时间", color=p["text_dim"], fontsize=p['fs_tick'], labelpad=-2)
+        ax.set_zlabel("dB", color=p["text_dim"], fontsize=p['fs_tick'], labelpad=-4)
         ax.tick_params(colors=p["text_faint"], pad=-2)
         for pane in (ax.xaxis, ax.yaxis, ax.zaxis):
             pane.set_pane_color((0, 0, 0, 0))
@@ -847,8 +847,8 @@ class WaterfallCanvas(BaseCanvas):
         ax.grid(True, color=p["grid"], lw=.5, alpha=.55)
         cut = (self.r or {}).get("cutoff_khz")
         ax.text2D(.015, .95, ("真实截止 %.2f kHz" % cut) if cut else "", transform=ax.transAxes,
-                  color=p["text_dim"], fontsize=8.5)
-        ax.text2D(.86, .95, "拖拽旋转", transform=ax.transAxes, color=p["text_faint"], fontsize=8)
+                  color=p["text_dim"], fontsize=p['fs_tick'])
+        ax.text2D(.86, .95, "拖拽旋转", transform=ax.transAxes, color=p["text_faint"], fontsize=p['fs_tick'])
         self.draw()
 
 
@@ -1010,7 +1010,7 @@ class CompareCanvas(BaseCanvas):
         if not self.items:
             ax.text(.5, .5, "在左侧按住 Ctrl 选中多个条目即可叠加对比",
                     ha="center", va="center", color=p["text_faint"],
-                    transform=ax.transAxes, fontsize=11)
+                    transform=ax.transAxes, fontsize=p['fs_caption'])
             ax.set_xticks([])
             ax.set_yticks([])
             self.draw()
@@ -1046,7 +1046,7 @@ class CompareCanvas(BaseCanvas):
             self._view_dirty = False
         ax.set_xlim(*self._view_x)
         ax.set_ylim(-80, 8)
-        leg = ax.legend(loc="lower left", fontsize=7.8, framealpha=.92, ncol=1,
+        leg = ax.legend(loc="lower left", fontsize=p['fs_tick'], framealpha=.92, ncol=1,
                         facecolor=p["surface2"], edgecolor=p["border_hi"], labelcolor=p["text"])
         leg.get_frame().set_linewidth(.8)
         self._legend = leg
@@ -1086,7 +1086,7 @@ class OverviewCanvas(BaseCanvas):
         if not rows:
             self.axh.axis("off")
             self.axh.text(.5, .5, "分析完成后显示批次分布", ha="center", va="center",
-                          color=p["text_faint"], transform=self.axh.transAxes, fontsize=11)
+                          color=p["text_faint"], transform=self.axh.transAxes, fontsize=p['fs_caption'])
             self.axd.axis("off")
             self.draw()
             return
@@ -1095,7 +1095,7 @@ class OverviewCanvas(BaseCanvas):
         levels = [r.get("level", "warn") for r in rows]
         bins = np.arange(0, max(48, cuts.max() + 2), 2.0)
         self._ax_style(self.axh, "真实截止 kHz", "文件数")
-        self.axh.set_title("真实带宽分布", color=p["text_dim"], fontsize=10, pad=8)
+        self.axh.set_title("真实带宽分布", color=p["text_dim"], fontsize=p['fs_micro'], pad=8)
         for lv in ("ok", "warn", "bad"):
             sel = cuts[[i for i, lvl in enumerate(levels) if lvl == lv]]
             if len(sel):
@@ -1104,8 +1104,8 @@ class OverviewCanvas(BaseCanvas):
         for x, lab in ((22.05, "44.1k 上限"), (24.0, "48k 上限")):
             self.axh.axvline(x, color=p["text_faint"], lw=.9, ls=":", zorder=2)
             self.axh.text(x, self.axh.get_ylim()[1] * .97, " " + lab, color=p["text_faint"],
-                          fontsize=7.5, va="top")
-        leg = self.axh.legend(fontsize=8, framealpha=.9, facecolor=p["surface2"],
+                          fontsize=p['fs_tick'], va="top")
+        leg = self.axh.legend(fontsize=p['fs_tick'], framealpha=.9, facecolor=p["surface2"],
                               edgecolor=p["border_hi"], labelcolor=p["text"])
         leg.get_frame().set_linewidth(.8)
 
@@ -1114,15 +1114,15 @@ class OverviewCanvas(BaseCanvas):
         vals = [cnt[lv] for lv in order]
         cols = [p[lv] for lv in order]
         self.axd.set_facecolor(p["surface"])
-        self.axd.set_title("结论构成", color=p["text_dim"], fontsize=10, pad=8)
+        self.axd.set_title("结论构成", color=p["text_dim"], fontsize=p['fs_micro'], pad=8)
         wedges, _ = self.axd.pie(vals, colors=cols, startangle=90,
                                  wedgeprops=dict(width=.42, edgecolor=p["surface"], linewidth=2))
         tot = sum(vals)
         self.axd.text(0, .10, str(tot), ha="center", va="center", color=p["text"],
-                      fontsize=19, fontweight="700")
-        self.axd.text(0, -.20, "个文件", ha="center", va="center", color=p["text_faint"], fontsize=9)
+                      fontsize=p['fs_hero'], fontweight="700")
+        self.axd.text(0, -.20, "个文件", ha="center", va="center", color=p["text_faint"], fontsize=p['fs_tick'])
         self.axd.text(0, -0.52, "   ".join("%s %d" % (LEVEL_CN[lv], cnt[lv]) for lv in order),
-                      color=p["text_dim"], fontsize=8.5, transform=self.axd.transAxes,
+                      color=p["text_dim"], fontsize=p['fs_tick'], transform=self.axd.transAxes,
                       ha="center", va="top")
         for w in wedges:
             w.set_linewidth(2)

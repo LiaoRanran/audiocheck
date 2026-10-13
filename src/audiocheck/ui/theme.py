@@ -82,6 +82,17 @@ class Type:
     heading: float = 20.0    # 页标题
     display: float = 27.0    # Hero 数字
 
+    #: **第 9 档，只给图表刻度**（B7.2 的唯一新增档）。它不参与 QSS 文本：
+    #: 图表走 matplotlib，没有字距/行高令牌那条路径，所以 `Tracking` / `Leading`
+    #: 里**故意没有**这一项——硬加一个没人用的字段只会让人以为它有落点。
+    #:
+    #: 为什么需要它：图表刻度有**物理约束**（标签一大就挤占绘图区），
+    #: 而现有最小档 `micro=10` 在 8px 级刻度上偏大。加一档比"把刻度提到 10px
+    #: 挤掉绘图区"更合理——实测改动前 `charts.py` 里有 **8 种表外字号**
+    #: （7.0/7.5/7.8/8.0/8.5/9.0/9.5/19.0），其中 7 种挤在 7–9.5 之间，间距 0.5px。
+    #: 0.5px 的间距等于"逐个调出来的"，不是按刻度选的——**没有刻度就没有秩序**。
+    chart_tick: float = 9.0  # 图表刻度 / 图例 / 轴标注
+
 
 @dataclass(frozen=True)
 class Tracking:
@@ -272,14 +283,23 @@ class Palette:
                 "bad": self.danger_slab}.get(level, self.surface_hi)
 
 
-def plot_palette(p: Palette) -> dict:
+def plot_palette(p: Palette, t: Theme | None = None) -> dict:
     """图表层（matplotlib）用的字典式调色适配。
 
     画布代码历史上按旧键名（surface2 / accent / ok / warn_border…）取值。
     与其改动画布，不如在这里做一次**显式**键名映射——映射表集中可见，
     将来统一画布命名后删掉本函数即可。
+
+    B7.2 起**顺带带上字号**（`fs_*` 键）：matplotlib 拿不到 QSS，画布只持有
+    这个字典。把字号塞进同一本字典，是让"图表字号来自 `Type` 表"这件事
+    只需要一条通道，而不是在画布各处 import theme。
+    `t` 省略时退回 `Type()` 的默认值——**仍然来自同一张表**，不是另一套数字。
     """
+    ty = (t or Theme(name="default", p=p)).type
     return {
+        "fs_tick": ty.chart_tick, "fs_micro": ty.micro,
+        "fs_caption": ty.caption, "fs_body_sm": ty.body_sm,
+        "fs_hero": ty.heading,
         "bg": p.bg, "surface": p.surface, "surface2": p.surface_hi, "surface3": p.surface_raised,
         "border": p.border, "border_hi": p.border_hi,
         "text": p.text, "text_dim": p.text_dim, "text_faint": p.text_faint,
