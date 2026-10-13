@@ -246,12 +246,23 @@ NEUTRAL_CHROMA_MAX = 0.0125
 #: 0.08 让两侧各偏 ≤7°：暗处 283°、亮处 293°——都还在仪器灰家族内。
 WARM_COOL_MAX = 0.08
 
-#: 判定结论条（slab）的明度与请求彩度。明度由**色域**反解：
-#: 暗色 L0.38 处 danger 能到 C0.140、success C0.120（够用），
-#: 亮色要到 L0.79 才让 danger 保住 C0.115（再亮就被夹到 0.076）。
-#: 请求彩度 0.115 取锚点图高彩的 P50（0.123）略下方——**不超锚点**。
-SLAB_L = {"dark": 0.38, "light": 0.79}
-SLAB_C = 0.115
+#: 判定区（B9.1）拆成**两个角色**——大面积淡底与细判定带。命名不许混：
+#:   `*_tint`  大面积淡判定底（占位积、承载判词文字）——**低彩**
+#:   `*_band`  4px 细判定带（视觉重量全在这里）——**高彩**
+#: 旧的单名 `*_slab` 已废除：它同时指"一块高彩底"和"判定语义面"，
+#: 于是"判定语义有面积"和"高彩面积"被绑死在同一块色上——
+#: 想让判定面变大就只能把高彩面积也放大。拆开之后两者各自可调。
+SLAB_TINT_C = 0.04          # 淡底请求彩度（同色相；两主题分别反解 L）
+SLAB_BAND_C = 0.125         # 细带彩度（≥ 高彩口径 0.10；不许靠加粗凑面积）
+#: 细带高度（px）。判据钉在 3–5：加粗回"块"就是走回头路（B9 明确不做）。
+SLAB_BAND_H = 4
+
+#: 细判定带的明度（按模式）。带子要**在淡底上读得出**（非文本 3:1）——
+#: 它是判定语义唯一的视觉重量所在，读不出等于判定没表达。
+SLAB_BAND_L = {"dark": 0.62, "light": 0.50}
+#: 淡底的明度起点（按模式）。真正取值由 `build()` 搜索决定：
+#: 起点只是搜索方向，约束是**文字对比 ≥4.5** 与**与卡片底可辨 ≥1.5**。
+SLAB_TINT_L = {"dark": 0.24, "light": 0.94}
 
 #: 双档阴影。**Qt 的 QSS 没有 box-shadow**（实测：写了不报错也不生效），
 #: 所以阴影只能由效果对象或自绘实现，参数集中在这里。
@@ -353,25 +364,27 @@ CHECKS: tuple[tuple[str, str, str, float], ...] = (
     ("有疑胶囊 warning / warning_bg", "warning", "warning_bg", 4.5),
     ("不达标胶囊 danger / danger_bg", "danger", "danger_bg", 4.5),
     ("选中行文字 text / selection", "text", "selection", 4.5),
-    # 判定结论条：它是**判定语义唯一的大面积着色**（见 `SLAB_L`），
-    # 上面坐着正文（lbl_verdict 用 text）与次要行（lbl_file 用 slab_dim），
-    # 两个角色都要按 AA/AAA 核。结论条同时要能读出"是一个独立物件"（3:1）。
-    ("结论条正文 text / success_slab", "text", "success_slab", 7.0),
-    ("结论条正文 text / warning_slab", "text", "warning_slab", 7.0),
-    ("结论条正文 text / danger_slab", "text", "danger_slab", 7.0),
-    ("结论条次文 slab_dim / success_slab", "slab_dim", "success_slab", 4.5),
-    ("结论条次文 slab_dim / warning_slab", "slab_dim", "warning_slab", 4.5),
-    ("结论条次文 slab_dim / danger_slab", "slab_dim", "danger_slab", 4.5),
+    # 判定区（B9.1 起拆成 tint/band 两角色）。文字压在 **tint** 上（大面积淡底），
+    # 所以判据挂在 tint 上；band 是 4px 的图形元素，按非文本 3:1 核。
+    ("结论区正文 text / success_tint", "text", "success_tint", 4.5),
+    ("结论区正文 text / warning_tint", "text", "warning_tint", 4.5),
+    ("结论区正文 text / danger_tint", "text", "danger_tint", 4.5),
+    ("结论区次文 tint_dim / success_tint", "tint_dim", "success_tint", 4.5),
+    ("结论区次文 tint_dim / warning_tint", "tint_dim", "warning_tint", 4.5),
+    ("结论区次文 tint_dim / danger_tint", "tint_dim", "danger_tint", 4.5),
+    # 判定带：4px 的**图形元素**，WCAG 1.4.11 要求 ≥3:1（它承载"哪一档"的识别）。
+    ("判定带 success_band / success_tint", "success_band", "success_tint", 3.0),
+    ("判定带 warning_band / warning_tint", "warning_band", "warning_tint", 3.0),
+    ("判定带 danger_band / danger_tint", "danger_band", "danger_tint", 3.0),
     # ⚠ 这条**不是** 3:1，而是 1.5:1，理由必须写清楚（否则下一个人会以为漏了）：
     #   * WCAG 1.4.11 的 3:1 是给**小尺寸 UI 组件**的边界，用来"认出这个控件"。
-    #     结论条是 880×140 的**大面积**色块，人眼对大面积的明度差不敏感得多
-    #     （实测 1.57:1 已经清楚可辨，见 shots/b7/）；
-    #   * 更要紧的是：**判定语义由文字承载**（胶囊上写着"不达标"），
-    #     底色只是冗余强化。1.4.11 管的是"理解内容所必需的图形"，这里不缺它。
-    #   阈值登记为 1.5：够看出"这里有一块面板"，又不逼着把结论条做成黑块。
-    ("结论条与卡片底可分辨（大面积，登记阈 1.5）", "success_slab", "surface", 1.5),
-    ("结论条与卡片底可分辨（大面积，登记阈 1.5）", "warning_slab", "surface", 1.5),
-    ("结论条与卡片底可分辨（大面积，登记阈 1.5）", "danger_slab", "surface", 1.5),
+    #     淡底是 880×140 的**大面积**色块，人眼对大面积的明度差不敏感得多
+    #     （B7 实测 1.57:1 已经清楚可辨，见 shots/b7/）；
+    #   * 更要紧的是：**判定语义由文字与判定带承载**，淡底只是冗余强化。
+    #   阈值登记为 1.5：够看出"这里有一块面板"，又不逼着把淡底做成色块。
+    ("结论区与卡片底可分辨（大面积，登记阈 1.5）", "success_tint", "surface", 1.5),
+    ("结论区与卡片底可分辨（大面积，登记阈 1.5）", "warning_tint", "surface", 1.5),
+    ("结论区与卡片底可分辨（大面积，登记阈 1.5）", "danger_tint", "surface", 1.5),
     ("关闭按钮白字 / danger", "#ffffff", "danger", 4.5),
     ("图表刻度 text_faint / plot_bg", "text_faint", "plot_bg", 4.5),
     ("卡片描边 border_hi / surface（装饰性，仅记录）", "border_hi", "surface", 1.0),
@@ -624,32 +637,39 @@ def build(seed: str, mode: str = "dark", vibe: str = "calm") -> dict:
         idx[key] = fit_contrast(oklch_to_srgb((start_l, c, h)), idx[key + "_bg"],
                                 4.5, lighter=dark)
 
-        # ---- 4a. 判定结论条（slab）：**判定语义唯一的大面积着色** ----
-    # 来历：勘误 §5.6 给了处置顺序「① 先收 deco → ② 再量玫瑰够不够显眼 →
-    # ③ 若仍不够，加大玫瑰的面积」，并点名"顶部结论条"就是玫瑰的面积该长的地方
-    # （它承载信息，不是装饰）。这里就是 ③ 的落点。
+        # ---- 4a. 判定区：**淡底（tint）+ 细带（band）** 两个角色 ----
+    # B9.1 的结构性改动。来历（诊断文档 §三·根因 4）：B7.1 把"判定语义"和
+    # "高彩面积"绑在同一块 880×140 的色上——**面积百分比不等于视觉重量**，
+    # 同样 3.5%，横贯全宽的色带比一小块光斑重好几倍。拆开之后：
+    #   tint 承担"判定语义有面积"（大面积、低彩、承载判词文字）；
+    #   band 承担"高彩在说哪一档"（4px、高彩、视觉重量全在这里）。
     #
-    # 为什么是"结论条"而不是别的：**它是唯一面积大、且不随状态飘移的载体**。
-    # 判定胶囊只有 60×22，表格里的判定徽章随文件数变，曲线在绘图区（判据明确排除）。
-    # 结论条在总览页恒在，尺寸由布局定 —— 这是"高彩面积"能成为判据的前提。
-    #
-    # ⚠ **warning 在暗色主题下做不到 C>0.10**：sRGB 色域里 H85 在 L0.38 处
-    # 最大彩度只有 ~0.078（黄在低明度下可用彩度比红/绿小得多，实测见
-    # `out/_slab_probe.py` 的输出）。这不是实现缺陷，是色域的物理边界——
-    # 如实登记，并用它说明"高彩面积"判据**依赖当前选中的判定状态**。
-    slab_l = SLAB_L[mode]
-    step = -0.012 if dark else 0.012          # 背离文字的方向（暗底往下、亮底往上）
-    idx["slab_dim"] = oklch_to_srgb((0.74 if dark else 0.40, 0.012, NEUTRAL_HUE))
+    # tint 的 L 由**约束反解**（不是拍一个值）：文字 ≥4.5、与卡片底 ≥1.5。
+    # 暗色下 tint 要**比底亮**（"一块淡的"在暗底上是提亮），亮色下要比底暗。
+    # ⚠ 提示词写的"判词改**深色**文字"只在亮色成立；暗色下必须反着来。
+    # 所以规则写成"**方向随主题**、对比 ≥4.5"，而不是写死颜色。
+    idx["tint_dim"] = oklch_to_srgb((0.74 if dark else 0.42, 0.012, NEUTRAL_HUE))
+    step = 0.012 if dark else -0.012
     for key in ("success", "warning", "danger"):
         h = LEVEL_HUE[key]
-        cand = ""
-        for _ in range(30):
-            cand = oklch_to_srgb((slab_l, SLAB_C, h))
-            if (contrast(idx["text"], cand) >= 7.0
-                    and contrast(idx["slab_dim"], cand) >= 4.5):
+        # --- tint：同色相、低彩，按方向搜索到达标 ---
+        # ⚠ 变量名不能叫 `tint`：上面 `tint = VIBE_TINT[vibe][…]` 是表面彩度，
+        # 后面 `top_light` 还要用它。第一版撞了名，于是 `tint * 1.1` 变成
+        # "字符串 × float" —— 报错点在几千行之外的 `top_light`，很难归因。
+        tint_l = SLAB_TINT_L[mode]
+        tint_col = ""
+        for _ in range(40):
+            tint_col = oklch_to_srgb((tint_l, SLAB_TINT_C, h))
+            if (contrast(idx["text"], tint_col) >= 4.5
+                    and contrast(tint_col, surf) >= 1.5
+                    and contrast(idx["tint_dim"], tint_col) >= 4.5):
                 break
-            slab_l += step
-        idx[key + "_slab"] = cand
+            tint_l += step
+        idx[key + "_tint"] = tint_col
+        # --- band：同色相、高彩；要在 tint 上读得出（非文本 3:1）---
+        idx[key + "_band"] = fit_contrast(
+            oklch_to_srgb((SLAB_BAND_L[mode], SLAB_BAND_C, h)),
+            tint_col, 3.0, lighter=dark)
 
     # ---- 4b. 关闭按钮的**按下**色：比 danger 再深一档 ----
     # 需要它的原因很具体：窗口关闭按钮的 `:hover` 与 `:pressed` 如果都是

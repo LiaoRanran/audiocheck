@@ -70,25 +70,34 @@ class TestHighChromaQuota(unittest.TestCase):
         """
         for mode in ("dark", "light"):
             pal = P.build(T.BUILTIN_SEED, mode, "calm")
-            for k in ("success_slab", "warning_slab", "danger_slab"):
+            for k in ("success_tint", "warning_tint", "danger_tint",
+                  "success_band", "warning_band", "danger_band"):
                 v = _c(pal[k])
                 self.assertLessEqual(v, 0.14,
                                      "%s/%s 彩度 %.3f 超过锚点 P50" % (mode, k, v))
 
-    def test_dark_warning_is_registered_as_a_gamut_limit(self):
-        """暗色的 `warning_slab` **到不了**高彩口径——这是色域边界，不是缺陷。
+    def test_split_also_lifted_the_dark_warning_gamut_limit(self):
+        """B9.1 的拆分**顺带解掉了暗色 warning 的色域限制**（实测结论）。
 
-        断言它 ≤ 口径（而不是"≥ 口径"）是**故意的**：这条测试的作用是
-        把"我知道它不达标、原因是色域"写死在代码里。哪天有人"顺手"把
-        `warning_slab` 调成高彩，要么被判据拦下、要么就得先改这条——
-        两种都会让他先看到这段理由。
+        B7 时代的限制：`warning_slab` 要占"大面积高彩底"这个角色，就得坐到
+        L0.38 才够深——而 sRGB 里 H85 在 L0.38 处的彩度上限只有 ~0.073，
+        于是它**到不了**高彩口径（当时如实登记为"色域边界，不是缺陷"）。
+
+        B9.1 把高彩挪到 4px 的带上之后，带子坐在 **L0.62**——那里 H85 有
+        0.125 的彩度可用（实测 dark `warning_band` C=0.125）。
+        **同一个色相，位置一换，限制就没了。**
+
+        这条测试的价值在"锁住这个改善"：谁要是把带子挪回低明度，
+        warning 会重新掉到口径之下。
         """
         pal = P.build(T.BUILTIN_SEED, "dark", "calm")
-        v = _c(pal["warning_slab"])
-        self.assertLessEqual(v, HIGH_C + 1e-6,
-                             "暗色的 warning_slab 居然到了高彩（%.3f）——"
-                             "那说明色域假设变了，请重新核 §SLAB_L 的说明" % v)
-        self.assertGreater(v, 0.05, "太灰了，看不出是'有疑'")
+        v = _c(pal["warning_band"])
+        self.assertGreaterEqual(v, HIGH_C,
+                                "暗色的 warning_band 掉回口径之下（%.3f）——"
+                                "带子是不是又被挪到低明度去了？" % v)
+        # 三个判定档的带子都必须在口径之上（这才是"判定语义有视觉重量"）
+        for k in ("success_band", "warning_band", "danger_band"):
+            self.assertGreaterEqual(_c(pal[k]), HIGH_C, "%s 没到高彩口径" % k)
 
 
 class TestHueFamilyDiscipline(unittest.TestCase):
@@ -239,14 +248,16 @@ class TestSlabContrast(unittest.TestCase):
     def test_slab_pairs_exist(self):
         """判据**在表里**，不是"看起来没问题"。"""
         pairs = [c[0] for c in P.CHECKS]
-        for k in ("success_slab", "warning_slab", "danger_slab"):
-            self.assertTrue(any(k in p and "text /" in p for p in pairs),
-                            "CHECKS 里缺结论条正文的判据：%s" % k)
-        self.assertTrue(any("结论条" in p and "可分辨" in p for p in pairs),
-                        "CHECKS 里缺'结论条与卡片底可分辨'那条（带登记阈）")
+        for k in ("success_tint", "warning_tint", "danger_tint"):
+            self.assertTrue(any(k in p and "正文" in p for p in pairs),
+                            "CHECKS 里缺结论区正文的判据：%s" % k)
+            self.assertTrue(any(k in p and "判定带" in p for p in pairs),
+                            "CHECKS 里缺判定带的判据：%s" % k)
+        self.assertTrue(any("结论区" in p and "可分辨" in p for p in pairs),
+                        "CHECKS 里缺'结论区与卡片底可分辨'那条（带登记阈）")
 
     def test_caption_on_slab_uses_the_dedicated_dim_color(self):
-        """压在结论条上的 11px 次文必须换 `slab_dim`。
+        """压在结论区淡底上的 11px 次文必须换 `tint_dim`。
 
         `text_faint` 在结论条底色上只有 ~2.9:1（11px 小字要求 4.5）——
         这是**换肤看得见、单测看不见**的那类问题，所以在这里钉住。
@@ -254,7 +265,7 @@ class TestSlabContrast(unittest.TestCase):
         q = T.qss(T.DARK)
         self.assertIn("#VerdictBanner QLabel#Caption", q)
         idx = q.index("#VerdictBanner QLabel#Caption")
-        self.assertIn(T.DARK.p.slab_dim, q[idx:idx + 200])
+        self.assertIn(T.DARK.p.tint_dim, q[idx:idx + 200])
 
 
 if __name__ == "__main__":

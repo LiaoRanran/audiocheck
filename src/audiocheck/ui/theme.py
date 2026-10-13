@@ -93,6 +93,20 @@ class Type:
     #: 0.5px 的间距等于"逐个调出来的"，不是按刻度选的——**没有刻度就没有秩序**。
     chart_tick: float = 9.0  # 图表刻度 / 图例 / 轴标注
 
+    #: **第 10 档，`hero` = 40px。这是对"≤2.5 倍 / ≤5 种"纪律的
+    #: 一次有理由破例**（B9·R4），理由必须留在这里，免得未来某轮当违规"修好"：
+    #:
+    #: * 那条纪律防的是"—每层都比旁边大一点"（十几档字号的 AI 味）。
+    #: * **hero 是数据，不是层级。** 它是"这一屏最重要的一读数"，
+    #:   层级语义与"标题/正文/说明"不在同一根轴上，所以不受"层级差 ≤2.5 倍"约束。
+    #: * 约束换成了更严的一条：**一屏只准一个**（`test_ui_b9_layout.py` 扫描钉死）。
+    #:   十档字号里，前面九档管"层级"，这一档管"焦点"。
+    #: * 来历：核心读数原先被压在 128px 环形仪表里只有 21px
+    #:   （`type.heading - 4.5`），用户判"字体还是依然这么拥挤"。
+    #:   同一份数据放大到 40px 之后，它才真的是"一屏的读数"。
+    #: * 嫌大就改这一个数（34 也在小样里提过），不要动别的档去"配合"它。
+    hero: float = 40.0       # 一屏唯一的核心读数
+
 
 @dataclass(frozen=True)
 class Tracking:
@@ -234,15 +248,21 @@ class Palette:
     danger_bd: str = "#6b2521"
     info_bd: str = "#12506a"
 
-    #: **判定结论条**：判定语义唯一的大面积着色（B7.1）。
-    #: 三档 + 它自己的次要文字色。参数由色域反解，来历见 `palette.SLAB_L`；
-    #: 对比度判据在 `palette.CHECKS` 里逐条列着（正文 7:1 / 次文 4.5:1）。
-    #: ⚠ 暗色主题下 `warning_slab` 的彩度**到不了 C0.10**（sRGB 色域边界，H85
-    #: 在 L0.36 处最大约 0.073）——这不是缺陷，是黄的可用彩度比红/绿小得多。
-    success_slab: str = "#004a0e"
-    warning_slab: str = "#4e3800"
-    danger_slab: str = "#6c1a1b"
-    slab_dim: str = "#aaaab2"
+    #: **判定区**（B9.1 起两个角色，命名不许混）：
+    #:   `*_tint` —— 大面积**淡判定底**，承载判词文字（占位积，低彩 C≈0.04）
+    #:   `*_band` —— 4px **判定带**，视觉重量全在这里（高彩 C≈0.125）
+    #: 拆开的原因（诊断文档 §三·根因 4）：B7.1 把"判定语义面"与"高彩面积"
+    #: 绑在同一块 880×140 的色上——**面积百分比不等于视觉重量**，同样 3.5%，
+    #: 横贯全宽的色带比一小块光斑重好几倍。拆开后两者各自可调。
+    #: 对比度判据逐条在 `palette.CHECKS`（文字压 tint 4.5 / 带对 tint 3.0 /
+    #: tint 对卡片底 1.5）。
+    success_tint: str = "#1b2a20"
+    warning_tint: str = "#2a2519"
+    danger_tint: str = "#2b1d1e"
+    success_band: str = "#2f9e4e"
+    warning_band: str = "#9c7a12"
+    danger_band: str = "#c8433c"
+    tint_dim: str = "#aaaab2"
 
     # 选中 / 悬停叠加
     selection: str = "#1a2740"
@@ -283,10 +303,15 @@ class Palette:
         return {"ok": self.success_bd, "warn": self.warning_bd,
                 "bad": self.danger_bd}.get(level, self.border_hi)
 
-    def level_slab(self, level: str) -> str:
-        """判定结论条的底色（**判定语义唯一的大面积着色**）。"""
-        return {"ok": self.success_slab, "warn": self.warning_slab,
-                "bad": self.danger_slab}.get(level, self.surface_hi)
+    def level_tint(self, level: str) -> str:
+        """判定区**淡底**（大面积、低彩、承载判词文字）。"""
+        return {"ok": self.success_tint, "warn": self.warning_tint,
+                "bad": self.danger_tint}.get(level, self.surface_hi)
+
+    def level_band(self, level: str) -> str:
+        """判定区**细带**（4px、高彩、判定语义的视觉重量所在）。"""
+        return {"ok": self.success_band, "warn": self.warning_band,
+                "bad": self.danger_band}.get(level, self.border_hi)
 
 
 def plot_palette(p: Palette, t: Theme | None = None) -> dict:
@@ -505,26 +530,51 @@ QFrame#Card, QWidget#Card {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
 QFrame#CardAccent {{ border:0; border-top-left-radius:{r}px;
     border-top-right-radius:{r}px; background:{top_light}; }}
 
-/* ===== 判定结论条（判定语义唯一的大面积着色） ===== */
-/* 来历：勘误 §5.6 的处置顺序「① 先收 deco → ② 再量玫瑰够不够 → ③ 加大玫瑰面积」，
-   并点名"顶部结论条"是玫瑰的面积该长的地方（它承载信息，不是装饰）。
-   按 `level` 属性取色，换肤时只重算一遍 QSS——不给它 setStyleSheet。 */
-/* 结论条的描边是**二次反光**（B7.4）：同色相、更高彩度的一圈细边——
-   高彩面自己的光落在自己的边缘上。用的就是判定色本身（C 0.155–0.185），
-   不新增色号。**它不是辉光**：辉光已退场，这里只有 1px。 */
+/* ===== 判定区（淡底 + 细带 + 判词 + hero） ===== */
+/* B9.1 的结构性改动：判定语义从"通栏高彩块"降维为
+   **大面积淡底（tint）+ 4px 高彩带（band）**。
+   来历（诊断 §三·根因 4）：B7.1 把"判定语义面"与"高彩面积"绑在同一块色上，
+   而**面积百分比不等于视觉重量**——同样 3.5%，横贯全宽的色带比一小块光斑重
+   好几倍。拆开后：tint 承担"判定语义有面积"，band 承担"高彩在说哪一档"。
+   ⚠ 判据也随之修订：高彩面积目标 3.0–4.0% → **0.6–1.5%**（载体从块变线，
+   面积下降是设计意图）。**不许为了凑面积把带子加粗回块**——那是走回头路。 */
 QFrame#VerdictBanner {{ border:1px solid {border_hi}; border-radius:{r_xl}px; }}
-QFrame#VerdictBanner[level="ok"] {{ background:{ok_slab}; border-color:{success}; }}
-QFrame#VerdictBanner[level="warn"] {{ background:{warn_slab}; border-color:{warning}; }}
-QFrame#VerdictBanner[level="bad"] {{ background:{bad_slab}; border-color:{danger}; }}
-/* 结论条上的次要文字（文件名 · 编码 · 路径）与正文分开取色：
-   底色变深之后 `text_faint` 只有 2.9:1（不达标），这一色是专为它解出来的。 */
-#VerdictBanner QLabel#Caption {{ color:{slab_dim}; }}
+QFrame#VerdictBanner[level="ok"] {{ background:{ok_tint}; }}
+QFrame#VerdictBanner[level="warn"] {{ background:{warn_tint}; }}
+QFrame#VerdictBanner[level="bad"] {{ background:{bad_tint}; }}
+/* 4px 判定带：**视觉重量全在这里**。它按 `level` 取判定色原彩度，
+   算进高彩配额；高度由代码固定为 4（判据钉 3–5px）。 */
+QFrame#VerdictBand {{ border:0; }}
+QFrame#VerdictBand[level="ok"] {{ background:{ok_band}; }}
+QFrame#VerdictBand[level="warn"] {{ background:{warn_band}; }}
+QFrame#VerdictBand[level="bad"] {{ background:{bad_band}; }}
+/* 判词前的方点（小样的「● 不达标」）：6px 见方，同判定色。 */
+QFrame#VerdictDot {{ border:0; border-radius:3px; }}
+QFrame#VerdictDot[level="ok"] {{ background:{ok_band}; }}
+QFrame#VerdictDot[level="warn"] {{ background:{warn_band}; }}
+QFrame#VerdictDot[level="bad"] {{ background:{bad_band}; }}
+/* 比例（1px 细线 + 一个标记）**不走 QSS**：它要在任意比例位置放一个标记，
+   而那需要按比例算坐标——QSS 没有这个能力。由 `widgets.RatioBar` 自绘，
+   颜色从主题令牌读（不新增色号）。**替代的是 270° 环形仪表**：
+   128px 圆内三行字的排版带实测重叠 2.5px，且"占比用转盘"是车载仪表语汇。 */
+/* 判定区上的次要文字（文件名 · 编码 · 路径）与正文分开取色：
+   淡底不是页面底，`text_faint` 在它上面达不到 4.5。 */
+#VerdictBanner QLabel#Caption {{ color:{tint_dim}; }}
 #VerdictBanner QLabel#Hero, #VerdictBanner QLabel#HeroUnit {{ color:{text}; }}
 /* SectionTitle 用字距而不是字重做层级：本机中文字体只有 400/700 两档，
    原来写 font-weight:600 会被 Qt 吸附到 700（还会打 findfont 告警），
    于是"600"和"700"渲染出来一模一样——那个层级是假的。 */
 QLabel#SectionTitle {{ color:{text_dim}; font-size:{caption}px; font-weight:700;
                        letter-spacing:{tr_caps_caption}px; }}
+/* 判定区的判词（B9.1）：从"白字压高彩底"改为"**文字色本身就是判定色来源**"
+   的深/浅色正文，压在**淡底**上。字号用 display 档（27px）——与小样的
+   26px 同量级；再大就与 hero 抢焦点（hero 唯一，见 `Type.hero`）。 */
+QLabel#VerdictText {{ font-size:{display}px; font-weight:700; color:{text};
+                      letter-spacing:{tr_display}px; }}
+/* hero：一屏唯一的核心读数（`Type.hero` = 40px，有破例说明）。
+   **它不做入场动画**——跟手路径零动画的既有纪律，读数也不该"飞进来"。 */
+QLabel#HeroBig {{ font-size:{hero}px; font-weight:700; color:{text};
+                  letter-spacing:{tr_display}px; }}
 /* #Hero 的等宽**由代码按值内容指定**（`theme.pick_text_font`），QSS 不设族名：
    值里可能有中文（厂牌、编码器串），而 QSS 的族名是"一律套用"、没有回退链，
    中文一旦落上去就得靠逐字形回退——那是不可控的。 */
@@ -675,12 +725,13 @@ QSplitter::handle:hover {{ background:{primary_soft}; }}
         deco4=(p.deco[4] if len(p.deco) > 4 else p.accent2),
         danger=p.danger, danger_lo=p.danger_lo, hover=p.hover, selection=p.selection,
         # 判定结论条（判定语义唯一的大面积着色）与它自己的次要文字色
-        ok_slab=p.success_slab, warn_slab=p.warning_slab, bad_slab=p.danger_slab,
+        ok_tint=p.success_tint, warn_tint=p.warning_tint, bad_tint=p.danger_tint,
+        ok_band=p.success_band, warn_band=p.warning_band, bad_band=p.danger_band,
         # 结论条描边用的判定色（二次反光），不新增色号
-        success=p.success, warning=p.warning,
-        slab_dim=p.slab_dim,
+        tint_dim=p.tint_dim,
         font=t.font, body=int(ty.body), body_sm=int(ty.body_sm), body_md=int(ty.body_md),
         caption=int(ty.caption), micro=int(ty.micro), display=int(ty.display),
+        hero=int(ty.hero),
         # 字距令牌：QSS 里只许出现这些值，不许手写 px
         # （`tests/test_ui_typography.py` 逐条扫，手写即失败）
         tr_micro=tk.micro, tr_caption=tk.caption, tr_body_sm=tk.body_sm,

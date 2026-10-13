@@ -18,7 +18,6 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
-    QFrame,
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
@@ -58,15 +57,14 @@ from .charts import (
 from .chrome import FramelessWindow
 from .theme import Motion
 from .widgets import (
-    Badge,
     CommandPalette,
     EmptyState,
-    Gauge,
     KVTable,
     SeedDialog,
     SideBar,
     StatCard,
     ToastHost,
+    VerdictPanel,
     fmt_num,
     human_khz,
     ratio_pct,
@@ -456,37 +454,18 @@ class MainWindow(FramelessWindow):
         return w
 
     def _banner(self):
-        f = QFrame()
-        # **判定结论条**：objectName 决定它按 `level` 属性取判定语义色（B7.1）。
-        # 它不再叫 "Card"——因为"卡片"与"判定结论"是两种东西：
-        # 前者是中性容器，后者是**判定语义唯一的大面积着色**。同名会让
-        # 后来的人以为可以给任意卡片上色。
-        f.setObjectName("VerdictBanner")
-        h = QHBoxLayout(f)
-        m = self.theme.space
-        h.setContentsMargins(m.lg, m.md, m.lg, m.md)
-        h.setSpacing(16)
-        box = QVBoxLayout()
-        box.setSpacing(4)
-        row1 = QHBoxLayout()
-        row1.setSpacing(8)
-        self.lbl_verdict = QLabel("—")
-        self.lbl_verdict.setStyleSheet("font-size:%dpx;font-weight:700"
-                                       % int(self.theme.type.body_md))
-        self.badge = Badge("—", "warn", self.theme)
-        row1.addWidget(self.badge)
-        row1.addWidget(self.lbl_verdict, 1)
-        box.addLayout(row1)
-        self.lbl_file = QLabel("")
-        self.lbl_file.setObjectName("Caption")
-        box.addWidget(self.lbl_file)
-        h.addLayout(box, 1)
-        self.gauge = Gauge(124, self.theme)
-        # 仪表压在结论条的着色上：它的次要文字要换 `slab_dim`（11px 小字，
-        # 在结论条底色上 `text_faint` 只有 ~2.9:1）。
-        self.gauge.on_slab = True
-        h.addWidget(self.gauge, 0, Qt.AlignVCenter)
-        return f
+        # B9.1：判定区 = **淡底（tint）+ 4px 判定带（band）+ 判词 + hero**。
+        # 它替代了 B7 的"通栏高彩块 + 270° 环形仪表"——诊断实测那套的
+        # 三行字排版带重叠 2.5px，且"占比用转盘"是车载仪表语汇。
+        # 整块的结构在 `widgets.VerdictPanel` 里（这里只负责建与接线）。
+        panel = VerdictPanel(self.theme)
+        # 老属性名保留成**别名**：`_banner_update` / `apply_theme` /
+        # `_refresh_selection_theme` 与既有测试都按这两个名字取值，
+        # 改名只会让 diff 里混进与重构无关的改动。
+        self.verdict_panel = panel
+        self.lbl_verdict = panel.lbl_verdict
+        self.lbl_file = panel.lbl_file
+        return panel
 
     def _section(self, text: str) -> QLabel:
         lab = QLabel(text)
@@ -507,8 +486,11 @@ class MainWindow(FramelessWindow):
         for cv in (self.cv_spec, self.cv_spectro, self.cv_wfall, self.cv_band,
                    self.cv_cmp, self.cv_ovw):
             cv.apply_theme(pp)
-        self.badge.apply_theme(t)
-        self.gauge.apply_theme(t)
+        # B9.1：判定胶囊（Badge）不再出现在判定区——小样的形态是
+        # **方点 + 疏排判词**（`● 不达标`），不是一个填充胶囊。
+        # `Badge` 类保留在 widgets 里（它是通用徽标，别处可能用得上），
+        # 但判定区不再引用它。
+        self.verdict_panel.apply_theme(t)
         self.tb_meta.apply_theme(t)
         self.tb_metrics.apply_theme(t)
         self.empty.apply_theme(t, "wave")
@@ -934,27 +916,26 @@ class MainWindow(FramelessWindow):
 
     def _banner_update(self, r):
         lv = r.get("level", "warn")
-        p = self.theme.p
-        self.badge.setText(LEVEL_CN.get(lv, lv))
-        self.badge.set_level(lv, self.theme)
-        # 结论条的底色按判定走（QSS 属性选择器）：**这是判定语义唯一的大面积
-        # 着色**。换文件 → 换底色，一次 repolish 就够，不用 setStyleSheet。
-        self.banner.setProperty("level", {"ok": "ok", "warn": "warn",
-                                          "bad": "bad"}.get(lv, "warn"))
-        self.banner.style().unpolish(self.banner)
-        self.banner.style().polish(self.banner)
+        # B9.1：判词 / 文件名 / hero / 占比一起交给面板。判定带与方点的颜色
+        # 由 `VerdictPanel.set_data` 统一设到**容器 + 判定带 + 方点**三处
+        # （它们各有一条 QSS 属性选择器，各一次 repolish，
+        # **不给任何一处 setStyleSheet**）。
+        #
+        # 判词字号与颜色来自 QSS（`QLabel#VerdictText`）——原来这里是逐次
+        # setStyleSheet 刷字号与颜色，那是欠账 #10（部件级样式表）的一处，
+        # 顺手收掉：规则集中在主题里，换肤只算一次。
+        cut, ratio = r.get("cutoff_khz"), r.get("cutoff_ratio")
+        self.verdict_panel.set_data(
+            lv, r.get("verdict", "—"),
+            "%s · %s · %s" % (r["file"], meta_brief(r.get("meta") or {}),
+                              os.path.dirname(r["path"])),
+            ("%.2f" % cut) if cut else "—", "kHz", "真实截止", ratio)
         # 信息驱动的动效：只有"有疑 / 不达标"才脉一下——结论值得看一眼。
         # 常驻装饰会持续吃 CPU，也会被习惯性忽略，那样动效就失去意义了。
+        # （B9.1 前脉的是判定胶囊，改成脉**判词**：胶囊随重构去掉了方点+文字，
+        #  判词现在是判定语义的文字载体。）
         if lv in ("warn", "bad"):
-            motion.pulse(self.badge, self, loops=2)
-        self.lbl_verdict.setText(r.get("verdict", ""))
-        self.lbl_verdict.setStyleSheet("font-size:%dpx;font-weight:700;color:%s"
-                                       % (int(self.theme.type.body_md), p.text))
-        self.lbl_file.setText("%s · %s · %s" % (
-            r["file"], meta_brief(r.get("meta") or {}), os.path.dirname(r["path"])))
-        cut, ratio = r.get("cutoff_khz"), r.get("cutoff_ratio")
-        self.gauge.set_data(ratio, lv, ("%.2f" % cut) if cut else "—", "kHz 真实截止",
-                            ("占奈奎斯特 %s" % ratio_pct(ratio)) if ratio else "")
+            motion.pulse(self.lbl_verdict, self, loops=2)
 
     def _cards(self, r):
         while self.grid.count():

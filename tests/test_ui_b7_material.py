@@ -131,17 +131,19 @@ class TestEdgePair(unittest.TestCase):
 class TestSecondBounce(unittest.TestCase):
     """判据 3：二次反光——高彩面的邻近区域有**同色**呼应。"""
 
-    def test_slab_rim_is_the_same_hue_and_more_chromatic(self):
-        """结论条的描边与它的底色**同色相**、且更彩。
+    def test_band_is_the_same_hue_as_its_tint(self):
+        """判定带与它脚下的淡底**同色相**——"判定语义"在两处必须是同一个色相。
 
-        这就是"二次反光"的可测形式：面自己的光落在自己的边缘上。
-        （不是辉光——辉光会让面外的像素发光，那已在本项目退场。）
+        B9.1 之前的"二次反光"是"高彩块自己的光落在自己边缘上"（一圈同色描边）。
+        改成 tint+band 之后，**带子本身就是那道光**：它同色相、更高彩，
+        而且是判定语义唯一的视觉重量所在。所以这里断言的是"带与底同色相"——
+        形式换了，物理模型没换（光落在面上）。
         """
         for mode in ("dark", "light"):
             pal = T.THEMES[mode].p
-            for lv, rim in (("ok", pal.success), ("warn", pal.warning),
-                            ("bad", pal.danger)):
-                slab = pal.level_slab(lv)
+            for lv in ("ok", "warn", "bad"):
+                slab = pal.level_tint(lv)
+                rim = pal.level_band(lv)
                 h_s = P.srgb_to_oklch(slab)[2]
                 h_r = P.srgb_to_oklch(rim)[2]
                 d = abs((h_r - h_s + 180) % 360 - 180)
@@ -153,15 +155,24 @@ class TestSecondBounce(unittest.TestCase):
                 #   那是 `fit_contrast` 为了让它压在 `warning_bg` 上达标而做的调整，
                 #   是**正确的**——所以判据退一步，只要求"同色相 + 看得出有一条边"。
                 #   实测值记在 CHANGELOG，不为了凑判据去造第九个令牌。
-                self.assertGreater(P.contrast(rim, slab), 1.15,
-                                   "%s/%s 描边与底色几乎同色，看不出边缘（%.2f:1）"
-                                   % (mode, lv, P.contrast(rim, slab)))
+                # 带子要**在淡底上读得出**（非文本 3:1，WCAG 1.4.11）——
+                # 它是判定语义的图形载体，读不出等于判定没表达。
+                self.assertGreaterEqual(
+                    P.contrast(rim, slab), 3.0,
+                    "%s/%s 判定带在淡底上读不出（%.2f:1，要求 3:1）"
+                    % (mode, lv, P.contrast(rim, slab)))
 
-    def test_rim_is_in_the_qss(self):
+    def test_band_and_tint_are_in_the_qss(self):
+        """两个角色都要在 app 级 QSS 里各有一条属性选择器（不给部件 setStyleSheet）。"""
         q = _qss()
-        i = q.index('QFrame#VerdictBanner[level="bad"]')
-        self.assertIn("border-color", q[i:i + 120])
-        self.assertIn(T.DARK.p.danger, q[i:i + 120])
+        for sel in ('QFrame#VerdictBanner[level="bad"]',
+                    'QFrame#VerdictBand[level="bad"]',
+                    'QFrame#VerdictDot[level="bad"]'):
+            self.assertIn(sel, q, "QSS 里缺 %s" % sel)
+        i = q.index('QFrame#VerdictBand[level="bad"]')
+        self.assertIn(T.DARK.p.level_band("bad"), q[i:i + 80])
+        j = q.index('QFrame#VerdictBanner[level="bad"]')
+        self.assertIn(T.DARK.p.level_tint("bad"), q[j:j + 80])
 
 
 class TestLightHierarchy(unittest.TestCase):
@@ -175,17 +186,25 @@ class TestLightHierarchy(unittest.TestCase):
         """
         for mode in ("dark", "light"):
             pal = T.THEMES[mode].p
-            surfaces = {"结论条": max(P.srgb_to_oklch(pal.level_slab(lv))[1]
-                                     for lv in ("ok", "warn", "bad")),
+            surfaces = {"结论区淡底": max(P.srgb_to_oklch(pal.level_tint(lv))[1]
+                                       for lv in ("ok", "warn", "bad")),
                         "胶囊底": max(P.srgb_to_oklch(pal.level_bg(lv))[1]
                                      for lv in ("ok", "warn", "bad")),
                         "主色底(primary_soft)": P.srgb_to_oklch(pal.primary_soft)[1],
                         "卡片(surface)": P.srgb_to_oklch(pal.surface)[1],
                         "侧栏(hover)": P.srgb_to_oklch(pal.hover)[1]}
-            top = max(surfaces, key=surfaces.get)
-            self.assertEqual(top, "结论条",
-                             "%s：最彩的面是 %s（%.3f），不是结论条——"
-                             "光强分级被打乱了" % (mode, top, surfaces[top]))
+            # B9.1 之后**光强分级换了形式**：最强的光不再是"一块面"，
+            # 而是 4px 的**判定带**（高彩 C0.125）。所以判据改成两条：
+            #   ① 所有"面"都在高彩口径之下（面不再抢戏）；
+            #   ② 判定带是唯一的高彩元素。
+            for name, c in surfaces.items():
+                self.assertLessEqual(c, P.HIGH_CHROMA_C + 1e-6,
+                                     "%s 的 %s 面彩度 %.3f 到了高彩——"
+                                     "面不该抢判定带的戏" % (mode, name, c))
+            band = max(P.srgb_to_oklch(pal.level_band(lv))[1]
+                       for lv in ("ok", "warn", "bad"))
+            self.assertGreaterEqual(band, P.HIGH_CHROMA_C,
+                                    "%s 的判定带不是高彩（%.3f）" % (mode, band))
 
 
 class TestHueFamilyBudget(unittest.TestCase):

@@ -6,13 +6,12 @@
 from __future__ import annotations
 
 from PySide6.QtCore import (
-    Property,
     QRectF,
     Qt,
     QTimer,
     Signal,
 )
-from PySide6.QtGui import QColor, QConicalGradient, QFont, QPainter, QPen
+from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -37,7 +36,7 @@ from PySide6.QtWidgets import (
 
 from . import material, motion
 from . import theme as T
-from .motion import SLOW
+from .palette import SLAB_BAND_H as P_SLAB_BAND_H
 from .theme import Motion
 
 # ------------------------------------------------------------------ 数值格式化
@@ -654,97 +653,179 @@ class StatCard(QFrame):
         # 换肤时 QSS 一换它跟着换——部件侧无事可做。
 
 
-class Gauge(QWidget):
-    """270° 环形仪表：显示「真实截止 / 奈奎斯特」占比，颜色随结论变化。"""
+class RatioBar(QWidget):
+    """比例：**一条 1px 细线 + 一个标记**（替代 270° 环形仪表）。
 
-    def __init__(self, size: int = 128, theme: T.Theme | None = None):
+    为什么不用环形（诊断文档 §一/§二 实测）：
+      * `paintEvent` 里三行字的绘制带**矩形就交叠**——主数字 `h*0.30–0.60`、
+        副行 `h*0.55–0.73`、占比 `h*0.71–0.91`，后两行重叠 **2.5px**；
+        128px 的圆还要被 9px 环吃掉一圈（有效内径 ≈104px）。
+      * "占比"用 270° 弧 + 锥形渐变 + 圆头 + 底部留口 = **车载转速表语汇**，
+        与"仪器"不是一回事：仪器读数是**数字 + 刻度**，不是转盘。
+      * 环色随判定变，于是"绿条上绿环"——同色相低对比，弧线几乎读不出。
+
+    一条线 + 一个标记没有这些问题：读数精确、零歧义、不吃版面。
+    颜色从主题令牌读（细线用 `border`、标记用判定带色），不新增色号。
+    """
+
+    #: 控件高：细线 1px + 上下各留 3px 给标记（2px 宽、9px 高）。
+    H = 11
+    MARK_W, MARK_H = 2, 9
+
+    def __init__(self, theme: T.Theme | None = None):
         super().__init__()
-        self.setFixedSize(size, size)
+        self.setFixedHeight(self.H)
         self.t = theme or T.DARK
-        self.value: float | None = None
-        self.level: str | None = None
-        self.main = "—"
-        self.sub = " 真实截止"
-        self.caption = ""
-        #: 是否压在**大面积着色**上（判定结论条）。为 True 时次要文字改用
-        #: `slab_dim`：结论条底色比卡片底深，`text_faint` 在它上面只有 ~2.9:1，
-        #: 而这两行是 11px 小字。见 `palette.SLAB_L` 与 `CHECKS` 里的结论条几对。
-        self.on_slab = False
-        # 环形进度的**缓动值**：数字跳变看不出"变了多少"，指针扫过去才看得出。
-        # 走 `motion.tween`（不碰 matplotlib）——画布重绘是按百毫秒计的，
-        # 而这只小部件的动画每帧只是几个 drawArc，代价可以忽略。
-        # 时长取 `Motion.slow`：原先写死 430ms，那个数字不在任何一张时长表里。
-        self._anim = 0.0
-        self._ease = None
+        self.level = "warn"
+        self.ratio: float | None = None
 
-    def _get_anim(self) -> float:
-        return self._anim
-
-    def _set_anim(self, v: float) -> None:
-        self._anim = float(v)
-        self.update()
-
-    anim = Property(float, _get_anim, _set_anim)
-
-    def set_data(self, ratio, level: str | None, main: str, sub: str, caption: str = "") -> None:
-        self.value, self.level = ratio, level
-        self.main, self.sub, self.caption = main, sub, caption
-        target = float(ratio) if ratio else 0.0
-        # 连续触发时先停掉上一个：两个补间同时写 `anim` 会互相打架
-        # （表现是指针抖一下）。`isValid` 是必须的——上一个补间可能已经
-        # 被 `_run` 的清理路径 deleteLater 掉了。
-        if self._ease is not None:
-            from shiboken6 import isValid
-            if isValid(self._ease):
-                self._ease.stop()
-        self._ease = motion.tween(self, b"anim", self, start=self._anim, end=target,
-                                  ms=SLOW)
+    def set_data(self, ratio, level: str) -> None:
+        self.ratio = None if ratio is None else max(0.0, min(1.0, float(ratio)))
+        self.level = level
         self.update()
 
     def apply_theme(self, t: T.Theme) -> None:
         self.t = t
         self.update()
 
-    def paintEvent(self, _):                           # noqa: N802
-        p, pr = self.t.p, QPainter(self)
-        pr.setRenderHint(QPainter.Antialiasing, True)
-        w, h = self.width(), self.height()
-        thick = 9.0
-        pad = thick / 2 + 3
-        rect = QRectF(pad, pad, w - 2 * pad, h - 2 * pad)
-        start, span = 225.0, -270.0
-
-        pr.setPen(QPen(QColor(p.surface_hi), thick, Qt.SolidLine, Qt.RoundCap))
-        pr.drawArc(rect, int(start * 16), int(span * 16))
-
-        if self.value is not None:
-            col = QColor(p.level_color(self.level or "info"))
-            grad = QConicalGradient(rect.center(), 225)
-            grad.setColorAt(0.0, col.lighter(125))
-            grad.setColorAt(0.5, col)
-            grad.setColorAt(1.0, col.darker(115))
-            pr.setPen(QPen(grad, thick, Qt.SolidLine, Qt.RoundCap))
-            # 用缓动值画弧（`_anim`），文字仍用真实值——读数不能跟着动画变
-            frac = max(0.0, min(1.0, self._anim))
-            pr.drawArc(rect, int(start * 16), int(span * frac * 16))
-
-        f = QFont(self.font())
-        f.setPointSizeF(self.t.type.heading - 4.5)
-        f.setBold(True)
-        pr.setFont(f)
-        pr.setPen(QColor(p.text))
-        pr.drawText(QRectF(0, h * 0.30, w, h * 0.30), Qt.AlignCenter, self.main)
-        f.setPointSizeF(self.t.type.caption)
-        f.setBold(False)
-        pr.setFont(f)
-        # 压在大面积着色上时（`on_slab`）次要文字要换色：`text_faint` 在结论条
-        # 底色上只有 ~2.9:1，而这两行是 11px 小字。这不是"顺手换色"——
-        # 结论条的底色进 CHECKS 时就把 `slab_dim` 一起解出来了（见 palette.SLAB_L）。
-        pr.setPen(QColor(p.slab_dim if self.on_slab else p.text_faint))
-        pr.drawText(QRectF(0, h * 0.55, w, h * 0.18), Qt.AlignCenter, self.sub)
-        if self.caption:
-            pr.drawText(QRectF(0, h * 0.71, w, h * 0.20), Qt.AlignCenter, self.caption)
+    def paintEvent(self, _):                            # noqa: N802
+        p = self.t.p
+        pr = QPainter(self)
+        y = self.H // 2
+        pr.setPen(QColor(p.border))
+        pr.drawLine(0, y, self.width() - 1, y)
+        if self.ratio is not None:
+            pr.setPen(QColor(p.level_band(self.level)))
+            x = int(self.ratio * (self.width() - self.MARK_W))
+            pr.fillRect(QRectF(x, y - self.MARK_H // 2, self.MARK_W, self.MARK_H),
+                        QColor(p.level_band(self.level)))
         pr.end()
+
+
+class VerdictPanel(QFrame):
+    """判定区（B9.1）：**淡底 + 4px 判定带 + 判词 + hero 数字 + 比例标记**。
+
+    它替代了 B7 的"通栏高彩块 + 270° 环形仪表"。结构照 B9 小样：
+
+        ▌4px 判定带（判定色原彩度 · 高彩 · 视觉重量全在这里）
+        ● 不达标   有损溯源                      真实截止
+        ≈192–256 kbps 转码 · 内容止于 16.01 kHz…   16.01 kHz   ← hero 40px
+        ────────────────│────────  占奈奎斯特 73%
+        （整块 = 大面积淡判定底 · 低彩 · 承载判词文字）
+
+    两个角色**各自有令牌、命名不许混**：`*_tint` 是面、`*_band` 是线。
+    B7 把两者绑在同一块 880×140 的高彩底上——**面积百分比不等于视觉重量**，
+    同样 3.5%，横贯全宽的色带比一小块光斑重好几倍。
+
+    ⚠ **判词不用"深色字"**：那是提示词按亮色写的。这里按主题定方向——
+    亮色下淡底比页面底深、用深字；暗色下淡底比页面底亮、用亮字。
+    判据是"与 tint 的对比 ≥4.5"（`palette.CHECKS`），不是某个具体颜色。
+    """
+
+    #: hero 区固定宽度（小样的 1fr / 260px 结构）。
+    HERO_W = 260
+
+    def __init__(self, theme: T.Theme):
+        super().__init__()
+        self.setObjectName("VerdictBanner")
+        self.t = theme
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
+        # —— 4px 判定带：贴在最上沿，横贯全宽 ——
+        self.band = QFrame()
+        self.band.setObjectName("VerdictBand")
+        self.band.setFixedHeight(P_SLAB_BAND_H)
+        v.addWidget(self.band)
+        # —— 主体 ——
+        body = QWidget()
+        m = theme.space
+        hb = QHBoxLayout(body)
+        # 留白回来（R3）：外边距取 `xl`（B7 用的是 `lg`），比原来宽一档。
+        hb.setContentsMargins(m.xl, m.lg, m.xl, m.lg)
+        hb.setSpacing(m.xl)
+        left = QVBoxLayout()
+        left.setSpacing(m.sm)
+        row1 = QHBoxLayout()
+        row1.setSpacing(m.sm)
+        self.dot = QFrame()
+        self.dot.setObjectName("VerdictDot")
+        self.dot.setFixedSize(8, 8)
+        row1.addWidget(self.dot, 0, Qt.AlignVCenter)
+        self.lbl_verdict = QLabel("—")
+        self.lbl_verdict.setObjectName("VerdictText")
+        row1.addWidget(self.lbl_verdict, 1)
+        left.addLayout(row1)
+        self.lbl_file = QLabel("")
+        self.lbl_file.setObjectName("Caption")
+        self.lbl_file.setWordWrap(True)
+        left.addWidget(self.lbl_file)
+        left.addStretch(1)
+        hb.addLayout(left, 1)
+        # —— hero 区 ——
+        right = QVBoxLayout()
+        right.setSpacing(m.xs)
+        self.lbl_hero_label = QLabel("真实截止")
+        self.lbl_hero_label.setObjectName("Caption")
+        right.addWidget(self.lbl_hero_label)
+        hero_row = QHBoxLayout()
+        hero_row.setSpacing(m.xs)
+        self.lbl_hero = QLabel("—")
+        self.lbl_hero.setObjectName("HeroBig")
+        hero_row.addWidget(self.lbl_hero, 0, Qt.AlignBaseline)
+        self.lbl_hero_unit = QLabel("kHz")
+        self.lbl_hero_unit.setObjectName("HeroUnit")
+        hero_row.addWidget(self.lbl_hero_unit, 0, Qt.AlignBaseline)
+        hero_row.addStretch(1)
+        right.addLayout(hero_row)
+        self.ratio_bar = RatioBar(theme)
+        right.addWidget(self.ratio_bar)
+        self.lbl_ratio = QLabel("—")
+        self.lbl_ratio.setObjectName("Caption")
+        right.addWidget(self.lbl_ratio)
+        right.addStretch(1)
+        hb.addLayout(right, 0)
+        right.setAlignment(Qt.AlignTop)
+        self._hero_box = body
+        v.addWidget(body, 1)
+        self._right = right
+        self.apply_theme(theme)
+
+    # ---- 数据 ----------------------------------------------------------
+    def set_data(self, level: str, verdict: str, file_text: str = "",
+                 hero: str = "—", unit: str = "kHz", hero_label: str = "真实截止",
+                 ratio=None) -> None:
+        self.level = level
+        self.lbl_verdict.setText(verdict or "—")
+        self.lbl_file.setText(file_text)
+        self.lbl_hero.setText(hero)
+        self.lbl_hero_unit.setText(unit)
+        self.lbl_hero_label.setText(hero_label)
+        self.lbl_ratio.setText("占奈奎斯特 %s" % _pct(ratio) if ratio is not None else "—")
+        self.ratio_bar.set_data(ratio, level)
+        for w in (self, self.band, self.dot):
+            w.setProperty("level", level)
+            w.style().unpolish(w)
+            w.style().polish(w)
+
+    def apply_theme(self, t: T.Theme) -> None:
+        self.t = t
+        self.band.setFixedHeight(P_SLAB_BAND_H)
+        self.ratio_bar.apply_theme(t)
+        # hero 是**数据不是层级**：40px 只此一处（`Type.hero`，有破例说明）。
+        # 字体按内容选（ASCII → DIN 系/等宽），与指标卡同一条纪律。
+        self.lbl_hero.setFont(T.pick_text_font(self.lbl_hero.text(), t.type.hero,
+                                               t.font_family))
+        self.lbl_verdict.setFont(T.pick_text_font(self.lbl_verdict.text(),
+                                                  t.type.display, t.font_family))
+        self._right.setAlignment(Qt.AlignTop)
+
+
+def _pct(ratio) -> str:
+    try:
+        return "%.0f%%" % (float(ratio) * 100.0)
+    except (TypeError, ValueError):
+        return "—"
 
 
 # ------------------------------------------------------------------ 键值表

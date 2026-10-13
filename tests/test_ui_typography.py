@@ -363,11 +363,15 @@ class TestTypeScaleContract(unittest.TestCase):
         self.assertEqual(T.Type().body, 14.0)
         self.assertEqual(T.Type().body_md, 15.0)
 
-    def test_display_level_is_used_in_exactly_one_place(self):
-        """"不要大字"：display 级（27px）只允许出现在 Hero 数值上。
+    def test_display_level_is_used_in_exactly_two_places(self):
+        """"不要大字"：display 级（27px）只允许**两处**确有其事的读数。
 
         用户判决"左上角原来那个项目英文名就行了"——chrome 与报告头都不许升级。
-        这条扫的是 QSS：哪条规则用了 display 级，必须只有 `#Hero`。
+
+        B9.1 从一处变两处：判定区的**判词**（`#VerdictText`）也升到了 display。
+        理由是它和指标数值是同一类东西——**一屏最重要的读数**，不是标题。
+        小样里判词写的是 26px，与 display 的 27 同量级。
+        再往下加第三处就该有人问"它凭什么是大字"了，所以这里把数字钉死。
         """
         for theme in (T.DARK, T.LIGHT):
             q = T.qss(theme)
@@ -375,9 +379,8 @@ class TestTypeScaleContract(unittest.TestCase):
             users = [sel.strip() for sel, body in
                      re.findall(r"([^{}]+)\{([^{}]*)\}", q)
                      if "font-size:%dpx" % int(T.Type().display) in body]
-            self.assertEqual(users, ["QLabel#Hero"],
-                             "display 级被用在了别处：%s" % users)
-            self.assertEqual(len(users), 1, "display 级只允许一条规则")
+            self.assertEqual(users, ["QLabel#VerdictText", "QLabel#Hero"],
+                             "display 级的用法变了：%s" % users)
 
 
 if __name__ == "__main__":

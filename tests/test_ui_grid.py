@@ -227,19 +227,24 @@ class TestTypeScale(unittest.TestCase):
                                     "相邻字阶差 <1px，视觉不可分：%.1f→%.1f" % (a, b))
 
     def test_qss_uses_type_scale_only(self):
-        """QSS 里出现的字号必须是声明过的级别，不能临时写一个新数字。"""
-        import sys
-        sys.path.insert(0, os.path.join(os.path.dirname(UI), "..", "..", ".."))
-        ty = T.Type()
-        allowed = {int(x) for x in (
-            ty.micro, ty.caption, ty.body_sm, ty.body, ty.body_md,
-            ty.title, ty.heading, ty.display)}
+        """QSS 里出现的字号必须是声明过的级别，不能临时写一个新数字。
+
+        ⚠ **白名单必须从 `Type` 表读**，不能手抄一份。B9.2 加了 `hero` 档
+        （40px）之后这条测试红了——不是 QSS 违规，是**白名单抄漏了**：
+        手抄的列表在每次加档时都要记得同步，而忘了同步的表现是
+        "判据报了一个假违规"，最坏的结果是有人把规则删掉。
+        改成 `dataclasses.fields(Type)` 之后，加档自动生效。
+        """
+        from dataclasses import fields
+        allowed = {int(getattr(T.Type(), f.name)) for f in fields(T.Type())}
         q = T.qss(T.DARK)
         used = {int(m) for m in re.findall(r"font-size:(\d+)px", q)}
         extra = used - allowed
         self.assertEqual(extra, set(),
                          "QSS 出现了字阶之外的字号：%s（允许 %s）"
                          % (sorted(extra), sorted(allowed)))
+        # 判据自身要被测：表里加一档、白名单必须跟着变
+        self.assertIn(int(T.Type().hero), allowed, "hero 档没进白名单")
 
 
 if __name__ == "__main__":
