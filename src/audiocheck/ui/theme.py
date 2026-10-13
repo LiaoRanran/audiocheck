@@ -258,7 +258,13 @@ class Palette:
     # 阴影。**Qt 的 QSS 没有 box-shadow**（实测写了不报错也不生效），
     # 所以这里是给自绘与效果对象用的参数令牌：双档（near 同层浮层 /
     # far 跨层浮层），颜色偏冷中性而非纯黑，理由见 palette.SHADOW_TIERS。
-    shadow: str = "rgba(0,0,0,.45)"
+    #
+    # B7.4：旧的单档 `shadow` 是 `rgba(0,0,0,.45)`——**纯黑**。
+    # 依据：「pure black creates a cutout effect… like cardboard cutouts」
+    # （硬纸板剪影）：纯黑阴影压在冷灰底上，交界处会显灰雾，物体像贴上去的。
+    # 改用与中性阶同族的近黑冷调（slate-950 一族），保留旧名字以兼容
+    # 已有调用点，但值已经换掉。
+    shadow: str = "rgba(2,6,23,.45)"
     shadow_near: str = "rgba(2,6,23,.45)"
     shadow_far: str = "rgba(2,6,23,.22)"
 
@@ -503,10 +509,13 @@ QFrame#CardAccent {{ border:0; border-top-left-radius:{r}px;
 /* 来历：勘误 §5.6 的处置顺序「① 先收 deco → ② 再量玫瑰够不够 → ③ 加大玫瑰面积」，
    并点名"顶部结论条"是玫瑰的面积该长的地方（它承载信息，不是装饰）。
    按 `level` 属性取色，换肤时只重算一遍 QSS——不给它 setStyleSheet。 */
-QFrame#VerdictBanner {{ border:0; border-radius:{r_xl}px; }}
-QFrame#VerdictBanner[level="ok"] {{ background:{ok_slab}; }}
-QFrame#VerdictBanner[level="warn"] {{ background:{warn_slab}; }}
-QFrame#VerdictBanner[level="bad"] {{ background:{bad_slab}; }}
+/* 结论条的描边是**二次反光**（B7.4）：同色相、更高彩度的一圈细边——
+   高彩面自己的光落在自己的边缘上。用的就是判定色本身（C 0.155–0.185），
+   不新增色号。**它不是辉光**：辉光已退场，这里只有 1px。 */
+QFrame#VerdictBanner {{ border:1px solid {border_hi}; border-radius:{r_xl}px; }}
+QFrame#VerdictBanner[level="ok"] {{ background:{ok_slab}; border-color:{success}; }}
+QFrame#VerdictBanner[level="warn"] {{ background:{warn_slab}; border-color:{warning}; }}
+QFrame#VerdictBanner[level="bad"] {{ background:{bad_slab}; border-color:{danger}; }}
 /* 结论条上的次要文字（文件名 · 编码 · 路径）与正文分开取色：
    底色变深之后 `text_faint` 只有 2.9:1（不达标），这一色是专为它解出来的。 */
 #VerdictBanner QLabel#Caption {{ color:{slab_dim}; }}
@@ -638,7 +647,13 @@ QMenu::separator {{ height:1px; background:{border}; margin:{xs}px {sm}px; }}
    赢，而 `border` 简写会把 `border-top` 一起重置。第一次写时放在了
    `#Toast {{ border:… }}` 之前，于是那条顶光被静默吃掉了——
    界面看起来"少了点什么"，但没有任何报错。 */
-QMenu, #Palette, #Toast {{ border-top:1px solid {top_light}; }}
+/* **亮边必须配暗线**（B7.4 的「金属四段」）：光从上方来 → 上缘被照亮、
+   下缘落进阴影。两件事要成对出现：只有亮边的话，物体像「贴了一片高光」。
+   ⚠ Qt 的 QSS **不能在同一个边上叠两条线**（`border-top` 只有一条），
+   所以配对实现为**上缘亮线 + 下缘暗线**——同一个物理模型，不是省略。
+   这条平台限制登记在此，免得后来者以为漏了「上缘亮线下面那 1px」。 */
+QMenu, #Palette, #Toast {{ border-top:1px solid {top_light};
+                          border-bottom:1px solid {bg}; }}
 QFrame#Sep {{ background:{border}; }}
 QSplitter::handle {{ background:transparent; }}
 QSplitter::handle:horizontal {{ width:6px; }}
@@ -661,6 +676,8 @@ QSplitter::handle:hover {{ background:{primary_soft}; }}
         danger=p.danger, danger_lo=p.danger_lo, hover=p.hover, selection=p.selection,
         # 判定结论条（判定语义唯一的大面积着色）与它自己的次要文字色
         ok_slab=p.success_slab, warn_slab=p.warning_slab, bad_slab=p.danger_slab,
+        # 结论条描边用的判定色（二次反光），不新增色号
+        success=p.success, warning=p.warning,
         slab_dim=p.slab_dim,
         font=t.font, body=int(ty.body), body_sm=int(ty.body_sm), body_md=int(ty.body_md),
         caption=int(ty.caption), micro=int(ty.micro), display=int(ty.display),

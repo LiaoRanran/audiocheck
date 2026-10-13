@@ -474,7 +474,11 @@ class SpectrumCanvas(BaseCanvas):
         # 1/3 倍频程平滑线：**宏观走向**（原曲线的毛刺是内容，不替它）
         ax.semilogx(f, third_octave_smooth(f, db), lw=1.9, color=p["accent_hi"],
                     alpha=.85, zorder=3)
-        ax.semilogx(f, db, lw=.85, color=p["accent"], alpha=.95, zorder=3)
+        # 核心数据曲线 1.5px（B7.4「核心锐利」）。它原来是 .85 的**发丝线**，
+        # 在 2200px 宽的画布上等于"几乎看不见"——而这是本工具的核心证据。
+        # 1/3 倍频程平滑线在它上面 1.9px：读数是"体"，原始曲线是"细节"，
+        # 两者都落在 1.5–2px 带内且保持层级。
+        ax.semilogx(f, db, lw=1.5, color=p["accent"], alpha=.95, zorder=3)
 
         # ---- 噪底：动态范围的下边界（有测量值才画，没测就不画）----
         nf = self.r.get("noise_floor_db")
@@ -819,7 +823,7 @@ class WaterfallCanvas(BaseCanvas):
         idxs = list(range(0, n, step))
         for i in idxs:
             col = cmap(0.06 + 0.88 * i / max(1, n - 1))
-            ax.plot(lf, db[:, i], zs=i, zdir="y", color=col, lw=1.25, alpha=.98)
+            ax.plot(lf, db[:, i], zs=i, zdir="y", color=col, lw=1.5, alpha=.98)
         ax.set_zlim(-90, 0)
         ax.set_ylim(0, n)
         ax.set_xlim(lf[0], lf[-1])
@@ -1031,7 +1035,7 @@ class CompareCanvas(BaseCanvas):
             col = seq[i % len(seq)]
             nyq = max(nyq, r.get("sr", 48000) / 2)
             top = float(np.percentile(arr[:, 1], 99.5))
-            ln, = ax.semilogx(arr[:, 0], arr[:, 1] - top, lw=1.15, color=col, alpha=.95,
+            ln, = ax.semilogx(arr[:, 0], arr[:, 1] - top, lw=1.5, color=col, alpha=.95,
                               label="%s  ｜ %.1fk" % (r["file"][:30], (r.get("cutoff_khz") or 0)),
                               zorder=3)
             self._lines.append(ln)
