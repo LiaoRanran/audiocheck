@@ -19,6 +19,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from . import material
+
 GRAB = 6  # 边缘可拖拽区域宽度（px）
 
 
@@ -83,6 +85,16 @@ class TitleBar(QFrame):
         self.btn_min.clicked.connect(lambda: self.window().showMinimized())
         self.btn_max.clicked.connect(self._toggle_max)
         self.btn_close.clicked.connect(lambda: self.window().close())
+
+    def paintEvent(self, ev):                           # noqa: N802
+        """QSS 画完渐变背景后铺一层噪点。
+
+        标题栏是一条 1500×44 的横向渐变，是全窗口**最平也最长**的渐变——
+        6 bit 面板上最容易出色带的地方。做法与侧边栏一致
+        （`material.paint_noise`：自绘、不进子控件、不加合成层）。
+        """
+        super().paintEvent(ev)
+        material.paint_noise(self)
 
     def _btn(self, kind: str) -> QToolButton:
         b = QToolButton(self)

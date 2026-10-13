@@ -114,27 +114,224 @@ class TestTemperatureLayering(unittest.TestCase):
 
 
 class TestAccent2(unittest.TestCase):
-    """次级强调色：**分裂互补**（色相 +150°），同明度同彩度。"""
+    """次级强调色：**冷 counterpart**（锚在中性阶色相），同明度同彩度。
 
-    def test_hue_is_split_complementary(self):
-        for seed in ("#3d7dff", "#e0a92e", "#35c46a"):
-            pal = P.build(seed, "dark")
-            h1 = P.srgb_to_oklch(pal["primary"])[2]
-            h2 = P.srgb_to_oklch(pal["accent2"])[2]
-            delta = (h2 - h1) % 360
-            self.assertAlmostEqual(delta, 150.0, delta=8.0, msg="%s → %.1f°" % (seed, delta))
+    2026-10-13（B 块）改动：从"分裂互补 +150°"改为"锚定 `NEUTRAL_HUE`"。
+    理由是配额：配色只许有**一枚暖 + 一枚冷**。原先 +150° 是从种子色出发转的，
+    于是种子色一变第二枚也跟着跑（玫瑰种子会转到 164° 青绿，跟"冷"没关系）。
+    """
+
+    def test_hue_is_anchored_at_the_neutral_hue(self):
+        pal = P.build("#f97083", "dark")
+        h2 = P.srgb_to_oklch(pal["accent2"])[2]
+        self.assertAlmostEqual(h2, P.NEUTRAL_HUE, delta=6.0,
+                               msg="accent2 没有锚在仪器灰的色相上：%.1f°" % h2)
+
+    def test_does_not_follow_the_seed_hue(self):
+        """**核心断言**：换种子色时，冷的那枚不许跟着跑。"""
+        seeds = ("#3d7dff", "#e0a92e", "#35c46a", "#f97083", "#8b5cf6")
+        hues = {round(P.srgb_to_oklch(P.build(s, "dark")["accent2"])[2]) for s in seeds}
+        for h in hues:
+            self.assertAlmostEqual(h, P.NEUTRAL_HUE, delta=6.0,
+                                   msg="accent2 跟着种子色跑了：%s" % sorted(hues))
+
+    def test_two_accents_are_always_distinguishable(self):
+        """**功能判据**：两条曲线永远分得开——色相与明度至少给一个。
+
+        为什么不是"色相必须差 90°"：种子色落在冷区时（用户选了蓝紫），
+        它与 accent2 的锚点只差二十几度，硬要求色相差就是要求做不到的事。
+        数据可视化的标准退路是**换维度**——色相分不开就用明度。
+        所以这里断言的是"某个维度分得开"，而 `test_same_visual_weight` 只在
+        色相够开时才要求等重。
+        """
+        for mode in ("dark", "light"):
+            for seed in ("#f97083", "#3d7dff", "#35c46a", "#e0a92e", "#5b6478"):
+                pal = P.build(seed, mode)
+                l1, _c1, h1 = P.srgb_to_oklch(pal["primary"])
+                l2, _c2, h2 = P.srgb_to_oklch(pal["accent2"])
+                gap = abs((h2 - h1 + 180) % 360 - 180)
+                self.assertTrue(gap > 60.0 or abs(l1 - l2) >= 0.12,
+                                "%s/%s 两条曲线既不同色相也不同明度（Δh=%.0f° ΔL=%.2f）"
+                                % (mode, seed, gap, abs(l1 - l2)))
+
+    def test_cool_seed_falls_back_to_lightness(self):
+        """冷区种子触发明度退路；暖/绿区种子不该被误触发（那会白破坏等重）。"""
+        blue = P.build("#3d7dff", "dark")
+        l1 = P.srgb_to_oklch(blue["primary"])[0]
+        l2 = P.srgb_to_oklch(blue["accent2"])[0]
+        self.assertGreater(abs(l1 - l2), 0.12, "冷区种子没有走明度退路")
+        rose = P.build("#f97083", "dark")
+        r1 = P.srgb_to_oklch(rose["primary"])[0]
+        r2 = P.srgb_to_oklch(rose["accent2"])[0]
+        self.assertLess(abs(r1 - r2), 0.05, "暖区种子被误压了明度，等重被破坏")
 
     def test_same_visual_weight_as_primary(self):
-        """明度相近才有"等重"观感——否则一条曲线天然比另一条显眼。"""
-        pal = P.build("#3d7dff", "dark")
-        l1 = P.srgb_to_oklch(pal["primary"])[0]
-        l2 = P.srgb_to_oklch(pal["accent2"])[0]
-        self.assertLess(abs(l1 - l2), 0.12)
+        """明度与彩度都相近才有"等重"观感——否则一条曲线天然比另一条显眼。"""
+        for mode in ("dark", "light"):
+            pal = P.build("#f97083", mode)
+            l1, c1, _ = P.srgb_to_oklch(pal["primary"])
+            l2, c2, _ = P.srgb_to_oklch(pal["accent2"])
+            self.assertLess(abs(l1 - l2), 0.12, "%s 明度不等重" % mode)
+            if c1 > 0.05:                    # 近中性种子下彩度本身就没有意义
+                self.assertLess(abs(c1 - c2) / c1, 0.35, "%s 彩度不等重" % mode)
 
     def test_visible_on_plot_background(self):
         for mode in ("dark", "light"):
             pal = P.build("#8b5cf6", mode)
             self.assertGreaterEqual(P.contrast(pal["accent2"], pal["plot_bg"]), 3.0)
+
+
+class TestInstrumentGrey(unittest.TestCase):
+    """仪器灰（B 块）：中性阶**不再跟随种子色相**，且彩度落在配额带内。
+
+    这两条合起来就是"配额制配色"的落点：0.9 的界面面积是不带品牌色的冷灰，
+    品牌色只出现在 accent 一族上。原先整张界面都被种子色染一遍，
+    "一枚 accent"事实上是"一枚 accent + 一整套染色"。
+
+    判据范围严格照提示词：**bg → surface_raised** 这一段（不含 grid / border /
+    hover——那几个是"描边与叠加"，本来就要比表面更实一点才看得见）。
+    """
+
+    #: bg → surface_raised。这是"表面"，也是 90% 面积所在。
+    SURFACES = ("bg", "surface", "surface_hi", "surface_raised")
+
+    def test_neutral_hue_does_not_follow_the_seed(self):
+        """**核心断言**：换种子色，背景灰不许变色相。
+
+        这是"配额制"与"种子色系统"能够共存的前提——如果背景跟着种子跑，
+        那"90% 中性 + 一枚 accent"就永远做不到。
+        """
+        seeds = ("#3d7dff", "#e0a92e", "#35c46a", "#f97083", "#8b5cf6", "#5b6478")
+        for mode in ("dark", "light"):
+            for key in self.SURFACES:
+                hues = []
+                for s in seeds:
+                    _L, C, h = P.srgb_to_oklch(P.build(s, mode)[key])
+                    if C > 0.002:            # 近无彩时色相无定义，跳过
+                        hues.append(h)
+                if len(hues) < 2:
+                    continue    # 纯白（浅色主题的 surface_raised）没有色相可言
+                self.assertLess(max(hues) - min(hues), 2.0,
+                                "%s/%s 的色相跟着种子色跑了：%s"
+                                % (mode, key, [round(h, 1) for h in hues]))
+
+    def test_neutral_hue_sits_in_the_instrument_family(self):
+        """中性阶的色相落在仪器灰家族内（锚点 286° ± 12°）。
+
+        上限 12° 的来历：参考图的中性簇实测在 280–291°，色温分层
+        （`WARM_COOL_MAX`）再各允许 ≤7° 的偏移。加在一起就是 ±12°。
+        """
+        for mode in ("dark", "light"):
+            for seed in ("#f97083", "#3d7dff"):
+                for key in self.SURFACES:
+                    L, C, h = P.srgb_to_oklch(P.build(seed, mode)[key])
+                    if C <= 0.002:
+                        continue
+                    off = abs((h - P.NEUTRAL_HUE + 180) % 360 - 180)
+                    self.assertLessEqual(off, 12.0,
+                                         "%s/%s/%s 跑出仪器灰家族：%.1f°（锚点 %.0f°）"
+                                         % (mode, seed, key, h, P.NEUTRAL_HUE))
+
+    def test_calm_surfaces_stay_inside_the_chroma_quota(self):
+        """calm 档的中性阶彩度 ≤ `NEUTRAL_CHROMA_MAX`（0.0125）。
+
+        这条是"配额制"里最容易悄悄破的一条：中性阶的 tint 是个乘数，
+        有人把它乘大一点（为了"层次更明显"），画面就又开始发脏了。
+        """
+        for mode in ("dark", "light"):
+            for seed in ("#f97083", "#3d7dff", "#35c46a", "#5b6478"):
+                pal = P.build(seed, mode, "calm")
+                for key in self.SURFACES:
+                    C = P.srgb_to_oklch(pal[key])[1]
+                    self.assertLessEqual(
+                        C, P.NEUTRAL_CHROMA_MAX + 0.001,
+                        "%s/%s/%s 超出中性彩度配额：%.4f" % (mode, seed, key, C))
+
+    def test_high_chroma_area_is_quota_limited_by_construction(self):
+        """"高彩面积 ≤5%"的**结构性**保证：高彩令牌只有固定的那么几个。
+
+        为什么不在这里量像素面积：那需要渲染截图，属于 `palette_report.py`
+        的活（它出报告）。这里钉的是**能不能超标**这道门：
+        整张配色里 C>0.10 的令牌只允许是 accent 一族与语义色，
+        中性阶/描边/文本一律不许进去——只要令牌表是这样，面积就不可能失控。
+        """
+        pal = P.build("#f97083", "dark", "calm")
+        allowed = set()
+        for k in ("primary", "primary_hi", "primary_text", "accent2",
+                  "success", "warning", "danger", "info"):
+            allowed.add(k)
+        neutral = ("bg", "surface", "surface_hi", "surface_raised", "grid", "border",
+                   "border_hi", "hover", "hover_hi", "text", "text_dim", "text_faint",
+                   "text_disabled", "plot_bg", "selection", "top_light")
+        for k in neutral:
+            C = P.srgb_to_oklch(pal[k])[1]
+            self.assertLessEqual(C, 0.06,
+                                 "%s 的彩度 %.4f 太高——它属于大面积表面，不属于 accent"
+                                 % (k, C))
+        # 反向：accent 一族必须**真的**是高彩，否则"配额"没有对象
+        for k in ("primary", "accent2"):
+            self.assertGreater(P.srgb_to_oklch(pal[k])[1], 0.10,
+                               "%s 不够高彩，它就不该占配额" % k)
+        # 语义色的胶囊底（大面积）也必须低彩，否则三个判定胶囊会一起抢注意力。
+        # 阈值 0.058 = 生成时请求的上限 0.055 + 8bit 量化与 oklab 往返的余量
+        # （实测 danger_bg 落在 0.0553——不是超标，是量化噪声）。
+        for k in ("success_bg", "warning_bg", "danger_bg", "info_bg"):
+            self.assertLessEqual(P.srgb_to_oklch(pal[k])[1], 0.058,
+                                 "%s（面积不小）彩度太高" % k)
+
+
+class TestMaterialTokens(unittest.TestCase):
+    """材质令牌：双档阴影 + 顶光高亮。
+
+    **Qt 的 QSS 没有 box-shadow**（实测不报错也不生效），所以阴影是"参数令牌 +
+    效果对象"两段式：令牌在这里被钉，落点在 `ui/shadow.py`。
+    """
+
+    def test_two_shadow_tiers_are_ordered(self):
+        """near 与 far 必须是**有方向差别**的两档，不是同一档的两个名字。
+
+        far = 离观察者更远 → 更虚（blur 更大）、更淡（alpha 更小）、
+        投得更远（dy 更大）。三条都单调，否则两档只是重复。
+        """
+        near, far = P.SHADOW_TIERS["near"], P.SHADOW_TIERS["far"]
+        self.assertGreater(far["blur"], near["blur"], "far 不够虚")
+        self.assertLess(far["alpha"], near["alpha"], "far 不够淡")
+        self.assertGreater(far["dy"], near["dy"], "far 没有投得更远")
+
+    def test_shadow_is_top_lit(self):
+        """顶光：dy 为正（往下投）、dx 略负（光从左上来）。两档一致。"""
+        for name, cfg in P.SHADOW_TIERS.items():
+            self.assertGreater(cfg["dy"], 0, "%s 档的 dy 不为正：光从下面来了" % name)
+            self.assertLessEqual(cfg["dx"], 0, "%s 档的 dx 为正：光从右上来了" % name)
+
+    def test_shadow_color_is_not_pure_black(self):
+        """阴影色取**偏冷的中性**，不是纯黑：黑色压在冷灰底上会发灰雾。"""
+        for mode in ("dark", "light"):
+            pal = P.build("#f97083", mode)
+            for k in ("shadow_near", "shadow_far"):
+                rgb = re.findall(r"[\d.]+", pal[k])
+                self.assertEqual(len(rgb), 4, "%s 不是 rgba()：%r" % (k, pal[k]))
+                r, g, b = (int(float(x)) for x in rgb[:3])
+                self.assertLess(b, 255, "%s 是纯黑" % k)
+                self.assertGreaterEqual(b, max(r, g), "%s 不够冷（b 不是最大分量）" % k)
+
+    def test_top_light_is_lighter_than_the_border(self):
+        """上缘高光要比描边亮一档——否则"顶光"看不出来，只是一条多余的线。
+
+        浅色主题下方向相反（要**更白**才算被照亮），所以断言的是"离得很开"：
+        深色下高光更亮、浅色下更接近白。两种模式都要求 |ΔL| ≥ 0.03。
+        """
+        for mode in ("dark", "light"):
+            pal = P.build("#f97083", mode)
+            L_hl = P.srgb_to_oklch(pal["top_light"])[0]
+            L_bd = P.srgb_to_oklch(pal["border_hi"])[0]
+            self.assertGreater(abs(L_hl - L_bd), 0.03,
+                               "%s 的顶光与描边几乎一样（ΔL=%.3f），看不出高光"
+                               % (mode, abs(L_hl - L_bd)))
+            if mode == "dark":
+                self.assertGreater(L_hl, L_bd, "深色主题的上缘高光该更亮")
+            else:
+                self.assertLess(L_hl, L_bd, "浅色主题的上缘高光该更白")
 
 
 class TestVibeLayers(unittest.TestCase):

@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import motion
+from . import material, motion
 from . import theme as T
 from .motion import SLOW
 from .theme import Motion
@@ -195,6 +195,16 @@ class SideBar(QFrame):
         self.footer.setSpacing(2)
         v.addLayout(self.footer)
 
+    def paintEvent(self, ev):                           # noqa: N802
+        """QSS 画完渐变背景后，再铺一层 ≤2/255 的噪点抗色带。
+
+        侧边栏是一条贯穿整高的纵向渐变，是全窗口最平最长的渐变之一，
+        6 bit 面板上最容易出色带。见 `material.paint_noise` 的说明：
+        画在这里而不是做成半透明子控件，是为了不给整窗加一层 alpha 合成。
+        """
+        super().paintEvent(ev)
+        material.paint_noise(self)
+
     def _next_accent(self) -> str:
         """按添加顺序从装饰色阶里取色；用完了绕回。
 
@@ -304,13 +314,31 @@ class CommandPalette(QDialog):
 
 # ------------------------------------------------------------------ Toast
 
-class Toast(QFrame):
+class Toast(material.ShadowFrame):
+    """右下角浮层通知：**投影自绘**，卡片是内层 `#Toast`（走 app 级 QSS）。
+
+    为什么要包一层：投影需要向外留出羽化边距，而 QSS 只能给整块矩形上背景色。
+    外层负责"投影 + 留白"，内层负责"卡片"，两者的职责不混。
+
+    为什么不用 `QGraphicsDropShadowEffect`：一个部件同时只能有一个 graphics
+    effect，而这个 Toast 进出场要挂 `QGraphicsOpacityEffect`，两者会互相顶掉
+    ——见 `material.py` 开头那段。
+    """
+
     def __init__(self, text: str, kind: str, theme: T.Theme):
-        super().__init__()
-        self.setObjectName("Toast")
+        super().__init__(theme, tier="near")
+        self.setObjectName("ToastWrap")
         col = {"info": theme.p.info, "ok": theme.p.success,
                "warn": theme.p.warning, "bad": theme.p.danger}.get(kind, theme.p.info)
-        h = QHBoxLayout(self)
+        outer = QVBoxLayout(self)
+        # 四边留出投影的羽化边距——`ShadowFrame.pad` 就是 blur + 偏移。
+        # 不按它留白的话投影会被自己的矩形裁掉，只剩一条硬边。
+        outer.setContentsMargins(self.pad, self.pad, self.pad, self.pad)
+        outer.setSpacing(0)
+        self.card = QFrame()
+        self.card.setObjectName("Toast")
+        self.card.setMaximumWidth(340)
+        h = QHBoxLayout(self.card)
         h.setContentsMargins(16, 8, 16, 8)
         dot = QLabel()
         pm = T.make_pixmap("shield", col, 16, 1.8)
@@ -320,14 +348,22 @@ class Toast(QFrame):
         lab.setWordWrap(True)
         lab.setObjectName("ToastText")
         h.addWidget(lab, 1)
+        outer.addWidget(self.card)
         # **不再在这里 setStyleSheet**：`#Toast` 的规则本来就在 app 级 QSS 里
         # （theme.py 的 `#Toast {{ … }}`），部件级那份是重复的——每次 notify 都
         # 新建一个 Toast、各带一份私有样式表，换肤时要逐个重新解析。
         # 这是欠账 #10（部件级样式表 21 处）里的一处，本轮收掉。
 
+    def apply_theme(self, t: T.Theme) -> None:
+        super().apply_theme(t)      # 投影颜色缓存作废并重画
+
 
 class ToastHost(QWidget):
     """右下角浮层通知。鼠标穿透，不挡交互。"""
+
+    #: 通知的存活时长。2800 不在任何时长令牌里，但它是**停留时长**而不是
+    #: 动效时长（人读一句话要的时间），所以不进 Motion 表。
+    LIFETIME = 2800
 
     def __init__(self, parent: QWidget):
         super().__init__(parent)
@@ -335,16 +371,21 @@ class ToastHost(QWidget):
         self._lay = QVBoxLayout(self)
         self._lay.setContentsMargins(0, 0, 16, 16)
         self._lay.setSpacing(8)
+        # **弹簧必须留在首位**，通知追加到它后面。反过来的话（弹簧在后、
+        # 通知插在它前面）通知会被顶到窗口**顶部**——而它们该在右下角。
+        # 这个错位从很早就在了：文档写着"右下角浮层"，画面在右上角，
+        # 双方都没错、只是没人把两件事放在一起看过。出图时才发现。
         self._lay.addStretch(1)
         self._theme = T.DARK
 
     def apply_theme(self, t: T.Theme) -> None:
         self._theme = t
 
-    def notify(self, text: str, kind: str = "info", ms: int = 2800) -> None:
+    def notify(self, text: str, kind: str = "info", ms: int = LIFETIME) -> None:
         t = Toast(text, kind, self._theme)
-        t.setMaximumWidth(340)
-        self._lay.insertWidget(self._lay.count() - 1, t)
+        # 右对齐**显式写出来**：不给对齐时，"最大宽度小于布局宽度"的控件
+        # 落在哪个位置是 Qt 的内部行为（历史上靠"看起来在右边"蒙对）。
+        self._lay.addWidget(t, 0, Qt.AlignRight)
         # 动效收编进 `motion`：这里原来是自建的 QPropertyAnimation，
         # 绕过了 `motion._run` 的统一清理路径（`isValid` + `deleteLater`）。
         # 收编后全仓只有 motion 一个入口，泄漏面只剩一处可守。
@@ -352,7 +393,17 @@ class ToastHost(QWidget):
         QTimer.singleShot(ms, lambda: self._dismiss(t))
 
     def _dismiss(self, t: Toast) -> None:
-        motion.fade(t, self, ms=Motion.fast, start=1.0, out=True)
+        """淡出并拆除。
+
+        拆的动作挂 `cleanup_extra` 而不是自己再接一个 finished —— 收编到
+        `motion` 的意义就是"清理只有一条路径"。这里踩过一次：B1 写成了
+        `motion.fade(..., out=True)`，而 `fade` 的参数叫 `end`，
+        于是**通知永远不会消失**（TypeError 被 Qt 的信号槽吞在槽里，
+        界面照常，只是右下角一直堆着）。现在有 `test_ui_material` 钉住它。
+        """
+        motion.fade(
+            t, self, ms=Motion.fast, start=1.0, end=0.0,
+            cleanup_extra=lambda: (self._lay.removeWidget(t), t.deleteLater()))
 
     def sync_geometry(self) -> None:
         p = self.parentWidget()

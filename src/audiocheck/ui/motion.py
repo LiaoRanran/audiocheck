@@ -67,6 +67,11 @@ def _run(host, group, widget, eff, cleanup_extra=None):
         from shiboken6 import isValid
 
         if widget is not None and isValid(widget):
+            if getattr(widget, _FLIGHT, None) is group:
+                try:
+                    widget._motion_flight = None
+                except (AttributeError, RuntimeError):
+                    pass
             widget.setGraphicsEffect(None)
         if isValid(group):
             group.deleteLater()
@@ -87,6 +92,44 @@ def _group(host, anim, delay: int):
     return seq
 
 
+#: 挂在控件上的"在飞动画"属性名。用属性而不是全局字典：控件被销毁时，
+#: 这个引用随它一起消失，不会在模块级留下指向已死对象的条目。
+_FLIGHT = "_motion_flight"
+
+
+def _abort_prev(widget) -> None:
+    """把一个控件上**还没结束**的动画拆掉。
+
+    为什么必须有这一步：`fade` 会给控件换一个 `QGraphicsOpacityEffect`，
+    而换 effect 会把旧 effect 删掉——旧动画的目标于是没了。Qt 在这种情况下
+    **不会**发 `finished` 信号（目标都没了，动画谈不上"结束"），
+    而 `_run` 的清理是挂在 `finished` 上的 → **动画对象永远留在父控件名下**。
+
+    实测（`mem_probe.py` 的 S5 通知风暴）：存活时长 60 ms 短于淡入 200 ms 时，
+    每条通知都会留下一个淡入动画——40 条通知留 40 个动画。
+    内存基准的"动画数不增长"那条就是为这类问题设的。
+    """
+    prev = getattr(widget, _FLIGHT, None)
+    if prev is None:
+        return
+    from shiboken6 import isValid
+
+    if isValid(prev):
+        prev.stop()
+        prev.deleteLater()
+    try:
+        widget._motion_flight = None
+    except (AttributeError, RuntimeError):
+        pass
+
+
+def _remember(widget, group) -> None:
+    try:
+        widget._motion_flight = group
+    except (AttributeError, RuntimeError):
+        pass
+
+
 def fade(widget, host, *, ms: int = BASE, start: float = 0.0, end: float = 1.0,
          delay: int = 0, curve: str = "out", cleanup_extra=None):
     """淡入 / 淡出。结束时自动拆除效果与动画。
@@ -96,6 +139,10 @@ def fade(widget, host, *, ms: int = BASE, start: float = 0.0, end: float = 1.0,
     """
     if widget is None:
         return
+    # **先拆掉旧动画再换 effect**：`setGraphicsEffect` 会删掉旧 effect，
+    # 而旧动画的目标随之消失、`finished` 永不发出、清理路径永远不跑。
+    # 见 `_abort_prev` 的说明（内存基准 S5 抓到的那次）。
+    _abort_prev(widget)
     eff = QGraphicsOpacityEffect(widget)
     widget.setGraphicsEffect(eff)
     anim = QPropertyAnimation(eff, b"opacity", host)
@@ -103,7 +150,7 @@ def fade(widget, host, *, ms: int = BASE, start: float = 0.0, end: float = 1.0,
     anim.setEndValue(end)
     anim.setDuration(ms)
     anim.setEasingCurve(CURVES[curve])
-    _run(host, _group(host, anim, delay), widget, eff, cleanup_extra)
+    _remember(widget, _run(host, _group(host, anim, delay), widget, eff, cleanup_extra))
 
 
 def stagger(widgets, host, *, step: int = 14, ms: int = FAST, start: float = 0.0):
@@ -144,6 +191,7 @@ def pulse(widget, host, *, ms: int = SLOW, loops: int = 2, low: float = 0.45,
     """
     if widget is None:
         return
+    _abort_prev(widget)         # 同 `fade`：换 effect 前先拆掉在飞的动画
     eff = QGraphicsOpacityEffect(widget)
     widget.setGraphicsEffect(eff)
     seq = QSequentialAnimationGroup(host)
@@ -160,4 +208,4 @@ def pulse(widget, host, *, ms: int = SLOW, loops: int = 2, low: float = 0.45,
         up.setEasingCurve(CURVES[curve])
         seq.addAnimation(down)
         seq.addAnimation(up)
-    _run(host, seq, widget, eff)
+    _remember(widget, _run(host, seq, widget, eff))

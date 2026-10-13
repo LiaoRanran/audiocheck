@@ -176,9 +176,9 @@ class Palette:
     primary_hi: str = "#5a92ff"
     primary_text: str = "#5a92ff"
     primary_soft: str = "#16243d"
-    # 次级强调色（分裂互补色相 +150°）：只用于数据可视化与装饰，**不承担语义**。
-    # 有了它，多文件对比图的第一条/第二条曲线才是"同一套配色里的两个声音"，
-    # 而不是从通用色板里各抓一个。
+    # 次级强调色：**冷 counterpart**（色相 = 中性阶锚点 286°，同明度同彩度）。
+    # 它与 primary 构成"一枚暖 + 一枚冷"的一对；第三枚及以后一律走 deco 色阶，
+    # 不许再新增强调色（B 块配额）。只用于数据可视化与装饰，**不承担语义**。
     accent2: str = "#a06cf0"
     #: **装饰色阶**（6 档，六等分色环）：并列关系的多色——侧边栏图标、卡片强调线、
     #: 多文件对比的第 3..10 条曲线。它同样**不承担语义**：语义只有 success /
@@ -217,8 +217,15 @@ class Palette:
     grid: str = "#1e2430"
     plot_bg: str = "#0d1016"
 
-    # 阴影（Qt 不直接支持 box-shadow，用于自绘与浮层描边模拟）
+    # 阴影。**Qt 的 QSS 没有 box-shadow**（实测写了不报错也不生效），
+    # 所以这里是给自绘与效果对象用的参数令牌：双档（near 同层浮层 /
+    # far 跨层浮层），颜色偏冷中性而非纯黑，理由见 palette.SHADOW_TIERS。
     shadow: str = "rgba(0,0,0,.45)"
+    shadow_near: str = "rgba(2,6,23,.45)"
+    shadow_far: str = "rgba(2,6,23,.22)"
+
+    # 顶光高亮：浮层上缘那 1px（光从上方来的视觉线索）。见 palette.build()。
+    top_light: str = "#39414f"
 
     def level_color(self, level: str) -> str:
         return {"ok": self.success, "warn": self.warning, "bad": self.danger}.get(
@@ -340,12 +347,26 @@ class Theme:
 
 #: 两个内置主题的种子色与风格档。
 #: **它们是算出来的，不是手挑的色号**：下面两个 `Palette` 直接由
-#: `palette.build(seed, mode, "pop")` 生成（OKLCH + 15 条 WCAG 判据 +
+#: `palette.build(seed, mode, vibe)` 生成（OKLCH + WCAG 判据 +
 #: 装饰色阶可见性，全部 strict 自审）。想换"内置主题长什么样"，
-#: 改这两个常量再跑 `python packaging/palette_report.py --vibe pop` 核对，
+#: 改这两个常量再跑 `python packaging/palette_report.py` 核对，
 #: 不要直接改下面的色值——手改的色号不会自己达标（这个坑踩过三次）。
-BUILTIN_SEED = "#7c5cff"
-BUILTIN_VIBE = "pop"
+#
+# 🔻 **2026-10-13 换锚点（B 块，用户判决"仪器感/配额制配色"）**：
+#    seed: #7c5cff（霓虹紫） → **#f97083（玫瑰）**
+#    vibe: pop → **calm**
+#
+# 两处都是**判断**，不是实测结论，理由分开写：
+#   · 种子色：B 块参考图的强调色实测在 OKLCH H≈14°/C≈0.168/L≈0.715，
+#     换算成 sRGB 落在 #f97083 附近。玫瑰 + 冷灰是一组经典仪器配色
+#     （暖色只用在"要你注意"的地方，其余全是冷灰）。
+#   · vibe 档：pop 的表面彩度是 0.030，而参考图的中性簇实测 C≈0.010——
+#     差 3 倍，不是"同一种气质的不同程度"。配额制（中性 ≤0.0125、
+#     高彩面积 ≤5%）如果不管默认档，它就只是文档里的一句话。
+#     **calm/pop 的取值一个都没改**（0.012 / 0.030 原样保留），
+#     改的只是"默认用哪一档"；pop 仍在 Ctrl+M 与种子色对话框里可选。
+BUILTIN_SEED = "#f97083"
+BUILTIN_VIBE = "calm"
 
 DARK_P = Palette(name="dark", **_palette.build(BUILTIN_SEED, "dark", BUILTIN_VIBE))
 LIGHT_P = Palette(name="light", **_palette.build(BUILTIN_SEED, "light", BUILTIN_VIBE))
@@ -369,7 +390,8 @@ def qss(t: Theme) -> str:
 QWidget {{ background:{bg}; color:{text}; font-size:{body}px; font-family:{font}; }}
 QMainWindow, QDialog {{ background:{bg}; }}
 QToolTip {{ background:{surface_raised}; color:{text}; border:1px solid {border_hi};
-            padding:{xs}px {sm}px; border-radius:{md}px; }}
+            border-top:1px solid {top_light};
+            padding:{xs}px {sm}px; border-radius:{r_md}px; }}
 
 /* ===== 标题栏（无边框窗口自绘） ===== */
 /* 光的方向：窗口自上而下变亮一档，读起来像"光从上面来"。
@@ -377,7 +399,7 @@ QToolTip {{ background:{surface_raised}; color:{text}; border:1px solid {border_
 #TitleBar {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
            stop:0 {surface_hi}, stop:1 {surface}); border-bottom:1px solid {border}; }}
 #TitleText {{ font-size:{body_sm}px; color:{text_dim}; letter-spacing:{tr_body_sm}px; }}
-#WinBtn {{ background:transparent; border:0; border-radius:{md}px; }}
+#WinBtn {{ background:transparent; border:0; border-radius:{r_md}px; }}
 #WinBtn:hover {{ background:{hover}; }}
 #WinBtn#Close:hover {{ background:{danger}; }}
 #WinBtn#Close:hover {{ color:#fff; }}
@@ -395,7 +417,7 @@ QToolTip {{ background:{surface_raised}; color:{text}; border:1px solid {border_
 #BrandBar {{ background:{deco0}; border-radius:2px; }}
 #BrandBarSeg1 {{ background:{deco2}; border-radius:2px; }}
 #BrandBarSeg2 {{ background:{deco4}; border-radius:2px; }}
-#NavItem {{ background:transparent; border:0; border-radius:{lg}px;
+#NavItem {{ background:transparent; border:0; border-radius:{r_lg}px;
             padding:{sm}px {md}px; color:{text_dim}; text-align:left; font-size:{body}px; }}
 #NavItem:hover {{ background:{hover}; color:{text}; }}
 #NavItem:pressed {{ background:{hover_hi}; }}
@@ -408,7 +430,7 @@ QToolTip {{ background:{surface_raised}; color:{text}; border:1px solid {border_
 /* ===== 卡片 / 分区 ===== */
 QFrame#Card, QWidget#Card {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
     stop:0 {surface_hi}, stop:1 {surface}); border:1px solid {border};
-                             border-radius:{xl}px; }}
+                             border-radius:{r_xl}px; }}
 /* 指标卡顶端的 2px 色条：按 `slot` 属性取装饰色阶的某一档。
    **为什么用属性选择器而不是逐卡 setStyleSheet**：18 张卡各带一份私有
    样式表时，换肤要逐个重新解析——实测把 setStyleSheet 推高 ~90 ms。
@@ -434,7 +456,7 @@ QLabel#Caption {{ color:{text_faint}; font-size:{caption}px; letter-spacing:{tr_
 
 /* ===== 按钮 ===== */
 QPushButton {{ background:{surface_hi}; border:1px solid {border_hi};
-               border-radius:{lg}px; padding:{sm}px {lg}px; color:{text}; font-size:{body}px; }}
+               border-radius:{r_lg}px; padding:{sm}px {lg}px; color:{text}; font-size:{body}px; }}
 QPushButton:hover {{ background:{hover_hi}; border-color:{border_focus}; }}
 QPushButton:pressed {{ background:{surface}; }}
 QPushButton:disabled {{ color:{text_disabled}; border-color:{border}; background:{surface}; }}
@@ -446,7 +468,7 @@ QPushButton#Ghost {{ background:transparent; border-color:transparent; color:{te
 QPushButton#Ghost:hover {{ background:{hover}; color:{text}; }}
 QPushButton#Ghost:pressed {{ background:{hover_hi}; }}
 QToolButton {{ background:transparent; border:1px solid transparent;
-               border-radius:{lg}px; padding:{xs}px {md}px; color:{text}; font-size:{body}px; }}
+               border-radius:{r_lg}px; padding:{xs}px {md}px; color:{text}; font-size:{body}px; }}
 QToolButton:hover {{ background:{hover}; border-color:{border_hi}; }}
 QToolButton:pressed {{ background:{hover_hi}; }}
 QToolButton:disabled {{ color:{text_disabled}; border-color:{border}; }}
@@ -455,15 +477,15 @@ QToolButton#Primary:pressed {{ background:{primary_hi}; }}
 
 /* ===== 输入 ===== */
 QLineEdit, QComboBox, QSpinBox {{ background:{surface_hi}; border:1px solid {border};
-    border-radius:{lg}px; padding:{xs}px {md}px; color:{text};
+    border-radius:{r_lg}px; padding:{xs}px {md}px; color:{text};
     selection-background-color:{primary}; font-size:{body}px; }}
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus {{ border-color:{border_focus}; }}
 QLineEdit[invalid="true"] {{ border-color:{danger}; }}
 QComboBox::drop-down {{ border:0; width:22px; }}
 QComboBox QAbstractItemView {{ background:{surface_raised}; border:1px solid {border_hi};
-    selection-background-color:{primary}; color:{text}; padding:{xs}px; border-radius:{md}px; }}
+    selection-background-color:{primary}; color:{text}; padding:{xs}px; border-radius:{r_md}px; }}
 QCheckBox {{ spacing:{sm}px; color:{text}; font-size:{body}px; }}
-QCheckBox::indicator {{ width:16px; height:16px; border-radius:{sm}px;
+QCheckBox::indicator {{ width:16px; height:16px; border-radius:{r_sm}px;
     border:1px solid {border_hi}; background:{surface_hi}; }}
 QCheckBox::indicator:checked {{ background:{primary}; border-color:{primary}; }}
 QCheckBox::indicator:disabled {{ border-color:{border}; background:{surface}; }}
@@ -476,7 +498,7 @@ QCheckBox::indicator:disabled {{ border-color:{border}; background:{surface}; }}
    而这张表里有中文文件名、有整页中文的元数据表——整体等宽等于把中文
    全部推给"逐字形回退"，落到哪个字体不可控，部分机器上直接是方框。 */
 QTableWidget {{ background:{surface}; alternate-background-color:{surface_hi};
-    gridline-color:transparent; border:1px solid {border}; border-radius:{xl}px;
+    gridline-color:transparent; border:1px solid {border}; border-radius:{r_xl}px;
     selection-background-color:{selection}; selection-color:{text};
     font-size:{body_sm}px; }}
 QTableWidget::item {{ padding:{xs}px {sm}px; border:0; }}
@@ -488,7 +510,7 @@ QHeaderView::section:hover {{ color:{text}; }}
 QTableCornerButton::section {{ background:{surface_hi}; border:0; }}
 
 /* ===== 标签页（内容区内的次级切换） ===== */
-QTabWidget::pane {{ border:1px solid {border}; border-radius:{xl}px; background:{surface}; }}
+QTabWidget::pane {{ border:1px solid {border}; border-radius:{r_xl}px; background:{surface}; }}
 QTabBar::tab {{ background:transparent; color:{text_dim}; padding:{xs}px {lg}px;
     border:0; border-bottom:2px solid transparent; font-size:{body}px; }}
 QTabBar::tab:hover {{ color:{text}; }}
@@ -520,16 +542,25 @@ QProgressBar::chunk {{ background:{primary}; border-radius:3px; }}
 
 /* ===== 菜单 / 命令面板 ===== */
 QMenu {{ background:{surface_raised}; border:1px solid {border_hi};
-         border-radius:{lg}px; padding:{xs}px; }}
-QMenu::item {{ padding:{xs}px {xl}px {xs}px {md}px; border-radius:{md}px; font-size:{body}px; }}
+         border-radius:{r_lg}px; padding:{xs}px; }}
+QMenu::item {{ padding:{xs}px {xl}px {xs}px {md}px; border-radius:{r_md}px; font-size:{body}px; }}
 QMenu::item:selected {{ background:{primary}; color:{on_primary}; }}
 QMenu::item:disabled {{ color:{text_disabled}; }}
 QMenu::separator {{ height:1px; background:{border}; margin:{xs}px {sm}px; }}
-#Palette {{ background:{surface_raised}; border:1px solid {border_hi}; border-radius:{xl}px; }}
+#Palette {{ background:{surface_raised}; border:1px solid {border_hi}; border-radius:{r_xl}px; }}
 #PaletteList {{ background:transparent; border:0; font-size:{body}px; }}
-#PaletteList::item {{ padding:{sm}px {md}px; border-radius:{lg}px; }}
+#PaletteList::item {{ padding:{sm}px {md}px; border-radius:{r_lg}px; }}
 #PaletteList::item:selected {{ background:{primary}; color:{on_primary}; }}
-#Toast {{ background:{surface_raised}; border:1px solid {border_hi}; border-radius:{lg}px; }}
+#Toast {{ background:{surface_raised}; border:1px solid {border_hi}; border-radius:{r_lg}px; }}
+/* 浮层的**顶光**：上缘 1px 内高光。
+   它模拟的是"光从上方来，浮层的上边缘被照亮"——人眼靠这个判断
+   "这块东西浮在上面"，比加粗描边便宜也比加粗描边准。
+
+   ⚠ **必须写在所有 `border` 简写之后**：QSS 与 CSS 一样，同特异度下后写的
+   赢，而 `border` 简写会把 `border-top` 一起重置。第一次写时放在了
+   `#Toast {{ border:… }}` 之前，于是那条顶光被静默吃掉了——
+   界面看起来"少了点什么"，但没有任何报错。 */
+QMenu, #Palette, #Toast {{ border-top:1px solid {top_light}; }}
 QFrame#Sep {{ background:{border}; }}
 QSplitter::handle {{ background:transparent; }}
 QSplitter::handle:horizontal {{ width:6px; }}
@@ -540,6 +571,7 @@ QSplitter::handle:hover {{ background:{primary_soft}; }}
         text=p.text, text_dim=p.text_dim, text_faint=p.text_faint, text_disabled=p.text_disabled,
         primary=p.primary, primary_hi=p.primary_hi, primary_soft=p.primary_soft,
         primary_text=p.primary_text, on_primary=p.on_primary, hover_hi=p.hover_hi,
+        top_light=p.top_light,
         # 装饰色阶按序号展开成独立占位符：QSS 模板里写 `{deco[0]}` 会与
         # Python 的格式串解析纠缠（中括号不是合法占位符），显式摊开最直白。
         deco0=(p.deco[0] if len(p.deco) > 0 else p.accent2),
@@ -559,6 +591,11 @@ QSplitter::handle:hover {{ background:{primary_soft}; }}
         # 不是又一个手写常数（原先这里是 1.1px / 1.2px / .6px 三个散点）。
         tr_caps_micro=tk.caps(ty.micro), tr_caps_caption=tk.caps(ty.caption),
         xs=sp.xs, sm=sp.sm, md=sp.md, lg=sp.lg, xl=sp.xl,
+        # 圆角走**独立**占位符：`{lg}` 是 Space 的值（16px），
+        # 而 Radius.lg 是 8px。早先两者共用一个名字，format() 只喂了 Space，
+        # 于是"圆角令牌"从来没被用过——卡片圆角实际是 24px（space.xl），
+        # 与卡片强调线按 `radius.xl - 1` 算出来的 11px 对不上。
+        r_sm=t.radius.sm, r_md=t.radius.md, r_lg=t.radius.lg, r_xl=t.radius.xl,
         # 卡片圆角减 1（描边宽度）：色条要贴住卡片的圆角内侧
         r=max(0, t.radius.xl - 1),
         )

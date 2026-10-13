@@ -216,6 +216,47 @@ DEFAULT_HUE = 264.0
 ACHROMATIC_C = 0.012
 
 
+# ------------------------------------------------------------------ 仪器灰（B2）
+
+# **中性阶不再跟随种子色相。** 这是 B 块"配额制配色"最核心的一条改动：
+# 原先整张界面（占 90% 面积的中性表面）都被种子色染一遍，于是换个种子色，
+# 连背景灰都会变——"一枚 accent"事实上变成了"一枚 accent + 一整套染色"。
+#
+# 锚点 286°（OKLCH）的来历：取自用户 2026-10-13 提供的参考图，对图上
+# 16.4 万像素做色相直方图，主峰簇落在 **280–291°**（HSL 口径写作 240–247），
+# 次峰在 10°/340°（那是玫瑰 accent 本身）。取簇中位 286°。
+# 用户原话描述这块是"冷一点灰一点紫"——286° 正是冷灰偏一丁点紫。
+#
+# ⚠ 提示词给的是 HSL 值（H 240–247 / S 0.05–0.08），而本模块全程用 OKLCH。
+# **两种色彩空间不能直接搬数字**：HSL 的 243°/S 6% @ L 79% 换算过来是
+# OKLCH 的 C≈0.0097、H≈286°。照字面实现会得到完全不同的颜色
+# （HSL 的色相是"RGB 六角锥上的角度"，OKLCH 是"感知均匀空间的角度"，
+# 同一个颜色在两个空间里的色相值可以差 40° 以上）。
+#: 中性阶（背景/表面/描边/网格）的锚点色相。与种子色**解耦**。
+NEUTRAL_HUE = 286.0
+
+#: 中性阶彩度带上限（OKLCH C）。由 HSL 的 S≤0.08 @ L=0.79 换算得 0.0125。
+#: calm 档两档取值都压在带内；pop 档**按设计豁免**——它存在的意义就是偏离
+#: （"五颜六色"那一档），见 `VIBE_TINT` 与测试里的豁免登记。
+NEUTRAL_CHROMA_MAX = 0.0125
+
+#: 色温分层（`_warm_cool_hue`）的偏移上限，占"到目标色相的短弧"的比例。
+#: **从 0.16 收到 0.08**：换锚点后重测发现，0.16 会把浅色主题的表面推到
+#: 301°（品红侧），而参考图的中性簇实测只在 **280–291°** 这么窄的一段里。
+#: 0.08 让两侧各偏 ≤7°：暗处 283°、亮处 293°——都还在仪器灰家族内。
+WARM_COOL_MAX = 0.08
+
+#: 双档阴影。**Qt 的 QSS 没有 box-shadow**（实测：写了不报错也不生效），
+#: 所以阴影只能由效果对象或自绘实现，参数集中在这里。
+#: 光的方向统一为**顶光**：dy 为正（往下投）、dx 略负（光从左上方来）。
+#: 两档的差别是"离观察者多远"：near 给同层浮层（菜单 / Toast / 命令面板），
+#: far 给跨层浮层（模态对话框）。
+SHADOW_TIERS = {
+    "near": {"blur": 12, "dx": -1, "dy": 2, "alpha": 0.45},
+    "far": {"blur": 32, "dx": -2, "dy": 8, "alpha": 0.22},
+}
+
+
 # ------------------------------------------------------------------ 风格档（vibe）
 
 #: 两档配色风格。**不是"明暗"的别名**（明暗由 `mode` 管，两者正交）：
@@ -224,6 +265,10 @@ ACHROMATIC_C = 0.012
 VIBES = ("calm", "pop")
 
 #: 表面（中性阶）的 chroma：(深色, 浅色)。
+#: calm 两档都 ≤ `NEUTRAL_CHROMA_MAX`（仪器灰配额，0.012 < 0.0125 刚好压线）；
+#: pop 的 0.030 **故意超出**——它是"五颜六色"那一档，超标的理由与豁免登记
+#: 见 `NEUTRAL_HUE` 上方说明。**这两个值没有被本轮改动**：配额带是按
+#: "现有参数里哪一档合规"选的，不是反过来把参数改成合规的样子。
 VIBE_TINT = {"calm": (0.012, 0.008), "pop": (0.030, 0.020)}
 
 #: pop 档的表面**色相阶梯**（相对种子色，单位度）。
@@ -388,12 +433,12 @@ def _warm_cool_hue(hue: float, level: float) -> float:
     整块界面统一偏一个色温会"发脏"，而**分层**能给中性色一点空气感——
     高光与阴影不在同一个色温上，正是人眼熟悉的样子。
 
-    偏多少随 |L−0.5| 增长但封顶 16%（沿**较短弧**转），所以：
+    偏多少随 |L−0.5| 增长但封顶 `WARM_COOL_MAX`（沿**较短弧**转），所以：
     中间调几乎不动、越极端偏得越多，且绝不会绕到色环对面去。
     """
     target = 250.0 if level < 0.5 else 60.0
     delta = (target - hue + 180.0) % 360.0 - 180.0     # 沿短弧的有符号差
-    return (hue + delta * min(0.16, abs(level - 0.5) * 0.22)) % 360.0
+    return (hue + delta * min(WARM_COOL_MAX, abs(level - 0.5) * 0.22)) % 360.0
 
 
 def build(seed: str, mode: str = "dark", vibe: str = "calm") -> dict:
@@ -416,6 +461,8 @@ def build(seed: str, mode: str = "dark", vibe: str = "calm") -> dict:
         hue = DEFAULT_HUE
 
     # ---- 1. 中性阶：固定 L 阶梯 + 低 chroma + 色温分层（+ pop 的色相阶梯）----
+    # 基底色相是 `NEUTRAL_HUE`（仪器灰锚点），**不是种子色相**：见该常量上方
+    # 的说明。种子色只决定 accent 一族（primary / accent2 / deco 的起点）。
     tint = VIBE_TINT[vibe][0 if dark else 1]
 
     def _shift(key: str) -> float:
@@ -425,7 +472,7 @@ def build(seed: str, mode: str = "dark", vibe: str = "calm") -> dict:
     def _n(level: float, key: str, chroma: float | None = None) -> str:
         """中性色：按明度做色温分层（暗偏冷、亮偏暖）+ 按层级做色相推移。"""
         return oklch_to_srgb((level, tint if chroma is None else chroma,
-                              _warm_cool_hue(hue + _shift(key), level)))
+                              _warm_cool_hue(NEUTRAL_HUE + _shift(key), level)))
 
     if dark:
         idx = {"bg": _n(0.165, "bg"), "plot_bg": _n(0.150, "plot_bg"),
@@ -455,7 +502,8 @@ def build(seed: str, mode: str = "dark", vibe: str = "calm") -> dict:
         色相跟随它落脚的表面（pop 档表面有 +10° 的推移），否则文字与底
         会朝两个方向偏色。文字本身的 chroma 仍压得很低——带色的是面，不是字。
         """
-        return oklch_to_srgb((level, chroma, _warm_cool_hue(hue + _shift("surface"), level)))
+        return oklch_to_srgb((level, chroma,
+                              _warm_cool_hue(NEUTRAL_HUE + _shift("surface"), level)))
 
     base = _t(0.97 if dark else 0.18, 0.006)
     idx["text"] = fit_contrast(base, surf, 7.0, lighter=dark)
@@ -496,12 +544,24 @@ def build(seed: str, mode: str = "dark", vibe: str = "calm") -> dict:
                                        4.5, lighter=dark)
     idx["border_focus"] = idx["primary"]
 
-    # ---- 3b. 次级强调色：**分裂互补**（色相 +150°）----
+    # ---- 3b. 次级强调色：**冷 counterpart**（色相 = 中性阶锚点 286°）----
     # 同一明度、同一彩度，只转色相 → 两条曲线/两个高亮在视觉上"等重"。
-    # +150° 是配色理论里最稳的一档：有变化，但不像 +180° 那样正面对撞。
-    # 它只用于数据可视化与装饰强调，**不承担语义**（语义色必须固定色相）。
-    a2 = oklch_to_srgb((srgb_to_oklch(idx["primary"])[0], prim_c,
-                        (hue + 150.0) % 360.0))
+    #
+    # 为什么从"分裂互补 +150°"改成中性锚点：B 块的配额是"**一枚暖 + 一枚冷**"。
+    # 早先 +150° 是从**种子色**出发转的，于是种子色一变，第二枚强调色也跟着跑
+    # （玫瑰种子的 +150° 落在 164° 青绿，跟"冷紫"完全是两回事）。
+    # 改成锚定在中性阶的冷色相 286°：暖的那枚是 accent（种子色），冷的那枚
+    # 永远是同一支冷紫——**一对**，不是"跟着种子乱跑的第二枚"。
+    # 它仍只用于数据可视化与装饰强调，**不承担语义**（语义色必须固定色相）。
+    p_l, p_c, p_h = srgb_to_oklch(idx["primary"])
+    # **色相分不开就换明度**。种子色本身落在冷区时（比如用户选了蓝紫），
+    # accent2 与 primary 的色相只差二十几度——两条曲线并排放会认错。
+    # 这时候把 accent2 压深一档：区分两个数据系列，色相与明度**至少给一个**
+    # 是数据可视化的基本要求（色相不可分时的标准退路就是明度）。
+    # 60° 是门槛：大于它靠色相就够分，硬压明度只会白白破坏"等重"。
+    gap = abs((NEUTRAL_HUE - p_h + 180.0) % 360.0 - 180.0)
+    a2_l = p_l - 0.18 if gap < 60.0 else p_l
+    a2 = oklch_to_srgb((max(0.15, a2_l), p_c, NEUTRAL_HUE))
     if contrast(a2, idx["plot_bg"]) < 3.0:
         a2 = fit_contrast(a2, idx["plot_bg"], 3.0, lighter=dark)
     idx["accent2"] = a2
@@ -525,7 +585,17 @@ def build(seed: str, mode: str = "dark", vibe: str = "calm") -> dict:
 
     # ---- 5. 选中/阴影 ----
     idx["selection"] = mix(idx["primary_soft"], surf, 0.35 if dark else 0.45)
-    idx["shadow"] = "rgba(0,0,0,.45)" if dark else "rgba(15,23,42,.12)"
+    # 双档阴影 + 顶光高亮。阴影色取**偏冷的中性**而不是纯黑：纯黑压在冷灰底上
+    # 会发"脏"（黑是中性，底是冷调，交界处显灰雾）。近黑冷调（slate-950 一族）
+    # 与中性阶同族，阴影才像"同一束光下的影子"。
+    sh_rgb = (2, 6, 23) if dark else (15, 23, 42)
+    for tier, cfg in SHADOW_TIERS.items():
+        idx["shadow_" + tier] = "rgba(%d,%d,%d,%.2f)" % (
+            sh_rgb[0], sh_rgb[1], sh_rgb[2], cfg["alpha"])
+    # 顶光高亮：浮层上缘那 1px。比描边亮一档，仍是中性族——
+    # 它模拟的是"光从上方来，上边缘被照亮"，不是一条装饰线。
+    hl_l = srgb_to_oklch(idx["border_hi"])[0] + (0.07 if dark else -0.05)
+    idx["top_light"] = oklch_to_srgb((hl_l, tint * 1.1, NEUTRAL_HUE))
 
     # 阈值门：不达标就报错，让问题在生成时就暴露
     audit(idx, strict=True)
