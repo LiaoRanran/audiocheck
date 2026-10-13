@@ -9,15 +9,7 @@ from __future__ import annotations
 
 import os
 
-from PySide6.QtCore import (
-    QEasingCurve,
-    QPropertyAnimation,
-    QSequentialAnimationGroup,
-    Qt,
-    QThread,
-    QTimer,
-    Signal,
-)
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -27,7 +19,6 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFrame,
-    QGraphicsOpacityEffect,
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
@@ -45,7 +36,6 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from shiboken6 import isValid  # noqa: E402
 
 from ..config import BAND_CN, BANDS, Thresholds
 from ..core.analyzers.metadata import brief as meta_brief
@@ -54,6 +44,7 @@ from ..core.engine import analyze as analyze_file
 from ..core.engine import collect_files
 from ..core.views import spectrogram as view_spectrogram
 from ..core.views import waterfall as view_waterfall
+from . import motion
 from . import theme as T
 from .charts import (
     BandCanvas,
@@ -476,53 +467,6 @@ class MainWindow(FramelessWindow):
         h.addWidget(self.gauge, 0, Qt.AlignVCenter)
         return f
 
-    # ============================================================ 动效
-
-    def _fade(self, widget, ms: int = 170, start: float = 0.12, delay: int = 0):
-        """一次性淡入（可错峰）。**用完即拆**：效果与动画都 `deleteLater`。
-
-        为什么要拆干净：`QGraphicsOpacityEffect` 会让部件多一层合成，
-        一直挂着就是一直付出代价；而这项目刚修过"色条永不回收"那类泄漏——
-        动画相关的对象同属"用完必须回收"的一类，不然内存探针会抓到。
-
-        另：动画走 **Qt 属性动画**，不碰 matplotlib。画布一次重画是百毫秒量级，
-        用它做动画会直接顶穿帧预算（见 `packaging/perf_probe.py`）。
-        """
-        if widget is None:
-            return
-        eff = QGraphicsOpacityEffect(widget)
-        widget.setGraphicsEffect(eff)
-        anim = QPropertyAnimation(eff, b"opacity", self)
-        anim.setStartValue(start)
-        anim.setEndValue(1.0)
-        anim.setDuration(ms)
-        anim.setEasingCurve(QEasingCurve.OutCubic)
-        if delay:
-            seq = QSequentialAnimationGroup(self)
-            seq.addPause(delay)
-            seq.addAnimation(anim)
-            group = seq
-        else:
-            group = anim
-
-        def _cleanup(_=None):
-            # **必须查对象还活着没有**：卡片可能在动画结束前就被下一轮
-            # `_cards()` 用 deleteLater 摘掉了（那时 effect 跟着没了），
-            # 而 `setGraphicsEffect(None)` 本身也会让 Qt 释放旧效果——
-            # 再对它 deleteLater 就会打在已删除的 C++ 对象上（实测 RuntimeError）。
-            if isValid(widget):
-                widget.setGraphicsEffect(None)
-            if isValid(group):
-                group.deleteLater()
-
-        group.finished.connect(_cleanup)
-        group.start()
-
-    def _stagger(self, widgets, step: int = 14) -> None:
-        """一屏卡片依次浮现：让"数据在这"这件事有一次视觉上的到达感。"""
-        for i, w in enumerate(widgets):
-            self._fade(w, ms=170, start=0.0, delay=i * step)
-
     def _section(self, text: str) -> QLabel:
         lab = QLabel(text)
         lab.setObjectName("SectionTitle")
@@ -587,7 +531,7 @@ class MainWindow(FramelessWindow):
         if key in self.VIEW_KEYS:
             self.stack.setCurrentIndex(self.VIEW_KEYS.index(key))
             self.sidebar.set_active(key)
-            self._fade(self.stack.currentWidget())
+            motion.fade(self.stack.currentWidget(), self)
             self._load_visible_view()          # 切到频谱图/瀑布图时才补算数据
 
     def _commands(self):
@@ -893,6 +837,10 @@ class MainWindow(FramelessWindow):
         p = self.theme.p
         self.badge.setText(LEVEL_CN.get(lv, lv))
         self.badge.set_level(lv, self.theme)
+        # 信息驱动的动效：只有"有疑 / 不达标"才脉一下——结论值得看一眼。
+        # 常驻装饰会持续吃 CPU，也会被习惯性忽略，那样动效就失去意义了。
+        if lv in ("warn", "bad"):
+            motion.pulse(self.badge, self, loops=2)
         self.lbl_verdict.setText(r.get("verdict", ""))
         self.lbl_verdict.setStyleSheet("font-size:%dpx;font-weight:700;color:%s"
                                        % (int(self.theme.type.body_md), p.text))
@@ -936,7 +884,7 @@ class MainWindow(FramelessWindow):
             c.set(k, str(v))
             self.grid.addWidget(c, i // 6, i % 6)
             cards.append(c)
-        self._stagger(cards)
+        motion.stagger(cards, self)
 
     def _metric_rows(self, r):
         g = r.get

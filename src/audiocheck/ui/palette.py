@@ -293,6 +293,21 @@ def report(palette, title: str = "") -> str:
     return "\n".join(lines)
 
 
+def _warm_cool_hue(hue: float, level: float) -> float:
+    """把中性色的色相按明度往"冷 / 暖"各偏一点：**暗处偏冷、亮处偏暖**。
+
+    这是自然光照的规律（阴影被天光染冷、高光偏暖），也是绘画里最基础的一招。
+    整块界面统一偏一个色温会"发脏"，而**分层**能给中性色一点空气感——
+    高光与阴影不在同一个色温上，正是人眼熟悉的样子。
+
+    偏多少随 |L−0.5| 增长但封顶 16%（沿**较短弧**转），所以：
+    中间调几乎不动、越极端偏得越多，且绝不会绕到色环对面去。
+    """
+    target = 250.0 if level < 0.5 else 60.0
+    delta = (target - hue + 180.0) % 360.0 - 180.0     # 沿短弧的有符号差
+    return (hue + delta * min(0.16, abs(level - 0.5) * 0.22)) % 360.0
+
+
 def build(seed: str, mode: str = "dark") -> dict:
     """从一个种子色生成整套语义色。返回 `theme.Palette` 的字段字典。
 
@@ -306,37 +321,39 @@ def build(seed: str, mode: str = "dark") -> dict:
     if seed_c < ACHROMATIC_C:
         hue = DEFAULT_HUE
 
-    # ---- 1. 中性阶：固定 L 阶梯 + 极低 chroma（带一点种子色的温度）----
+    # ---- 1. 中性阶：固定 L 阶梯 + 极低 chroma + **色温分层** ----
     tint = 0.012 if dark else 0.008
+
+    def _n(level: float, chroma: float | None = None) -> str:
+        """中性色：按明度做色温分层（暗偏冷、亮偏暖）。"""
+        return oklch_to_srgb((level, tint if chroma is None else chroma,
+                              _warm_cool_hue(hue, level)))
+
     if dark:
-        ladder = {"bg": 0.165, "plot_bg": 0.150, "surface": 0.196,
-                  "surface_hi": 0.228, "surface_raised": 0.262}
-        border = {"border": 0.275, "border_hi": 0.330}
-        idx = {k: oklch_to_srgb((v, tint, hue)) for k, v in ladder.items()}
-        idx["grid"] = oklch_to_srgb((0.245, tint * 1.6, hue))
-        idx["border"], idx["border_hi"] = (oklch_to_srgb((v, tint * 1.4, hue))
-                                           for v in (border["border"], border["border_hi"]))
-        idx["hover"] = oklch_to_srgb((0.235, tint * 1.2, hue))
-        idx["hover_hi"] = oklch_to_srgb((0.268, tint * 1.4, hue))
+        idx = {"bg": _n(0.165), "plot_bg": _n(0.150), "surface": _n(0.196),
+               "surface_hi": _n(0.228), "surface_raised": _n(0.262),
+               "grid": _n(0.245, tint * 1.6), "border": _n(0.275, tint * 1.4),
+               "border_hi": _n(0.330, tint * 1.4), "hover": _n(0.235, tint * 1.2),
+               "hover_hi": _n(0.268, tint * 1.4)}
     else:
-        ladder = {"bg": 0.955, "plot_bg": 0.998, "surface": 0.995,
-                  "surface_hi": 0.972, "surface_raised": 1.0}
-        idx = {k: oklch_to_srgb((v, tint, hue)) for k, v in ladder.items()}
-        idx["grid"] = oklch_to_srgb((0.905, tint * 1.6, hue))
-        idx["border"] = oklch_to_srgb((0.900, tint * 1.4, hue))
-        idx["border_hi"] = oklch_to_srgb((0.850, tint * 1.4, hue))
-        idx["hover"] = oklch_to_srgb((0.955, tint * 1.2, hue))
-        idx["hover_hi"] = oklch_to_srgb((0.930, tint * 1.4, hue))
+        idx = {"bg": _n(0.955), "plot_bg": _n(0.998), "surface": _n(0.995),
+               "surface_hi": _n(0.972), "surface_raised": _n(1.0),
+               "grid": _n(0.905, tint * 1.6), "border": _n(0.900, tint * 1.4),
+               "border_hi": _n(0.850, tint * 1.4), "hover": _n(0.955, tint * 1.2),
+               "hover_hi": _n(0.930, tint * 1.4)}
 
     surf = idx["surface"]
 
     # ---- 2. 文本阶：从明度端点二分，保色相（文字略偏种子色，比纯灰耐看）----
-    text_h = hue
-    base = oklch_to_srgb((0.97 if dark else 0.18, 0.006, text_h))
+    def _t(level: float, chroma: float) -> str:
+        """文字色：同样吃色温分层（与中性阶同一族，界面才不会"两块色温打架"）。"""
+        return oklch_to_srgb((level, chroma, _warm_cool_hue(hue, level)))
+
+    base = _t(0.97 if dark else 0.18, 0.006)
     idx["text"] = fit_contrast(base, surf, 7.0, lighter=dark)
-    idx["text_dim"] = fit_contrast(oklch_to_srgb((0.72 if dark else 0.45, 0.010, text_h)),
+    idx["text_dim"] = fit_contrast(_t(0.72 if dark else 0.45, 0.010),
                                    surf, 4.5, lighter=dark)
-    idx["text_faint"] = fit_contrast(oklch_to_srgb((0.66 if dark else 0.55, 0.012, text_h)),
+    idx["text_faint"] = fit_contrast(_t(0.66 if dark else 0.55, 0.012),
                                      surf, 4.5, lighter=dark)
     # 禁用态**豁免**对比度要求（WCAG 1.4.3 明确排除禁用控件），
     # 但也别做到看不见：取弱文本与背景的中点。

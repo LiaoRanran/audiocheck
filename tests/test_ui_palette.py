@@ -70,6 +70,46 @@ class TestColorSpace(unittest.TestCase):
                         "降 chroma 之后色相漂了：%s" % c)
 
 
+class TestTemperatureLayering(unittest.TestCase):
+    """色温分层：暗处偏冷、亮处偏暖（自然光照的规律）。"""
+
+    def test_dark_levels_go_cool_light_levels_go_warm(self):
+        from audiocheck.ui.palette import _warm_cool_hue
+
+        warm = 85.0                      # 琥珀种子（暖）
+        deep = _warm_cool_hue(warm, 0.15)
+        bright = _warm_cool_hue(warm, 0.95)
+        self.assertLess(abs(deep - 250), abs(warm - 250), "暗部没有偏冷")
+        self.assertLess(abs(bright - 60), abs(warm - 60), "亮部没有偏暖")
+
+    def test_mid_tone_barely_moves(self):
+        from audiocheck.ui.palette import _warm_cool_hue
+
+        self.assertAlmostEqual(_warm_cool_hue(85.0, 0.5), 85.0, places=6)
+
+    def test_rotation_follows_the_short_arc(self):
+        """沿短弧转：绝不会绕到色环对面（0° 与 359° 不是"差 1°"就是"差 359°"）。"""
+        from audiocheck.ui.palette import _warm_cool_hue
+
+        h = _warm_cool_hue(340.0, 0.2)   # 冷端 250：短弧应从 340 往回走（经 0°）
+        delta = min(abs(h - 340.0), 360 - abs(h - 340.0))
+        self.assertLess(delta, 20.0, "转了长弧 → 色相会漂到另一个颜色")
+
+    def test_cap_is_bounded(self):
+        from audiocheck.ui.palette import _warm_cool_hue
+
+        for level in (0.0, 0.05, 0.5, 0.95, 1.0):
+            for hue in (0.0, 120.0, 250.0):
+                raw = abs((_warm_cool_hue(hue, level) - hue + 180) % 360 - 180)
+                self.assertLessEqual(raw, 0.16 * 180 + 1e-9, "偏移没有封顶")
+
+    def test_dark_bg_is_cooler_than_light_bg_for_same_seed(self):
+        """同一个种子：深色主题的底色应比浅色主题更靠冷端。"""
+        dark_bg = P.srgb_to_oklch(P.build("#e0a92e", "dark")["bg"])[2]
+        light_bg = P.srgb_to_oklch(P.build("#e0a92e", "light")["bg"])[2]
+        self.assertLess(abs(dark_bg - 250), abs(light_bg - 250))
+
+
 class TestContrast(unittest.TestCase):
     """WCAG 2.1 对比度的边界值。"""
 
