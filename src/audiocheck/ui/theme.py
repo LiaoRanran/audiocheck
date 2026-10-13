@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (
@@ -66,15 +66,74 @@ class Radius:
 
 @dataclass(frozen=True)
 class Type:
-    """字阶。caption 到 display 共 8 级，覆盖全部场景，不允许出现第 9 种字号。"""
+    """字阶。caption 到 display 共 8 级，覆盖全部场景，不允许出现第 9 种字号。
+
+    正文取 **14px**：Butterick 的网页正文字号原文是 15–25px，但那是西文
+    （有升降部、字身密度低）。汉字是 1:1 字身、无升降部，同 px 下实观更大、
+    行里能塞的字更多，所以取原文区间的**下限**——这是本项目标了"判断"的折算，
+    不是 Butterick 的原值（见 docs/ 的排版依据账）。
+    """
     micro: float = 10.0      # 角标 / 单位
     caption: float = 11.0    # 字段标签
     body_sm: float = 12.0    # 表格 / 次要正文
-    body: float = 13.0       # 正文
-    body_md: float = 14.0    # 小节标题
+    body: float = 14.0       # 正文
+    body_md: float = 15.0    # 小节标题
     title: float = 16.0      # 卡片标题
     heading: float = 20.0    # 页标题
     display: float = 27.0    # Hero 数字
+
+
+@dataclass(frozen=True)
+class Tracking:
+    """字距令牌（光学尺寸）：**字号越大，字距越紧**。
+
+    这是经典光学尺寸规律，不是审美偏好：同一副字在大字号下笔画间隙相对变宽，
+    需要收得更紧才保持同样的"灰度"；而 10–11px 的小字必须放宽，否则笔画糊在一起。
+
+    Qt 的两条实现路径（**都实测过**，别改）：
+      * QSS 的 `letter-spacing` **有效**（2px 让 12 个字符宽了 24px）；
+      * `QFont.setLetterSpacing()` 也有效（用于代码里直接设字体的地方）。
+    两者可以共存，但**值必须来自本表**——手写的 1.1px / 1.2px 就是上一轮的样子。
+    """
+    micro: float = 0.6
+    caption: float = 0.5
+    body_sm: float = 0.2
+    body: float = 0.0
+    body_md: float = 0.0
+    title: float = -0.1
+    heading: float = -0.2
+    display: float = -0.3
+
+    #: 西文**全大写**微标签的额外字距比例。Butterick：全大写可接受（少于一行），
+    #: 但要配 5–12% 额外字距。取 8%。中文标签**不**转大写——转了对中文无意义。
+    caps_pct: float = 0.08
+
+    def caps(self, size: float) -> float:
+        """全大写标签在该字号下的字距（px）。"""
+        return round(size * self.caps_pct, 2)
+
+
+@dataclass(frozen=True)
+class Leading:
+    """行高令牌（倍率）。
+
+    **QSS 不支持 `line-height`**——实测往 QSS 里写 60px，控件高度一点不变，
+    而且**不报错、不告警**（又是"看起来做了其实没生效"那一类）。
+    所以本表的落点只有两处，都写在各自的调用点上：
+      1. `theme.rich_text()`：多行文本走 Qt RichText，它的 CSS 子集支持
+         `line-height`（实测 20px 让三行文本高 18px，200% 高 42px）；
+      2. HTML 报告（`report.py`）：浏览器渲染，天然支持。
+    单行标签仍用字体自然行距——那条路没有可用的令牌落点，登记为已知缺口，
+    不要为了"看起来令牌被用到了"而把它塞进不生效的地方。
+    """
+    micro: float = 1.40
+    caption: float = 1.45
+    body_sm: float = 1.50
+    body: float = 1.55
+    body_md: float = 1.50
+    title: float = 1.35
+    heading: float = 1.25
+    display: float = 1.15
 
 
 @dataclass(frozen=True)
@@ -236,6 +295,8 @@ class Theme:
     space: Space = field(default_factory=Space)
     radius: Radius = field(default_factory=Radius)
     type: Type = field(default_factory=Type)
+    tracking: Tracking = field(default_factory=Tracking)
+    leading: Leading = field(default_factory=Leading)
     motion: Motion = field(default_factory=Motion)
     font_family: str = "Microsoft YaHei UI"
 
@@ -257,6 +318,24 @@ class Theme:
         "数字等宽"这件事看起来做了、实际没生效。
         """
         return '"%s",monospace' % (mono_family() or "Consolas")
+
+    @property
+    def figure(self) -> str:
+        """西文/数字标签用的 **DIN 系**族名（带引号，可直接进 QSS）。
+
+        为什么单独一个族而不全用等宽：等宽（Consolas）解决"数字沿竖线对齐"，
+        DIN 系（Bahnschrift）解决"西文标签的气质"——它是 1931 年德国标准协会
+        为交通标识与工程绘图设计的字，血统就是仪器。两者是**不同的职责**，
+        见 `figure_qfont()` 的 docstring：实测 Bahnschrift 的数字**不是**等宽，
+        所以"要对齐的列"仍然走 mono，DIN 只用于不需要对齐的西文标签。
+
+        本机没有 DIN 系时退回中文字体族——它照样能渲染西文，只是没有那味。
+        **不能退回 `self.font`**：那个属性自带引号与 `,sans-serif` 后缀，
+        再包一层会产出 `""Microsoft YaHei UI",sans-serif",sans-serif` 这种
+         Qt 解析不了的怪串（第一次写就成了这样，QSS 会静默整条失效）。
+        """
+        fam = figure_family() or _UI_FAMILY or self.font_family
+        return '"%s",sans-serif' % fam
 
 
 #: 两个内置主题的种子色与风格档。
@@ -283,6 +362,7 @@ LEVEL_COLOR_KEY = {"ok": "ok", "warn": "warn", "bad": "bad"}
 
 def qss(t: Theme) -> str:
     p, sp, ty = t.p, t.space, t.type
+    tk = t.tracking
     return """
 /* ===== 基础 ===== */
 * {{ outline: 0; }}
@@ -296,7 +376,7 @@ QToolTip {{ background:{surface_raised}; color:{text}; border:1px solid {border_
    整块纯色会很呆；而渐变只用了两个已有令牌，没有新增任何色号。 */
 #TitleBar {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
            stop:0 {surface_hi}, stop:1 {surface}); border-bottom:1px solid {border}; }}
-#TitleText {{ font-size:{body_sm}px; color:{text_dim}; }}
+#TitleText {{ font-size:{body_sm}px; color:{text_dim}; letter-spacing:{tr_body_sm}px; }}
 #WinBtn {{ background:transparent; border:0; border-radius:{md}px; }}
 #WinBtn:hover {{ background:{hover}; }}
 #WinBtn#Close:hover {{ background:{danger}; }}
@@ -305,19 +385,25 @@ QToolTip {{ background:{surface_raised}; color:{text}; border:1px solid {border_
 /* ===== 侧边栏 ===== */
 #SideBar {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
            stop:0 {surface}, stop:1 {bg}); border-right:1px solid {border}; }}
-#BrandName {{ font-size:{body_md}px; font-weight:700; color:{text}; }}
-#BrandSub {{ font-size:{micro}px; color:{text_faint}; }}
+#BrandName {{ font-size:{body_md}px; font-weight:700; color:{text}; letter-spacing:{tr_body_md}px; }}
+#BrandSub {{ font-size:{micro}px; color:{text_faint}; letter-spacing:{tr_micro}px; }}
 /* 品牌下的三色条：**只用装饰色阶**（deco[0]/[2]/[4]）。
    它不承担任何语义，也没有读数功能——存在的唯一理由是让"这是什么工具"
-   在一屏灰里被认出来。渐变用的是同一套令牌，不新增色号。 */
-#BrandBar {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-            stop:0 {deco0}, stop:.5 {deco2}, stop:1 {deco4}); border-radius:2px; }}
+   在一屏灰里被认出来。三个色值全部来自令牌，没有新增色号。
+   **刻意不是渐变**：渐变彩条已在本轮退场（用户判决"合成波陈词滥调"），
+   改成三个平色段——仍然是"这一组是并列的几档"，但不带合成波那味。 */
+#BrandBar {{ background:{deco0}; border-radius:2px; }}
+#BrandBarSeg1 {{ background:{deco2}; border-radius:2px; }}
+#BrandBarSeg2 {{ background:{deco4}; border-radius:2px; }}
 #NavItem {{ background:transparent; border:0; border-radius:{lg}px;
             padding:{sm}px {md}px; color:{text_dim}; text-align:left; font-size:{body}px; }}
 #NavItem:hover {{ background:{hover}; color:{text}; }}
+#NavItem:pressed {{ background:{hover_hi}; }}
 #NavItem[active="true"] {{ background:{primary_soft}; color:{primary_text}; font-weight:700; }}
+/* NavSection 是西文全大写微标签 → 走 caps 字距（Butterick：全大写配 5–12% 额外
+   字距，取 8%）。原来这里手写 1.1px，现在由 `Tracking.caps()` 算出来。 */
 #NavSection {{ color:{text_faint}; font-size:{micro}px; font-weight:700;
-              letter-spacing:1.1px; padding:{md}px {md}px {xs}px; }}
+              letter-spacing:{tr_caps_micro}px; padding:{md}px {md}px {xs}px; }}
 
 /* ===== 卡片 / 分区 ===== */
 QFrame#Card, QWidget#Card {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
@@ -338,13 +424,13 @@ QFrame#CardAccent[slot="5"] {{ background:{deco5}; }}
    原来写 font-weight:600 会被 Qt 吸附到 700（还会打 findfont 告警），
    于是"600"和"700"渲染出来一模一样——那个层级是假的。 */
 QLabel#SectionTitle {{ color:{text_dim}; font-size:{caption}px; font-weight:700;
-                       letter-spacing:1.2px; }}
+                       letter-spacing:{tr_caps_caption}px; }}
 /* #Hero 的等宽**由代码按值内容指定**（`theme.pick_text_font`），QSS 不设族名：
    值里可能有中文（厂牌、编码器串），而 QSS 的族名是"一律套用"、没有回退链，
    中文一旦落上去就得靠逐字形回退——那是不可控的。 */
-QLabel#Hero {{ font-size:{display}px; font-weight:700; color:{text}; }}
-QLabel#HeroUnit {{ color:{text_faint}; font-size:{caption}px; }}
-QLabel#Caption {{ color:{text_faint}; font-size:{caption}px; }}
+QLabel#Hero {{ font-size:{display}px; font-weight:700; color:{text}; letter-spacing:{tr_display}px; }}
+QLabel#HeroUnit {{ color:{text_faint}; font-size:{caption}px; letter-spacing:{tr_caption}px; }}
+QLabel#Caption {{ color:{text_faint}; font-size:{caption}px; letter-spacing:{tr_caption}px; }}
 
 /* ===== 按钮 ===== */
 QPushButton {{ background:{surface_hi}; border:1px solid {border_hi};
@@ -355,13 +441,17 @@ QPushButton:disabled {{ color:{text_disabled}; border-color:{border}; background
 QPushButton#Primary {{ background:{primary}; border-color:{primary}; color:{on_primary};
                        font-weight:700; }}
 QPushButton#Primary:hover {{ background:{primary_hi}; border-color:{primary_hi}; }}
+QPushButton#Primary:pressed {{ background:{primary_hi}; }}
 QPushButton#Ghost {{ background:transparent; border-color:transparent; color:{text_dim}; }}
 QPushButton#Ghost:hover {{ background:{hover}; color:{text}; }}
+QPushButton#Ghost:pressed {{ background:{hover_hi}; }}
 QToolButton {{ background:transparent; border:1px solid transparent;
                border-radius:{lg}px; padding:{xs}px {md}px; color:{text}; font-size:{body}px; }}
 QToolButton:hover {{ background:{hover}; border-color:{border_hi}; }}
+QToolButton:pressed {{ background:{hover_hi}; }}
+QToolButton:disabled {{ color:{text_disabled}; border-color:{border}; }}
 QToolButton#Primary {{ background:{primary}; border-color:{primary}; color:{on_primary}; font-weight:700; }}
-QToolButton:disabled {{ color:{text_disabled}; }}
+QToolButton#Primary:pressed {{ background:{primary_hi}; }}
 
 /* ===== 输入 ===== */
 QLineEdit, QComboBox, QSpinBox {{ background:{surface_hi}; border:1px solid {border};
@@ -376,6 +466,7 @@ QCheckBox {{ spacing:{sm}px; color:{text}; font-size:{body}px; }}
 QCheckBox::indicator {{ width:16px; height:16px; border-radius:{sm}px;
     border:1px solid {border_hi}; background:{surface_hi}; }}
 QCheckBox::indicator:checked {{ background:{primary}; border-color:{primary}; }}
+QCheckBox::indicator:disabled {{ border-color:{border}; background:{surface}; }}
 
 /* ===== 表格 ===== */
 /* 表格整体走等宽：规格/截止/DR/削波全是数字，比例数字会让列宽抖动、
@@ -389,9 +480,10 @@ QTableWidget {{ background:{surface}; alternate-background-color:{surface_hi};
     selection-background-color:{selection}; selection-color:{text};
     font-size:{body_sm}px; }}
 QTableWidget::item {{ padding:{xs}px {sm}px; border:0; }}
+QTableWidget::item:selected {{ background:{selection}; color:{text}; }}
 QHeaderView::section {{ background:{surface_hi}; color:{text_dim}; border:0;
     border-bottom:1px solid {border}; padding:{sm}px {md}px;
-    font-weight:700; font-size:{caption}px; letter-spacing:.6px; }}
+    font-weight:700; font-size:{caption}px; letter-spacing:{tr_caps_caption}px; }}
 QHeaderView::section:hover {{ color:{text}; }}
 QTableCornerButton::section {{ background:{surface_hi}; border:0; }}
 
@@ -401,6 +493,7 @@ QTabBar::tab {{ background:transparent; color:{text_dim}; padding:{xs}px {lg}px;
     border:0; border-bottom:2px solid transparent; font-size:{body}px; }}
 QTabBar::tab:hover {{ color:{text}; }}
 QTabBar::tab:selected {{ color:{text}; border-bottom-color:{primary}; font-weight:700; }}
+QTabBar::tab:disabled {{ color:{text_disabled}; }}
 
 /* ===== 滚动条（细、圆角、悬停才明显） ===== */
 QScrollBar:vertical {{ background:transparent; width:10px; margin:0; }}
@@ -410,6 +503,7 @@ QScrollBar::handle:vertical:hover {{ background:{text_faint}; }}
 QScrollBar:horizontal {{ background:transparent; height:10px; }}
 QScrollBar::handle:horizontal {{ background:{border_hi}; border-radius:5px; min-width:36px;
     margin:2px; }}
+QScrollBar::handle:horizontal:hover {{ background:{text_faint}; }}
 QScrollBar::add-line, QScrollBar::sub-line {{ width:0; height:0; }}
 QScrollBar::add-page, QScrollBar::sub-page {{ background:transparent; }}
 
@@ -419,16 +513,17 @@ QStatusBar {{ background:{surface}; border-top:1px solid {border};
 QStatusBar::item {{ border:0; }}
 QProgressBar {{ background:{surface_hi}; border:0; border-radius:3px; height:4px;
                 color:transparent; }}
-/* 进度条走到哪一目了然还不够——它得**看起来在动**：
-   主色 → 次级强调色（分裂互补）的横向渐变给出一段"流向"。 */
-QProgressBar::chunk {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-    stop:0 {primary}, stop:1 {accent2}); border-radius:3px; }}
+/* 进度条**用单色**：原来主色→次级强调色的横向渐变，在本轮"渐变彩条退场"
+   （用户判决"合成波陈词滥调"）下撤掉。它看起来仍在动——靠的是 chunk 本身
+   在前进，不靠颜色流动。 */
+QProgressBar::chunk {{ background:{primary}; border-radius:3px; }}
 
 /* ===== 菜单 / 命令面板 ===== */
 QMenu {{ background:{surface_raised}; border:1px solid {border_hi};
          border-radius:{lg}px; padding:{xs}px; }}
 QMenu::item {{ padding:{xs}px {xl}px {xs}px {md}px; border-radius:{md}px; font-size:{body}px; }}
 QMenu::item:selected {{ background:{primary}; color:{on_primary}; }}
+QMenu::item:disabled {{ color:{text_disabled}; }}
 QMenu::separator {{ height:1px; background:{border}; margin:{xs}px {sm}px; }}
 #Palette {{ background:{surface_raised}; border:1px solid {border_hi}; border-radius:{xl}px; }}
 #PaletteList {{ background:transparent; border:0; font-size:{body}px; }}
@@ -445,7 +540,6 @@ QSplitter::handle:hover {{ background:{primary_soft}; }}
         text=p.text, text_dim=p.text_dim, text_faint=p.text_faint, text_disabled=p.text_disabled,
         primary=p.primary, primary_hi=p.primary_hi, primary_soft=p.primary_soft,
         primary_text=p.primary_text, on_primary=p.on_primary, hover_hi=p.hover_hi,
-        accent2=p.accent2,
         # 装饰色阶按序号展开成独立占位符：QSS 模板里写 `{deco[0]}` 会与
         # Python 的格式串解析纠缠（中括号不是合法占位符），显式摊开最直白。
         deco0=(p.deco[0] if len(p.deco) > 0 else p.accent2),
@@ -457,6 +551,13 @@ QSplitter::handle:hover {{ background:{primary_soft}; }}
         danger=p.danger, hover=p.hover, selection=p.selection,
         font=t.font, body=int(ty.body), body_sm=int(ty.body_sm), body_md=int(ty.body_md),
         caption=int(ty.caption), micro=int(ty.micro), display=int(ty.display),
+        # 字距令牌：QSS 里只许出现这些值，不许手写 px
+        # （`tests/test_ui_typography.py` 逐条扫，手写即失败）
+        tr_micro=tk.micro, tr_caption=tk.caption, tr_body_sm=tk.body_sm,
+        tr_body_md=tk.body_md, tr_display=tk.display,
+        # 全大写微标签的字距按 **Butterick 的 8%** 从当前字号算出来，
+        # 不是又一个手写常数（原先这里是 1.1px / 1.2px / .6px 三个散点）。
+        tr_caps_micro=tk.caps(ty.micro), tr_caps_caption=tk.caps(ty.caption),
         xs=sp.xs, sm=sp.sm, md=sp.md, lg=sp.lg, xl=sp.xl,
         # 卡片圆角减 1（描边宽度）：色条要贴住卡片的圆角内侧
         r=max(0, t.radius.xl - 1),
@@ -522,6 +623,128 @@ _MONO_FILES = [
     "/System/Library/Fonts/Menlo.ttc",
     "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
 ]
+
+
+#: **DIN 系**西文字体候选（按优先级）。Bahnschrift 是 Windows 自带的 DIN 1451
+#: 数字化版本（本机实测 `bahnschrift.ttf` 在 `C:\Windows\Fonts`，用 .NET 的
+#: 已安装字体集合核对过）。**离屏/无 DirectWrite 的场景里 `families()` 列不出
+#: 系统字体**（实测 Qt 离屏下连 "Consolas" 都列不出来），所以必须像
+#: `_MONO_FILES` 那样显式注册字体文件再查——只查 families() 会得到"没装"的
+#: 错误结论。
+FIGURE_STACK = ("Bahnschrift", "Bahnschrift SemiCondensed", "Bahnschrift Condensed",
+                "DIN Alternate", "DIN 1451", "OSRD")
+_FIGURE_FILES = [
+    r"C:\Windows\Fonts\bahnschrift.ttf",
+    "/System/Library/Fonts/Supplemental/DIN Alternate.ttf",
+    "/usr/share/fonts/truetype/din/DINAlternate-Bold.ttf",
+]
+
+_FIGURE_CACHE: str | None = None
+
+
+def figure_family() -> str:
+    """返回本机真实可用的 DIN 系字体族名。找不到返回空串（调用方退回默认族）。
+
+    与 `mono_family()` 同一套纪律：显式注册字体文件 → 查 families() → 缓存。
+    """
+    global _FIGURE_CACHE
+    if _FIGURE_CACHE is not None:
+        return _FIGURE_CACHE
+    from PySide6.QtGui import QFontDatabase
+    from PySide6.QtWidgets import QApplication
+    if QApplication.instance() is None:
+        return ""                       # 不缓存：有了 app 之后还要重新探测
+    for path in _FIGURE_FILES:
+        if os.path.exists(path):
+            idx = QFontDatabase.addApplicationFont(path)
+            if idx >= 0:
+                QFontDatabase.applicationFontFamilies(idx)
+    have = set(QFontDatabase.families())
+    for f in FIGURE_STACK:
+        if f in have:
+            _FIGURE_CACHE = f
+            return f
+    _FIGURE_CACHE = ""
+    return ""
+
+
+def figure_qfont(size_pt: float, family: str = ""):
+    """西文/数字标签用的 DIN 系 QFont。族名缺失时落到 styleHint。
+
+    ⚠ **它不保证数字等宽**——实测 Bahnschrift 的数字是**比例**的
+    （24pt 下 `111`=33px 而 `888`=54px）。所以：
+      * 要"沿竖线对齐"的列（表格数字列、刻度值）→ 用 `mono_qfont()`；
+      * 要"仪器的字气质"的西文标签与单位（LUFS / dBTP / kHz）→ 用本函数。
+    这条分流是**量出来的**，不是猜的：排版依据文档里"tabular 等宽、上下对齐
+    成列"那句话在本机不成立（Bahnschrift 数字比例宽度），已按实测改正。
+    """
+    from PySide6.QtGui import QFont
+
+    f = QFont()
+    f.setStyleHint(QFont.SansSerif)          # 族名缺失时落到系统无衬线
+    f.setFamilies([figure_family()] if figure_family()
+                  else list(FIGURE_STACK) + ["Segoe UI", "Microsoft YaHei"])
+    f.setPointSizeF(size_pt)
+    return f
+
+
+#: 中西文之间的间隙字符。clreq 的要求是 **≤1/4 汉字宽**：
+#: 全角空格（U+3000）是 1 em，超了；两个半角空格约 0.5 em，也超了；
+#: **thin space（U+2009）是 1/5 em**，落在要求内。
+#: 为什么非要一个字符而不是直接打空格：手打的空格在源码里看不见——
+#: `"44.1 kHz"` 与 `"44.1　kHz"` 长得一模一样，后者却宽 4 倍。
+#: 于是提供 `mix()`，并在测试里扫"手打全角空格 / 连续两个半角空格"。
+THIN_SPACE = "\u2009"
+
+
+def mix(*parts: str) -> str:
+    """中西文混排连接：相邻的中西文之间插一个 thin space。
+
+    只在**中西文交界**处插（"真峰值" + "ITU-R" → "真峰值\\u2009ITU-R"）；
+    两段都是中文、或都是西文时不插——那会用标点或普通空格解决，
+    不该在这里偷偷改。
+
+    纯装饰性使用（如 `"a · b"` 的分隔符）不走本函数：那个 `·` 是内容，
+    不是混排间隙。
+    """
+    out: list[str] = []
+    for i, s in enumerate(parts):
+        if i and out and _need_gap(out[-1], s):
+            out.append(THIN_SPACE)
+        out.append(s)
+    return "".join(out)
+
+
+def _need_gap(a: str, b: str) -> bool:
+    """前一段的末字符与后一段的首字符是否一中一西。"""
+    if not a or not b:
+        return False
+    return _is_cjk(a[-1]) != _is_cjk(b[0])
+
+
+def _is_cjk(ch: str) -> bool:
+    o = ord(ch)
+    return (0x4E00 <= o <= 0x9FFF or 0x3400 <= o <= 0x4DBF      # CJK 统一表意
+            or 0xF900 <= o <= 0xFAFF or 0x3000 <= o <= 0x303F    # 兼容表意 + 中文标点
+            or 0xFF00 <= o <= 0xFF60)                            # 全角形式
+
+
+def rich_text(text: str, level: str = "body") -> str:
+    """把多行文本包成带 `line-height` 的富文本（**QSS 走不到这里**）。
+
+    QSS 的 `line-height` 被 Qt 静默忽略（实测 60px 无效果），而 Qt RichText
+    走 QTextDocument，它的 CSS 子集支持 `line-height`（实测 200% 让三行
+    文本高 42px）。这是本机唯一能给多行文本设行高的路径。
+
+    只用于**多行**文本；单行标签用了没有意义（自然行距已经是单行高度）。
+    """
+    lv = _LEADING[level]        # 等级名写错 → KeyError，不许静默用默认值
+    return '<div style="line-height:%d%%">%s</div>' % (round(lv * 100), text)
+
+
+#: `rich_text` 用的等级名 → 行高倍率。单独一张表而不是吃 `Leading` 的字段反射：
+#: 等级名写错时**立刻**在这里暴露（KeyError），而不是静默用默认值。
+_LEADING = {f.name: getattr(Leading(), f.name) for f in fields(Leading)}
 
 
 def pick_text_font(text: str, size_pt: float, family: str = ""):

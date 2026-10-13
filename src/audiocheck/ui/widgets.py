@@ -7,9 +7,6 @@ from __future__ import annotations
 
 from PySide6.QtCore import (
     Property,
-    QAbstractAnimation,
-    QEasingCurve,
-    QPropertyAnimation,
     QRectF,
     Qt,
     QTimer,
@@ -38,7 +35,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from . import motion
 from . import theme as T
+from .motion import SLOW
+from .theme import Motion
 
 # ------------------------------------------------------------------ 数值格式化
 
@@ -159,13 +159,28 @@ class SideBar(QFrame):
         box.addWidget(self.brand_sub)
         brand.addLayout(box, 1)
         v.addLayout(brand)
-        # 品牌下的三色条（渐变，只用装饰色阶）：纯装饰、无读数功能，
-        # 存在的唯一理由是让"这是什么工具"在一屏灰里被认出来。
-        self.brand_bar = QFrame()
-        self.brand_bar.setObjectName("BrandBar")
-        # 4 = 4×1：与品牌块的行高成组。
-        self.brand_bar.setFixedHeight(4)
-        v.addWidget(self.brand_bar)
+        # 品牌下的三色条：**只用装饰色阶**（deco[0]/[2]/[4]），三个**平色段**。
+        # 纯装饰、无读数功能，存在的唯一理由是让"这是什么工具"在一屏灰里被认出来。
+        # 原先是一条横向渐变，本轮"渐变彩条退场"（用户判决"合成波陈词滥调"）后
+        # 改成三段平色——仍然是"这一组是并列的几档"，但不带合成波那味。
+        # 颜色全在 app 级 QSS 里（按 objectName 取令牌），这里不碰样式表。
+        # 三段之间用 2px 空隙分隔：贴在一起会糊成一条花俏的带子，
+        # 而"三段"才是想表达的东西（并列的几档，不是一个渐变）。
+        bar = QHBoxLayout()
+        # 光学间距（theme.Space.thin）：三段色条之间的 2px 是"让它们读作三段"
+        # 的最小值，凑到 4px 会把 24px 宽的侧边栏里的三段压得太散。
+        # 不参与布局栅格——它分割的是装饰元素，不是内容块。
+        bar.setSpacing(2)
+        bar.setContentsMargins(0, 0, 0, 0)
+        self.brand_segs = []
+        for name in ("BrandBar", "BrandBarSeg1", "BrandBarSeg2"):
+            seg = QFrame()
+            seg.setObjectName(name)
+            # 4 = 4×1：与品牌块的行高成组。
+            seg.setFixedHeight(4)
+            bar.addWidget(seg)
+            self.brand_segs.append(seg)
+        v.addLayout(bar)
         v.addSpacing(14)
 
         self.nav_host = QVBoxLayout()
@@ -303,10 +318,12 @@ class Toast(QFrame):
         h.addWidget(dot)
         lab = QLabel(text)
         lab.setWordWrap(True)
+        lab.setObjectName("ToastText")
         h.addWidget(lab, 1)
-        self.setStyleSheet(
-            "#Toast{background:%s;border:1px solid %s;border-radius:%dpx}"
-            % (theme.p.surface_raised, theme.p.border_hi, theme.radius.lg))
+        # **不再在这里 setStyleSheet**：`#Toast` 的规则本来就在 app 级 QSS 里
+        # （theme.py 的 `#Toast {{ … }}`），部件级那份是重复的——每次 notify 都
+        # 新建一个 Toast、各带一份私有样式表，换肤时要逐个重新解析。
+        # 这是欠账 #10（部件级样式表 21 处）里的一处，本轮收掉。
 
 
 class ToastHost(QWidget):
@@ -328,24 +345,14 @@ class ToastHost(QWidget):
         t = Toast(text, kind, self._theme)
         t.setMaximumWidth(340)
         self._lay.insertWidget(self._lay.count() - 1, t)
-        anim = QPropertyAnimation(t, b"windowOpacity", self)
-        anim.setStartValue(0.0)
-        anim.setEndValue(1.0)
-        anim.setDuration(160)
-        anim.setEasingCurve(QEasingCurve.OutCubic)
-        # 动画必须**用完即毁**：它以 ToastHost 为父对象，若只 start() 就会被挂在
-        # 组件树上永不回收，而它还握着 target（弹窗控件）→ 每次通知泄漏
-        # 两个动画 + 一个弹窗。开着界面跑一晚上分析，光提示就能攒出上千个对象。
-        anim.start(QAbstractAnimation.DeletionPolicy.DeleteWhenStopped)
+        # 动效收编进 `motion`：这里原来是自建的 QPropertyAnimation，
+        # 绕过了 `motion._run` 的统一清理路径（`isValid` + `deleteLater`）。
+        # 收编后全仓只有 motion 一个入口，泄漏面只剩一处可守。
+        motion.fade(t, self, ms=Motion.base, start=0.0)
         QTimer.singleShot(ms, lambda: self._dismiss(t))
 
     def _dismiss(self, t: Toast) -> None:
-        anim = QPropertyAnimation(t, b"windowOpacity", self)
-        anim.setStartValue(1.0)
-        anim.setEndValue(0.0)
-        anim.setDuration(180)
-        anim.finished.connect(lambda: (self._lay.removeWidget(t), t.deleteLater()))
-        anim.start(QAbstractAnimation.DeletionPolicy.DeleteWhenStopped)
+        motion.fade(t, self, ms=Motion.fast, start=1.0, out=True)
 
     def sync_geometry(self) -> None:
         p = self.parentWidget()
@@ -480,7 +487,7 @@ class SeedDialog(QDialog):
         # 混进"最弱一环"会让人以为配色不达标——报告口径要跟结论一致。
         text_findings = [f for f in audit(pal) if f.required >= 4.5]
         worst = min(text_findings, key=lambda f: f.ratio)
-        self.lbl.setText("全部 %d 条 WCAG 判据通过 ✓ ｜ 文字类最弱一环 %.1f:1（%s，要求 %.1f）"
+        self.lbl.setText("全部 %d 条 WCAG 判据通过 ✓ ｜ 文字类最弱一环 %.1f:1（%s，要求 %.1f）"
                          "｜ 装饰阶 %d 档均已 ≥3:1"
                          % (len(audit(pal)), worst.ratio, worst.pair.split(" / ")[0],
                             worst.required, len(d)))
@@ -594,8 +601,10 @@ class StatCard(QFrame):
 
     def apply_theme(self, t: T.Theme) -> None:
         self._t = t
-        self.k.setStyleSheet("color:%s;font-size:%dpx;letter-spacing:.6px"
-                             % (t.p.text_faint, int(t.type.caption)))
+        # 字距来自令牌表（`theme.Tracking`），不是手写的 .6px：
+        # caption 级 0.5px，全大写西文标签按 8% 另算（见 `Tracking.caps`）。
+        self.k.setStyleSheet("color:%s;font-size:%dpx;letter-spacing:%gpx"
+                             % (t.p.text_faint, int(t.type.caption), t.tracking.caption))
         # 数值字体**按内容选**（ASCII → 等宽 / 含中文 → 中文比例字体），
         # 且不靠 QSS 的 font-family：部件自带 setStyleSheet 与 app 级
         # `QLabel#Hero` 规则并存时，Qt 对各属性的合并行为并不明确。
@@ -615,15 +624,14 @@ class Gauge(QWidget):
         self.value: float | None = None
         self.level: str | None = None
         self.main = "—"
-        self.sub = "真实截止"
+        self.sub = " 真实截止"
         self.caption = ""
         # 环形进度的**缓动值**：数字跳变看不出"变了多少"，指针扫过去才看得出。
-        # 走 Qt 属性动画（不碰 matplotlib）——画布重绘是按百毫秒计的，
+        # 走 `motion.tween`（不碰 matplotlib）——画布重绘是按百毫秒计的，
         # 而这只小部件的动画每帧只是几个 drawArc，代价可以忽略。
+        # 时长取 `Motion.slow`：原先写死 430ms，那个数字不在任何一张时长表里。
         self._anim = 0.0
-        self._ease = QPropertyAnimation(self, b"anim", self)
-        self._ease.setDuration(430)
-        self._ease.setEasingCurve(QEasingCurve.OutCubic)
+        self._ease = None
 
     def _get_anim(self) -> float:
         return self._anim
@@ -638,10 +646,15 @@ class Gauge(QWidget):
         self.value, self.level = ratio, level
         self.main, self.sub, self.caption = main, sub, caption
         target = float(ratio) if ratio else 0.0
-        self._ease.stop()
-        self._ease.setStartValue(self._anim)
-        self._ease.setEndValue(target)
-        self._ease.start()
+        # 连续触发时先停掉上一个：两个补间同时写 `anim` 会互相打架
+        # （表现是指针抖一下）。`isValid` 是必须的——上一个补间可能已经
+        # 被 `_run` 的清理路径 deleteLater 掉了。
+        if self._ease is not None:
+            from shiboken6 import isValid
+            if isValid(self._ease):
+                self._ease.stop()
+        self._ease = motion.tween(self, b"anim", self, start=self._anim, end=target,
+                                  ms=SLOW)
         self.update()
 
     def apply_theme(self, t: T.Theme) -> None:
