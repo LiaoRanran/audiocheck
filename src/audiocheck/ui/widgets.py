@@ -60,6 +60,22 @@ def human_khz(hz) -> str:
     return "%.1f Hz" % hz if hz < 1000 else "%.2f kHz" % (hz / 1000)
 
 
+def _visible_on(color: str, bg: str) -> str:
+    """把颜色推到在 `bg` 上**可见**（非文本 3:1，WCAG 1.4.11）。
+
+    为什么代码里还要兜这一层：装饰色阶生成时就是按这条判据挑的，
+    但（a）手写主题可能给不出合格的 deco；（b）同一个色阶会被压在
+    `surface` / `plot_bg` / `primary_soft` 三种底色上，其中激活导航的
+    胶囊底是最难的一个。生成管生成，落笔前再核一次——配色问题不会报错，
+    只会"看不清"，而这类失败事后极难归因。
+    """
+    from .palette import contrast, fit_contrast, srgb_to_oklch
+    if not color or not bg or contrast(color, bg) >= 3.0:
+        return color
+    lighter = srgb_to_oklch(color)[0] > srgb_to_oklch(bg)[0]
+    return fit_contrast(color, bg, 3.0, lighter=lighter)
+
+
 def ratio_pct(x) -> str:
     try:
         return "%.0f%%" % (float(x) * 100)
@@ -70,13 +86,20 @@ def ratio_pct(x) -> str:
 # ------------------------------------------------------------------ 导航
 
 class NavButton(QToolButton):
-    """侧边栏导航项：图标 + 文字，选中时高亮。"""
+    """侧边栏导航项：图标 + 文字，选中时高亮。
 
-    def __init__(self, key: str, label: str, icon_name: str, theme: T.Theme):
+    图标颜色取**装饰色阶**里属于自己的那一档（`SideBar` 按添加顺序分配）：
+    导航项之间是并列关系，各自一个色相；同一档颜色在多文件对比曲线里也会
+    出现，于是"第 2 个视图"和"第 2 条曲线"在视觉上是同一件事。
+    """
+
+    def __init__(self, key: str, label: str, icon_name: str, theme: T.Theme,
+                 accent: str = ""):
         super().__init__()
         self.key = key
         self._label = label
         self._icon_name = icon_name
+        self._accent = accent
         self.setObjectName("NavItem")
         self.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -87,7 +110,12 @@ class NavButton(QToolButton):
     def apply_theme(self, t: T.Theme) -> None:
         self._theme = t
         active = self.property("active") is True
-        col = t.p.primary_hi if active else t.p.text_dim
+        col = self._accent or t.p.text_dim
+        if active:
+            # 激活态压在 primary_soft 胶囊上：图标仍要能看见（非文本 3:1）。
+            # 装饰色阶生成时就是按这条判据挑的，这里再兜一层——
+            # 手写主题可能给不出合格的 deco。
+            col = _visible_on(col, t.p.primary_soft)
         self.setIcon(T.icon(self._icon_name, col, 17))
         self.setText(self._label)
         self.setProperty("active", active)
@@ -131,6 +159,13 @@ class SideBar(QFrame):
         box.addWidget(self.brand_sub)
         brand.addLayout(box, 1)
         v.addLayout(brand)
+        # 品牌下的三色条（渐变，只用装饰色阶）：纯装饰、无读数功能，
+        # 存在的唯一理由是让"这是什么工具"在一屏灰里被认出来。
+        self.brand_bar = QFrame()
+        self.brand_bar.setObjectName("BrandBar")
+        # 4 = 4×1：与品牌块的行高成组。
+        self.brand_bar.setFixedHeight(4)
+        v.addWidget(self.brand_bar)
         v.addSpacing(14)
 
         self.nav_host = QVBoxLayout()
@@ -145,20 +180,29 @@ class SideBar(QFrame):
         self.footer.setSpacing(2)
         v.addLayout(self.footer)
 
+    def _next_accent(self) -> str:
+        """按添加顺序从装饰色阶里取色；用完了绕回。
+
+        并列关系不预设"谁更重要"——真要分主次，那是 `primary` 的活
+        （激活态已经用了它），装饰色阶里每个位置都是平等的。
+        """
+        ramp = self._theme.p.deco or ()
+        return ramp[len(self._items) % len(ramp)] if ramp else ""
+
     def add_section(self, text: str) -> None:
         lab = QLabel(text.upper())
         lab.setObjectName("NavSection")
         self.nav_host.addWidget(lab)
 
     def add_item(self, key: str, label: str, icon_name: str) -> NavButton:
-        b = NavButton(key, label, icon_name, self._theme)
+        b = NavButton(key, label, icon_name, self._theme, self._next_accent())
         b.clicked.connect(lambda: self.navigate.emit(key))
         self._items[key] = b
         self.nav_host.addWidget(b)
         return b
 
     def add_footer_item(self, key: str, label: str, icon_name: str) -> NavButton:
-        b = NavButton(key, label, icon_name, self._theme)
+        b = NavButton(key, label, icon_name, self._theme, self._next_accent())
         b.clicked.connect(lambda: self.navigate.emit(key))
         self._items[key] = b
         self.footer.addWidget(b)
@@ -310,19 +354,27 @@ class ToastHost(QWidget):
 
 
 class SeedDialog(QDialog):
-    """从种子色生成整套主题：预设 / 手输 / 深浅切换，**并实时预览生成结果**。
+    """从种子色生成整套主题：预设 / 手输 / 深浅切换 / 风格档切换，
+    **并实时预览生成结果**。
 
     为什么要能预览：这套配色是**算出来的**，不是挑出来的。让用户先看到
     "这个种子色生成的正文对比度是多少"，比让他挑一个好看的色块更有用——
     也顺手把"配色要达标"这件事变成看得见的界面。
     """
 
+    #: 经典预设：日常、克制的几个种子。
     PRESETS = (("#3d7dff", "蓝"), ("#00b4d8", "青"), ("#35c46a", "绿"),
                ("#e0a92e", "琥珀"), ("#f0524a", "砖红"), ("#8b5cf6", "紫"),
                ("#e879a6", "粉"), ("#5b6478", "石墨"))
+    #: ACG 预设：色相更跳、彩度更高的一档，配合「缤纷」风格档使用。
+    #: 命名用中文昵称而不是色名——种子色在这里是"氛围"而不是"颜色"。
+    ACG_PRESETS = (("#e879a6", "樱"), ("#39c5bb", "初音"), ("#7c5cff", "霓虹"),
+                   ("#4f8cff", "星野"), ("#ff9f45", "蜜柑"), ("#5fd6a0", "薄荷"))
     SWATCHES = ("bg", "surface", "border", "text", "primary", "success", "warning", "danger")
+    VIBES = (("calm", "克制"), ("pop", "缤纷"))
 
-    def __init__(self, parent, theme: T.Theme, seed: str = "#3d7dff", mode: str = "dark"):
+    def __init__(self, parent, theme: T.Theme, seed: str = "#3d7dff", mode: str = "dark",
+                 vibe: str = "calm"):
         super().__init__(parent)
         self.setWindowTitle("从种子色生成主题")
         self.setMinimumWidth(460)
@@ -330,19 +382,18 @@ class SeedDialog(QDialog):
         v = QVBoxLayout(self)
         v.setSpacing(12)
 
-        g = QGridLayout()
-        g.setSpacing(8)
-        self.btns = []
-        for i, (hexv, name) in enumerate(self.PRESETS):
-            b = QPushButton(name)
-            b.setFixedHeight(32)        # 4 的倍数：`tests/test_ui_grid.py` 会查
-            b.setCursor(Qt.PointingHandCursor)
-            b.setStyleSheet("background:%s;color:%s;border:0;border-radius:6px"
-                            % (hexv, "#0d0f13" if _luma(hexv) > 0.45 else "#ffffff"))
-            b.clicked.connect(lambda _=False, h=hexv: (self.ed.setText(h), self._preview()))
-            self.btns.append(b)
-            g.addWidget(b, i // 4, i % 4)
-        v.addLayout(g)
+        for row in (self.PRESETS, self.ACG_PRESETS):
+            g = QGridLayout()
+            g.setSpacing(8)
+            for i, (hexv, name) in enumerate(row):
+                b = QPushButton(name)
+                b.setFixedHeight(32)        # 4 的倍数：`tests/test_ui_grid.py` 会查
+                b.setCursor(Qt.PointingHandCursor)
+                b.setStyleSheet("background:%s;color:%s;border:0;border-radius:6px"
+                                % (hexv, "#0d0f13" if _luma(hexv) > 0.45 else "#ffffff"))
+                b.clicked.connect(lambda _=False, h=hexv: (self.ed.setText(h), self._preview()))
+                g.addWidget(b, i // 4, i % 4)
+            v.addLayout(g)
 
         row = QHBoxLayout()
         row.addWidget(QLabel("种子色"))
@@ -350,6 +401,12 @@ class SeedDialog(QDialog):
         self.ed.setFixedWidth(112)
         self.ed.textChanged.connect(self._preview)
         row.addWidget(self.ed)
+        self.cb_vibe = QComboBox()
+        self.cb_vibe.addItems([cn for _, cn in self.VIBES])
+        self.cb_vibe.setCurrentIndex(0 if vibe == "calm" else 1)
+        self.cb_vibe.setFixedWidth(88)
+        self.cb_vibe.currentIndexChanged.connect(self._preview)
+        row.addWidget(self.cb_vibe)
         self.cb_mode = QComboBox()
         self.cb_mode.addItems(["深色", "浅色"])
         self.cb_mode.setCurrentIndex(0 if mode == "dark" else 1)
@@ -371,6 +428,12 @@ class SeedDialog(QDialog):
             self.cells.append(c)
             pv.addWidget(c)
         v.addWidget(self.preview)
+        # 装饰色阶的预览：一条三色渐变。**这一步不能省**——它是「五颜六色」
+        # 那个档位唯一能被提前看见的东西，色块看不出"这一档会变成 6 个颜色"。
+        self.cell_deco = QLabel("装饰阶")
+        self.cell_deco.setAlignment(Qt.AlignCenter)
+        self.cell_deco.setFixedHeight(36)
+        pv.addWidget(self.cell_deco)
 
         self.lbl = QLabel("")
         self.lbl.setObjectName("Caption")
@@ -388,6 +451,10 @@ class SeedDialog(QDialog):
         return "dark" if self.cb_mode.currentIndex() == 0 else "light"
 
     @property
+    def vibe(self) -> str:
+        return self.VIBES[self.cb_vibe.currentIndex()][0]
+
+    @property
     def seed(self) -> str:
         return self.ed.text().strip()
 
@@ -395,7 +462,7 @@ class SeedDialog(QDialog):
         from .palette import audit, build
 
         try:
-            pal = build(self.seed, self.mode)
+            pal = build(self.seed, self.mode, self.vibe)
         except Exception:                                      # noqa: BLE001
             self.lbl.setText("这个种子色生成不达标（或格式不对），换一个试试")
             return
@@ -404,13 +471,19 @@ class SeedDialog(QDialog):
             cell.setStyleSheet("background:%s;color:%s;border-radius:5px"
                                % (pal[role] if role != "border" else pal["surface_hi"],
                                   pal["text"] if role != "text" else bg))
+        d = pal["deco"]
+        self.cell_deco.setStyleSheet(
+            "background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 %s, stop:.5 %s,"
+            " stop:1 %s); border-radius:5px; color:%s"
+            % (d[0], d[2], d[4], pal["text"]))
         # 只看**文字类**判据（要求 ≥4.5 的那些）：装饰性描边那条要求只有 1.0，
         # 混进"最弱一环"会让人以为配色不达标——报告口径要跟结论一致。
         text_findings = [f for f in audit(pal) if f.required >= 4.5]
         worst = min(text_findings, key=lambda f: f.ratio)
         self.lbl.setText("全部 %d 条 WCAG 判据通过 ✓ ｜ 文字类最弱一环 %.1f:1（%s，要求 %.1f）"
+                         "｜ 装饰阶 %d 档均已 ≥3:1"
                          % (len(audit(pal)), worst.ratio, worst.pair.split(" / ")[0],
-                            worst.required))
+                            worst.required, len(d)))
 
 
 def _luma(hexv: str) -> float:
@@ -462,25 +535,42 @@ class EmptyState(QWidget):
 # ------------------------------------------------------------------ 指标卡 / 仪表
 
 class StatCard(QFrame):
-    """紧凑指标卡：字段名 + 数值 + 单位。数值过长时省略，完整值给 tooltip。"""
+    """紧凑指标卡：字段名 + 数值 + 单位。数值过长时省略，完整值给 tooltip。
 
-    def __init__(self, theme: T.Theme):
+    顶端有一条 2px 的**装饰色条**（取装饰色阶里属于这一格的那一档）。
+    它是纯装饰：不承担语义（语义色只用于判定胶囊），也不读数——
+    但 18 张卡并排时，没有它就是一整片同色块，而有了它，
+    每张卡有自己的位置标识，扫一眼能回到同一个格子。
+    """
+
+    def __init__(self, theme: T.Theme, slot: int = 0):
         super().__init__()
         self.setObjectName("Card")
         v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
+        self.accent = QFrame()
+        self.accent.setObjectName("CardAccent")
+        # 2px 属光学尺度（<4px 栅格步进，且不参与布局分割）。
+        self.accent.setFixedHeight(2)
+        v.addWidget(self.accent)
+        body = QWidget()
+        inner = QVBoxLayout(body)
         m = theme.space
-        v.setContentsMargins(m.md, m.sm, m.md, m.sm)
+        inner.setContentsMargins(m.md, m.sm, m.md, m.sm)
         # 光学间距（theme.Space.hair）：字段名与数值是一个整体，
         # 间距调到 4px 会把它们拆成两行信息，读者要多花一次眼动。
-        v.setSpacing(m.hair)
+        inner.setSpacing(m.hair)
         self.k = QLabel("—")
         self.v = QLabel("—")
         self.k.setObjectName("Caption")
         self.v.setObjectName("Hero")
         self._t = theme
-        v.addWidget(self.k)
-        v.addWidget(self.v)
+        inner.addWidget(self.k)
+        inner.addWidget(self.v)
+        v.addWidget(body, 1)
         self.apply_theme(theme)
+        self.set_slot(slot)
 
     def set(self, key: str, value: str, tooltip: str = "") -> None:
         self.k.setText(key)
@@ -489,6 +579,18 @@ class StatCard(QFrame):
         # 让中文落在等宽族上，靠的就是"逐字形回退"，部分机器直接给方框。
         self.v.setFont(T.pick_text_font(value, self._t.type.body_md, self._t.font_family))
         self.setToolTip(tooltip or value)
+
+    def set_slot(self, slot: int) -> None:
+        """色条取装饰色阶的第几档。
+
+        颜色走 **app 级 QSS 的属性选择器**（`QFrame#CardAccent[slot="3"]`），
+        不给每张卡单独 `setStyleSheet`。这不是风格选择，是量出来的：
+        18 张卡各带一份样式表时，换肤的 `setStyleSheet` 要多花 ~90 ms
+        （每份私有样式表都要重新解析一遍）。规则集中在主题里，换肤只算一次。
+        """
+        self.accent.setProperty("slot", str(int(slot)))
+        self.accent.style().unpolish(self.accent)
+        self.accent.style().polish(self.accent)
 
     def apply_theme(self, t: T.Theme) -> None:
         self._t = t
@@ -499,6 +601,8 @@ class StatCard(QFrame):
         # `QLabel#Hero` 规则并存时，Qt 对各属性的合并行为并不明确。
         self.v.setFont(T.pick_text_font(self.v.text(), t.type.body_md, t.font_family))
         self.v.setStyleSheet("color:%s" % t.p.text)
+        # 色条**不在这里重刷**：它的颜色来自 app 级 QSS 的属性选择器，
+        # 换肤时 QSS 一换，6 条规则全部跟着换——部件侧无事可做。
 
 
 class Gauge(QWidget):

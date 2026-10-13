@@ -116,6 +116,82 @@ class TestThemeConsistency(unittest.TestCase):
                          "_restore 又直接给 self.theme 赋值了——必须走 apply_theme")
         self.assertIn("apply_theme", code)
 
+    # ---------------------------------------------------------------- 装饰色阶
+
+    def test_sidebar_nav_icons_use_the_deco_ramp(self):
+        """侧边栏导航项按顺序取自装饰色阶。
+
+        这是"五颜六色"在界面上最显眼的一处。并列关系不设主次，
+        所以断言的是"按色阶顺序排"，而不是"谁该是哪个颜色"。
+        色阶只有 6 档而导航项有 9 个，绕回是设计如此（同一档颜色
+        在两个位置上重复，代表它们是同一类东西）。
+        """
+        w = self.w
+        ramp = w.theme.p.deco
+        accents = [b._accent for b in w.sidebar._items.values()]
+        self.assertTrue(accents, "侧边栏应当有导航项")
+        self.assertEqual(accents, [ramp[i % len(ramp)] for i in range(len(accents))],
+                         "导航图标没有按装饰色阶顺序取色")
+        self.assertGreaterEqual(len(set(accents[:len(ramp)])), 3,
+                                "前几项就重复了，色阶没铺开")
+
+    def test_metric_cards_carry_deco_strip(self):
+        """指标卡的色条要按槽位取装饰色阶（18 张卡并列，各自一个色）。
+
+        颜色在 **app 级 QSS** 里按 `slot` 属性查表，不在部件上写样式表——
+        后者每张卡一份私有样式表，实测把换肤的 `setStyleSheet` 推高 ~90 ms。
+        所以这里断言的是"槽位铺开"+"QSS 里真的有色阶色值"两件事。
+        """
+        from audiocheck.ui.widgets import StatCard
+        w = self.w
+        r = {"file": "a.wav", "path": "C:/a.wav", "sr": 44100, "bits": "PCM_16",
+             "format": "WAV", "seconds": 12, "size_mb": 1.0, "channels": 2,
+             "level": "ok", "verdict": "合格", "cutoff_khz": 20.0,
+             "curve": [[20.0, -1.0], [20000.0, -2.0]]}
+        w.items = [{"path": r["path"], "file": "a.wav", "result": r}]
+        w._idx = {r["path"]: 0}
+        w._last_sig = (r["path"], id(r))
+        w._cards(r)
+        cards = w.findChildren(StatCard)
+        self.assertTrue(cards, "总览页应当有指标卡")
+        slots = [c.accent.property("slot") for c in cards]
+        ramp = w.theme.p.deco
+        self.assertEqual([str(i) for i in range(len(ramp))], slots[:len(ramp)],
+                         "色条槽位没有按装饰色阶顺序铺开")
+        self.assertGreater(len(set(slots)), 1, "所有卡的色条同一个槽位")
+        q = T.qss(w.theme)
+        for d in ramp:
+            self.assertIn(d, q, "装饰色阶色值 %s 没有进入 QSS（槽位查不到颜色）" % d)
+        w.items, w._idx, w._last_sig = [], {}, None
+        w.apply_theme(T.DARK)
+
+    def test_toggle_vibe_switches_between_calm_and_pop(self):
+        """Ctrl+M 在克制/缤纷之间切换，且不改变深浅。
+
+        断言用**表面彩度**而不是"看起来变了"：pop 的表面必须比 calm 更带色。
+        （不能跟内置 DARK 比——内置主题本身就是 pop 档生成的。）
+        """
+        w = self.w
+        before = (w.seed, w.seed_mode, w.seed_vibe, w.theme.name)
+        try:
+            w.toggle_vibe()
+            self.assertEqual(w.seed_vibe, "pop")
+            self.assertEqual(w.theme.name, "seed")
+            self.assertEqual(w.seed_mode, "dark", "切风格档不该改变深浅")
+            chroma_pop = _chroma(w.theme.p.surface)
+            w.toggle_vibe()
+            self.assertEqual(w.seed_vibe, "calm")
+            self.assertGreater(chroma_pop, _chroma(w.theme.p.surface),
+                               "切到 pop 后表面没有更带色")
+        finally:
+            w.seed, w.seed_mode, w.seed_vibe, _ = before
+            w.apply_theme(T.THEMES[before[3]])
+
+
+def _chroma(hexv: str) -> float:
+    from audiocheck.ui.palette import srgb_to_oklch
+    return srgb_to_oklch(hexv)[1]
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

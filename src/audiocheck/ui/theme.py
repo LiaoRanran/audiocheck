@@ -25,6 +25,8 @@ from PySide6.QtGui import (
     QPolygonF,
 )
 
+from . import palette as _palette
+
 # ------------------------------------------------------------------ 尺寸令牌（4px 栅格）
 
 
@@ -119,6 +121,12 @@ class Palette:
     # 有了它，多文件对比图的第一条/第二条曲线才是"同一套配色里的两个声音"，
     # 而不是从通用色板里各抓一个。
     accent2: str = "#a06cf0"
+    #: **装饰色阶**（6 档，六等分色环）：并列关系的多色——侧边栏图标、卡片强调线、
+    #: 多文件对比的第 3..10 条曲线。它同样**不承担语义**：语义只有 success /
+    #: warning / danger 三个固定色相（判定胶囊）。
+    #: 为什么一个字段装 6 个值：它们是"一组等重的声音"，按 L 排序、按色相等分，
+    #: 逐项命名（deco1..deco6）只会引诱别人单独挑某一档的颜色。
+    deco: tuple = ()
     # 主按钮上的文字。**不是所有主色都配得起白字**：白字压在 #3d7dff 上只有
     # 3.77:1（低于 AA 4.5），压在悬停色 #5a92ff 上只有 3.00:1。
     # 两条路——压深主色（品牌色变闷）或改用墨字。选后者：种子色/品牌色的
@@ -178,7 +186,7 @@ def plot_palette(p: Palette) -> dict:
         "border": p.border, "border_hi": p.border_hi,
         "text": p.text, "text_dim": p.text_dim, "text_faint": p.text_faint,
         "accent": p.primary, "accent_hi": p.primary_hi, "accent_soft": p.primary_soft,
-        "accent2": p.accent2,
+        "accent2": p.accent2, "deco": p.deco,
         "ok": p.success, "warn": p.warning, "bad": p.danger,
         "ok_bg": p.success_bg, "warn_bg": p.warning_bg, "bad_bg": p.danger_bg,
         "ok_border": p.success_bd, "warn_border": p.warning_bd, "bad_border": p.danger_bd,
@@ -251,26 +259,17 @@ class Theme:
         return '"%s",monospace' % (mono_family() or "Consolas")
 
 
-DARK_P = Palette()
-LIGHT_P = Palette(
-    name="light",
-    bg="#f3f5f9", surface="#ffffff", surface_hi="#f7f9fc", surface_raised="#ffffff",
-    border="#e0e5ee", border_hi="#c8d0de", border_focus="#2563eb",
-    # 下面这四色是按 OKLCH 的 L 轴**最小改动**拉到达标的（见 packaging/palette_report.py）：
-    #   text_faint #8a94a8 → #6d778a（3.05 → 4.51）  小字正文要 4.5
-    #   success    #15a34a → #008137（2.99 → 4.54）  「合格」胶囊
-    #   warning    #b97a04 → #9b6500（3.29 → 4.52）  「有疑」胶囊
-    #   danger     #dc2626 → #d61e21（4.23 → 4.52）  「不达标」胶囊
-    # 后者是全应用最关键的一行信息（判定结论），而它在浅色主题下原本**低于 AA**。
-    text="#141a26", text_dim="#5b6478", text_faint="#6d778a", text_disabled="#b2bac8",
-    primary="#2563eb", primary_hi="#1d4fd8", primary_text="#1d4fd8", primary_soft="#e3ecff",
-    on_primary="#ffffff", accent2="#7c3aed",
-    success="#008137", warning="#9b6500", danger="#d61e21", info="#0284c7",
-    success_bg="#e7f8ee", warning_bg="#fdf4e3", danger_bg="#fdeceb", info_bg="#e5f4fd",
-    success_bd="#a9e3c2", warning_bd="#f0dcae", danger_bd="#f5c6c2", info_bd="#a8d8f0",
-    selection="#dbe7ff", hover="#eef1f7", hover_hi="#e6ebf5",
-    grid="#e8ecf3", plot_bg="#ffffff", shadow="rgba(15,23,42,.12)",
-)
+#: 两个内置主题的种子色与风格档。
+#: **它们是算出来的，不是手挑的色号**：下面两个 `Palette` 直接由
+#: `palette.build(seed, mode, "pop")` 生成（OKLCH + 15 条 WCAG 判据 +
+#: 装饰色阶可见性，全部 strict 自审）。想换"内置主题长什么样"，
+#: 改这两个常量再跑 `python packaging/palette_report.py --vibe pop` 核对，
+#: 不要直接改下面的色值——手改的色号不会自己达标（这个坑踩过三次）。
+BUILTIN_SEED = "#7c5cff"
+BUILTIN_VIBE = "pop"
+
+DARK_P = Palette(name="dark", **_palette.build(BUILTIN_SEED, "dark", BUILTIN_VIBE))
+LIGHT_P = Palette(name="light", **_palette.build(BUILTIN_SEED, "light", BUILTIN_VIBE))
 
 DARK = Theme("dark", DARK_P)
 LIGHT = Theme("light", LIGHT_P)
@@ -308,6 +307,11 @@ QToolTip {{ background:{surface_raised}; color:{text}; border:1px solid {border_
            stop:0 {surface}, stop:1 {bg}); border-right:1px solid {border}; }}
 #BrandName {{ font-size:{body_md}px; font-weight:700; color:{text}; }}
 #BrandSub {{ font-size:{micro}px; color:{text_faint}; }}
+/* 品牌下的三色条：**只用装饰色阶**（deco[0]/[2]/[4]）。
+   它不承担任何语义，也没有读数功能——存在的唯一理由是让"这是什么工具"
+   在一屏灰里被认出来。渐变用的是同一套令牌，不新增色号。 */
+#BrandBar {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+            stop:0 {deco0}, stop:.5 {deco2}, stop:1 {deco4}); border-radius:2px; }}
 #NavItem {{ background:transparent; border:0; border-radius:{lg}px;
             padding:{sm}px {md}px; color:{text_dim}; text-align:left; font-size:{body}px; }}
 #NavItem:hover {{ background:{hover}; color:{text}; }}
@@ -319,6 +323,17 @@ QToolTip {{ background:{surface_raised}; color:{text}; border:1px solid {border_
 QFrame#Card, QWidget#Card {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
     stop:0 {surface_hi}, stop:1 {surface}); border:1px solid {border};
                              border-radius:{xl}px; }}
+/* 指标卡顶端的 2px 色条：按 `slot` 属性取装饰色阶的某一档。
+   **为什么用属性选择器而不是逐卡 setStyleSheet**：18 张卡各带一份私有
+   样式表时，换肤要逐个重新解析——实测把 setStyleSheet 推高 ~90 ms。
+   规则集中在主题里，换肤只算一次；换主题时 6 条规则一起换。 */
+QFrame#CardAccent {{ border:0; border-top-left-radius:{r}px; border-top-right-radius:{r}px; }}
+QFrame#CardAccent[slot="0"] {{ background:{deco0}; }}
+QFrame#CardAccent[slot="1"] {{ background:{deco1}; }}
+QFrame#CardAccent[slot="2"] {{ background:{deco2}; }}
+QFrame#CardAccent[slot="3"] {{ background:{deco3}; }}
+QFrame#CardAccent[slot="4"] {{ background:{deco4}; }}
+QFrame#CardAccent[slot="5"] {{ background:{deco5}; }}
 /* SectionTitle 用字距而不是字重做层级：本机中文字体只有 400/700 两档，
    原来写 font-weight:600 会被 Qt 吸附到 700（还会打 findfont 告警），
    于是"600"和"700"渲染出来一模一样——那个层级是假的。 */
@@ -431,10 +446,20 @@ QSplitter::handle:hover {{ background:{primary_soft}; }}
         primary=p.primary, primary_hi=p.primary_hi, primary_soft=p.primary_soft,
         primary_text=p.primary_text, on_primary=p.on_primary, hover_hi=p.hover_hi,
         accent2=p.accent2,
+        # 装饰色阶按序号展开成独立占位符：QSS 模板里写 `{deco[0]}` 会与
+        # Python 的格式串解析纠缠（中括号不是合法占位符），显式摊开最直白。
+        deco0=(p.deco[0] if len(p.deco) > 0 else p.accent2),
+        deco1=(p.deco[1] if len(p.deco) > 1 else p.accent2),
+        deco2=(p.deco[2] if len(p.deco) > 2 else p.accent2),
+        deco3=(p.deco[3] if len(p.deco) > 3 else p.accent2),
+        deco4=(p.deco[4] if len(p.deco) > 4 else p.accent2),
+        deco5=(p.deco[5] if len(p.deco) > 5 else p.accent2),
         danger=p.danger, hover=p.hover, selection=p.selection,
         font=t.font, body=int(ty.body), body_sm=int(ty.body_sm), body_md=int(ty.body_md),
         caption=int(ty.caption), micro=int(ty.micro), display=int(ty.display),
         xs=sp.xs, sm=sp.sm, md=sp.md, lg=sp.lg, xl=sp.xl,
+        # 卡片圆角减 1（描边宽度）：色条要贴住卡片的圆角内侧
+        r=max(0, t.radius.xl - 1),
         )
 
 

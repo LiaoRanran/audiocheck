@@ -201,6 +201,9 @@ class MainWindow(FramelessWindow):
         # 由种子色生成的主题（`ui/palette.py`）。None = 用内置 DARK/LIGHT。
         self.seed: str | None = None
         self.seed_mode: str | None = None
+        # 风格档（`palette.VIBES`）：与明暗正交的第二根轴。calm = 近中性表面，
+        # pop = 带色表面 + 高彩度装饰色阶（"五颜六色"那一档）。
+        self.seed_vibe: str = "calm"
         self.items: list[dict] = []
         self._idx: dict[str, int] = {}
         self.queue: list[str] = []
@@ -550,6 +553,7 @@ class MainWindow(FramelessWindow):
             ("导出报告", "Ctrl+E", self.export),
             ("清空列表", "Ctrl+L", self.clear),
             ("切换主题", "Ctrl+D", self.toggle_theme),
+            ("切换配色风格（克制 / 缤纷）", "Ctrl+M", self.toggle_vibe),
             ("换个种子色（生成整套配色）", "Ctrl+G", self.pick_seed),
             ("阈值设置", "Ctrl+T", self.open_settings),
             ("跳转到 总览", "", lambda: self._navigate("overview")),
@@ -564,7 +568,7 @@ class MainWindow(FramelessWindow):
                         ("F5", self.start), ("Ctrl+R", self.start), ("Esc", self.stop),
                         ("Ctrl+E", self.export), ("Ctrl+L", self.clear),
                         ("Ctrl+D", self.toggle_theme), ("Ctrl+T", self.open_settings),
-                        ("Ctrl+G", self.pick_seed),
+                        ("Ctrl+G", self.pick_seed), ("Ctrl+M", self.toggle_vibe),
                         ("Ctrl+K", self._palette), ("Delete", self._remove_selected),
                         ("Ctrl+F", lambda: self.ed_search.setFocus())):
             QShortcut(QKeySequence(seq), self).activated.connect(fn)
@@ -582,22 +586,45 @@ class MainWindow(FramelessWindow):
             return
         self.apply_theme(T.LIGHT if self.theme.name == "dark" else T.DARK)
 
-    def pick_seed(self, mode: str | None = None):
+    def toggle_vibe(self):
+        """在克制 / 缤纷两档之间切换（不改变当前种子色与深浅）。
+
+        为什么做成一个独立开关而不是塞进深浅切换：它是**另一根轴**。
+        "深/浅"回答"现在几点用"，"克制/缤纷"回答"要不要带色的界面"，
+        两个问题独立，混在一个键上就只能二选一。
+        """
+        self.seed_vibe = "pop" if self.seed_vibe != "pop" else "calm"
+        seed = self.seed or T.BUILTIN_SEED
+        mode = self.seed_mode or ("dark" if self.theme.name == "dark" else "light")
+        from .palette import theme_from_seed
+        try:
+            th = theme_from_seed("seed", seed, mode, self.seed_vibe)
+        except ValueError as e:                                # noqa: BLE001
+            self.toasts.notify(str(e).splitlines()[0][:60], "bad")
+            return
+        self.seed, self.seed_mode = seed, mode
+        self.apply_theme(th)
+        self.toasts.notify("配色风格：%s" % ("缤纷（彩色表面 + 多色装饰阶）" if self.seed_vibe
+                                       == "pop" else "克制（近中性表面）"), "ok")
+
+    def pick_seed(self, mode: str | None = None, vibe: str | None = None):
         """从种子色生成整套主题（`ui/palette.py`：OKLCH + WCAG 自审）。"""
         d = SeedDialog(self, self.theme, self.seed or "#3d7dff",
-                       mode or self.seed_mode or self.theme.name)
+                       mode or self.seed_mode or self.theme.name,
+                       vibe or self.seed_vibe)
         if d.exec() != QDialog.Accepted:
             return
         from .palette import theme_from_seed
         try:
-            th = theme_from_seed("seed", d.seed, d.mode)
+            th = theme_from_seed("seed", d.seed, d.mode, d.vibe)
         except ValueError as e:                                # noqa: BLE001
             self.toasts.notify(str(e).splitlines()[0][:60], "bad")
             return
-        self.seed, self.seed_mode = d.seed, d.mode
+        self.seed, self.seed_mode, self.seed_vibe = d.seed, d.mode, d.vibe
         self.apply_theme(th)
-        self.toasts.notify("已按种子色 %s 生成%s主题" % (d.seed, "深色" if d.mode == "dark"
-                                                   else "浅色"), "ok")
+        self.toasts.notify("已按种子色 %s 生成%s%s主题"
+                           % (d.seed, "深色" if d.mode == "dark" else "浅色",
+                              "缤纷" if d.vibe == "pop" else ""), "ok")
 
     def open_settings(self):
         d = SettingsDialog(self, self.theme)
@@ -941,8 +968,12 @@ class MainWindow(FramelessWindow):
             ("编码器串", (r.get("meta") or {}).get("vendor") or "—"),
         ]
         cards = []
+        # 每张卡的色条从**装饰色阶**里按序号取（槽位，颜色在 QSS 里查表）：
+        # 18 张卡是并列关系，各自的色条让"扫一眼回到同一格"成为可能
+        # （纯装饰，不承担语义）。
+        n_slots = len(self.theme.p.deco) or 1
         for i, (k, v) in enumerate(pairs):
-            c = StatCard(self.theme)
+            c = StatCard(self.theme, i % n_slots)
             c.set(k, str(v))
             self.grid.addWidget(c, i // 6, i % 6)
             cards.append(c)
@@ -1201,10 +1232,13 @@ class MainWindow(FramelessWindow):
             try:
                 self.seed = seed
                 self.seed_mode = s.value("seed_mode", "dark")
-                self.apply_theme(theme_from_seed("seed", seed, self.seed_mode))
+                self.seed_vibe = s.value("seed_vibe", "calm")
+                self.apply_theme(theme_from_seed("seed", seed, self.seed_mode,
+                                                 self.seed_vibe))
             except ValueError:                                 # noqa: BLE001
                 # 生成不达标（理论上不会发生：`build()` 内部就 strict 自审）
                 self.seed = self.seed_mode = None
+                self.seed_vibe = "calm"
 
     def closeEvent(self, e):
         from PySide6.QtCore import QSettings
@@ -1213,6 +1247,7 @@ class MainWindow(FramelessWindow):
         s.setValue("theme", self.theme.name)
         s.setValue("seed", self.seed or "")
         s.setValue("seed_mode", self.seed_mode or "")
+        s.setValue("seed_vibe", self.seed_vibe)
         for w in ([self.worker] if self.worker else []) + list(self._view_workers.values()):
             if w and w.isRunning():
                 try:
@@ -1245,18 +1280,20 @@ def main(argv=None):
     w.setWindowIcon(T.app_icon(w.theme.p))
     w.resize(1460, 900)
 
-    # --seed / --mode：启动时就按种子色生成主题（`ui/palette.py`）。
-    # 这两个参数与"把后面的参数当文件"不能混，先挑出来再处理文件。
+    # --seed / --mode / --vibe：启动时就按种子色生成主题（`ui/palette.py`）。
+    # 这几个参数与"把后面的参数当文件"不能混，先挑出来再处理文件。
     raw = list(argv or sys.argv[1:])
-    seed = mode = None
+    seed = mode = vibe = None
     rest, i = [], 0
     while i < len(raw):
         a = raw[i]
-        if a in ("--seed", "--mode") and i + 1 < len(raw):
+        if a in ("--seed", "--mode", "--vibe") and i + 1 < len(raw):
             if a == "--seed":
                 seed = raw[i + 1]
-            else:
+            elif a == "--mode":
                 mode = raw[i + 1]
+            else:
+                vibe = raw[i + 1]
             i += 2
             continue
         rest.append(a)
@@ -1266,7 +1303,8 @@ def main(argv=None):
         try:
             w.seed = seed
             w.seed_mode = mode or "dark"
-            w.apply_theme(theme_from_seed("seed", seed, w.seed_mode))
+            w.seed_vibe = vibe or w.seed_vibe
+            w.apply_theme(theme_from_seed("seed", seed, w.seed_mode, w.seed_vibe))
         except ValueError as e:                                # noqa: BLE001
             print("种子色 %s 生成不达标：%s" % (seed, e))
 

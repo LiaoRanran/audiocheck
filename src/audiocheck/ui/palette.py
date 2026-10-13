@@ -11,13 +11,31 @@ OKLab（Björn Ottosson, 2020）是**感知均匀**空间：等 L 步长 ≈ 等
 ----------------------------------------
 1. 种子色 → OKLCH，**只取色相 h**：这是"整主题的色调"的唯一来源
 2. 中性阶（bg → surface → surface_hi → surface_raised）：固定 L 阶梯 +
-   极小 chroma（深色 0.012 / 浅色 0.008），得到"带一点种子色温度"的灰
+   极低 chroma（calm 深色 0.012 / 浅色 0.008；pop 见下一节），
+   得到"带一点种子色温度"的灰
 3. 文本阶（text → text_dim → text_faint）：沿 L 轴二分，直到与该背景的
    WCAG 对比度达到目标（正文 7.0 = AAA，次要/弱文本 4.5 = AA）
 4. 语义色（success/warning/danger/info）**色相固定在常用区间**
    （绿 145° / 黄 85° / 红 25° / 青 230°），只按背景明度调 L、C；
    悬停与胶囊底由同一色相派生
-5. 生成完跑一遍 `audit()`：**不达标直接抛异常**，不是打个警告放过去
+5. 装饰色阶 `deco`（六等分色环）：并列关系的多色（导航图标 / 卡片强调线 /
+   多文件对比曲线），**不承担语义**
+6. 生成完跑一遍 `audit()` + `audit_deco()`：**不达标直接抛异常**，不是打个警告放过去
+
+两档风格（`vibe`）：为什么需要"档"而不是"再调几个手选色"
+--------------------------------------------------------
+上一版只有一套生成规则，做出来的界面是**一色灰底 + 一处主色**——
+"克制"是它，但也没法让它"缤纷"：想鲜艳就得手改色号，而手改的色号
+不会自己达标。这里把"风格"也变成一组**可验证的参数**：
+
+| | 表面彩度 | 表面色相阶梯 | 装饰色阶彩度 |
+|---|---|---|---|
+| `calm` | 0.012 / 0.008（近中性） | 无（同一色相） | 0.10（收敛） |
+| `pop`  | 0.030 / 0.020（明显带色） | 每层 +10°（bg→raised 共 30°） | 0.18（饱和） |
+
+两档都走同一套 WCAG 判据（`audit` + `audit_deco`），所以"缤纷"不是
+"放弃可访问性换来的鲜艳"——它只是把参数推到判据允许的边界。
+**明暗（mode）与风格（vibe）是两个正交的轴**：`pop` 也有浅色版本。
 
 为什么对比度要在这里算而不是肉眼看：WCAG 2.1 的 4.5:1 是**可计算**的
 （相对亮度 + (L₁+0.05)/(L₂+0.05)），而 4.4 与 4.6 的差别肉眼分辨不出来——
@@ -198,6 +216,40 @@ DEFAULT_HUE = 264.0
 ACHROMATIC_C = 0.012
 
 
+# ------------------------------------------------------------------ 风格档（vibe）
+
+#: 两档配色风格。**不是"明暗"的别名**（明暗由 `mode` 管，两者正交）：
+#:   calm —— 表面近中性、装饰色阶收敛。默认档，仪表盘要"读数不抢眼"。
+#:   pop  —— 表面带色相阶梯、装饰色阶饱和。想鲜艳时用它，判据一条不少。
+VIBES = ("calm", "pop")
+
+#: 表面（中性阶）的 chroma：(深色, 浅色)。
+VIBE_TINT = {"calm": (0.012, 0.008), "pop": (0.030, 0.020)}
+
+#: pop 档的表面**色相阶梯**（相对种子色，单位度）。
+#: 为什么要有：calm 的表面只靠明度分层，而人眼对"同一色相的不同明度"
+#: 分辨力有限——层级读起来只是"深浅"。给它一点色相位移，层级就同时用
+#: 明度和色相表达（绘画里叫"色彩推移"），界面一下子不再是一片灰。
+#: bg 保持种子色相不动（那是"品牌底"），越往上（越靠前）偏得越多。
+VIBE_SURFACE_HUE = {
+    "plot_bg": -8.0, "bg": 0.0, "surface": 10.0, "surface_hi": 20.0,
+    "surface_raised": 30.0, "grid": 6.0, "border": 14.0, "border_hi": 24.0,
+    "hover": 12.0, "hover_hi": 22.0,
+}
+
+#: 装饰色阶：**六等分色环**（相对种子色 0/60/…/300°）。
+#: 为什么是等分：这几个颜色是**并列**关系（多个文件、多个导航项、多块卡片），
+#: 需要"彼此可分"且"等重"——等分保证任意两档至少隔 60°，
+#: 同 L 保证它们亮度相同（谁都不比谁显眼，否则"第 3 条曲线天生比第 1 条弱"）。
+#: 它**不承担语义**：语义只有 success/warning/danger 三个固定色相。
+DECO_STEPS = (0.0, 60.0, 120.0, 180.0, 240.0, 300.0)
+DECO_CHROMA = {"calm": 0.10, "pop": 0.18}
+#: 装饰色阶的明度按模式镜像：深色主题上要亮、浅色主题上要深。
+DECO_LIGHTNESS = {"dark": 0.70, "light": 0.55}
+#: 装饰色阶要满足的非文本对比度（WCAG 1.4.11：图形对象 3:1）。
+DECO_MIN_CONTRAST = 3.0
+
+
 @dataclass(frozen=True)
 class Finding:
     pair: str
@@ -256,6 +308,41 @@ def audit(palette, *, strict: bool = False) -> list[Finding]:
     return out
 
 
+#: 装饰色阶要压在哪些底色上（每一条都对应一个真实用法）：
+#:   surface      —— 侧边栏底：导航图标画在上面
+#:   plot_bg      —— 图表底：第 N 条曲线画在上面
+#:   primary_soft —— 激活导航项的胶囊底：图标此时压在这上面
+DECO_BACKGROUNDS = ("surface", "plot_bg", "primary_soft")
+
+
+def deco_checks(palette) -> list[Finding]:
+    """装饰色阶 × 它真正会被画上去的那几个底色，逐条算对比度。
+
+    为什么单列一个函数而不进 `CHECKS`：`CHECKS` 是"角色名 → 角色名"的平表，
+    而 deco 是**一列**颜色，需要按序号展开。表结构与数据类型不一致时，
+    硬塞进去只会让两边都失真。
+    """
+    get = palette.get if isinstance(palette, dict) else lambda k, d=None: getattr(palette, k, d)
+    ramp = get("deco") or ()
+    out = []
+    for i, col in enumerate(ramp):
+        for bk in DECO_BACKGROUNDS:
+            bg = get(bk, "")
+            if bg:
+                out.append(Finding("deco[%d] / %s" % (i, bk), col, bg,
+                                   contrast(col, bg), DECO_MIN_CONTRAST))
+    return out
+
+
+def audit_deco(palette, *, strict: bool = False) -> list[Finding]:
+    """装饰色阶的可见性判据（非文本 3:1）。`strict=True` 时不达标直接抛。"""
+    out = deco_checks(palette)
+    bad = [f for f in out if not f.ok]
+    if strict and bad:
+        raise ValueError("装饰色阶不可见：\n" + "\n".join(f.line() for f in bad))
+    return out
+
+
 def conform(palette, checks=CHECKS, *, keep_hue: bool = True):
     """把不达标的前景角色沿 OKLCH 的 L 轴推到**刚好**达标，返回 (新配色, 改动清单)。
 
@@ -309,46 +396,66 @@ def _warm_cool_hue(hue: float, level: float) -> float:
     return (hue + delta * min(0.16, abs(level - 0.5) * 0.22)) % 360.0
 
 
-def build(seed: str, mode: str = "dark") -> dict:
+def build(seed: str, mode: str = "dark", vibe: str = "calm") -> dict:
     """从一个种子色生成整套语义色。返回 `theme.Palette` 的字段字典。
 
     深色与浅色**同一个种子**：色相不变，明度阶梯镜像——
     这就是"一个种子色一个品牌两套主题"的做法。
+
+    `vibe` 是**与明暗正交**的第二根轴：`calm`（近中性表面、收敛的装饰色阶）
+    与 `pop`（带色表面 + 色相阶梯 + 饱和装饰色阶）。两档走同一套判据，
+    所以"缤纷"不会把对比度换掉。
     """
     if mode not in ("dark", "light"):
         raise ValueError("mode 必须是 dark 或 light")
+    if vibe not in VIBES:
+        raise ValueError("vibe 必须是 %s 之一，收到 %r" % (" / ".join(VIBES), vibe))
     dark = mode == "dark"
     _, seed_c, hue = srgb_to_oklch(seed)
     if seed_c < ACHROMATIC_C:
         hue = DEFAULT_HUE
 
-    # ---- 1. 中性阶：固定 L 阶梯 + 极低 chroma + **色温分层** ----
-    tint = 0.012 if dark else 0.008
+    # ---- 1. 中性阶：固定 L 阶梯 + 低 chroma + 色温分层（+ pop 的色相阶梯）----
+    tint = VIBE_TINT[vibe][0 if dark else 1]
 
-    def _n(level: float, chroma: float | None = None) -> str:
-        """中性色：按明度做色温分层（暗偏冷、亮偏暖）。"""
+    def _shift(key: str) -> float:
+        """pop 档的表面色相阶梯；calm 档恒为 0（同一色相）。"""
+        return VIBE_SURFACE_HUE.get(key, 0.0) if vibe == "pop" else 0.0
+
+    def _n(level: float, key: str, chroma: float | None = None) -> str:
+        """中性色：按明度做色温分层（暗偏冷、亮偏暖）+ 按层级做色相推移。"""
         return oklch_to_srgb((level, tint if chroma is None else chroma,
-                              _warm_cool_hue(hue, level)))
+                              _warm_cool_hue(hue + _shift(key), level)))
 
     if dark:
-        idx = {"bg": _n(0.165), "plot_bg": _n(0.150), "surface": _n(0.196),
-               "surface_hi": _n(0.228), "surface_raised": _n(0.262),
-               "grid": _n(0.245, tint * 1.6), "border": _n(0.275, tint * 1.4),
-               "border_hi": _n(0.330, tint * 1.4), "hover": _n(0.235, tint * 1.2),
-               "hover_hi": _n(0.268, tint * 1.4)}
+        idx = {"bg": _n(0.165, "bg"), "plot_bg": _n(0.150, "plot_bg"),
+               "surface": _n(0.196, "surface"),
+               "surface_hi": _n(0.228, "surface_hi"),
+               "surface_raised": _n(0.262, "surface_raised"),
+               "grid": _n(0.245, "grid", tint * 1.6), "border": _n(0.275, "border", tint * 1.4),
+               "border_hi": _n(0.330, "border_hi", tint * 1.4),
+               "hover": _n(0.235, "hover", tint * 1.2),
+               "hover_hi": _n(0.268, "hover_hi", tint * 1.4)}
     else:
-        idx = {"bg": _n(0.955), "plot_bg": _n(0.998), "surface": _n(0.995),
-               "surface_hi": _n(0.972), "surface_raised": _n(1.0),
-               "grid": _n(0.905, tint * 1.6), "border": _n(0.900, tint * 1.4),
-               "border_hi": _n(0.850, tint * 1.4), "hover": _n(0.955, tint * 1.2),
-               "hover_hi": _n(0.930, tint * 1.4)}
+        idx = {"bg": _n(0.955, "bg"), "plot_bg": _n(0.998, "plot_bg"),
+               "surface": _n(0.995, "surface"),
+               "surface_hi": _n(0.972, "surface_hi"),
+               "surface_raised": _n(1.0, "surface_raised"),
+               "grid": _n(0.905, "grid", tint * 1.6), "border": _n(0.900, "border", tint * 1.4),
+               "border_hi": _n(0.850, "border_hi", tint * 1.4),
+               "hover": _n(0.955, "hover", tint * 1.2),
+               "hover_hi": _n(0.930, "hover_hi", tint * 1.4)}
 
     surf = idx["surface"]
 
     # ---- 2. 文本阶：从明度端点二分，保色相（文字略偏种子色，比纯灰耐看）----
     def _t(level: float, chroma: float) -> str:
-        """文字色：同样吃色温分层（与中性阶同一族，界面才不会"两块色温打架"）。"""
-        return oklch_to_srgb((level, chroma, _warm_cool_hue(hue, level)))
+        """文字色：同样吃色温分层（与中性阶同一族，界面才不会"两块色温打架"）。
+
+        色相跟随它落脚的表面（pop 档表面有 +10° 的推移），否则文字与底
+        会朝两个方向偏色。文字本身的 chroma 仍压得很低——带色的是面，不是字。
+        """
+        return oklch_to_srgb((level, chroma, _warm_cool_hue(hue + _shift("surface"), level)))
 
     base = _t(0.97 if dark else 0.18, 0.006)
     idx["text"] = fit_contrast(base, surf, 7.0, lighter=dark)
@@ -399,6 +506,12 @@ def build(seed: str, mode: str = "dark") -> dict:
         a2 = fit_contrast(a2, idx["plot_bg"], 3.0, lighter=dark)
     idx["accent2"] = a2
 
+    # ---- 3c. 装饰色阶：六等分色环，**并列关系的多色** ----
+    # 位置放在主色之后：它要压在 primary_soft（激活导航的胶囊底）上，
+    # 而那个底色到这一步才存在。
+    idx["deco"] = _deco_ramp(hue, mode, vibe,
+                             (idx["surface"], idx["plot_bg"], idx["primary_soft"]))
+
     # ---- 4. 语义色：色相固定，明度按背景调 ----
     for key in ("success", "warning", "danger", "info"):
         h, c = LEVEL_HUE[key], LEVEL_CHROMA[key]
@@ -416,22 +529,46 @@ def build(seed: str, mode: str = "dark") -> dict:
 
     # 阈值门：不达标就报错，让问题在生成时就暴露
     audit(idx, strict=True)
+    audit_deco(idx, strict=True)
     return idx
 
 
-def theme_from_seed(name: str, seed: str, mode: str = "dark"):
+def _deco_ramp(seed_hue: float, mode: str, vibe: str, bgs) -> tuple[str, ...]:
+    """六等分色环，明度整体平移直到**每一档都**对每个底色达标。
+
+    为什么是"整体平移"而不是逐色 `fit_contrast`：逐色修正会破坏等 L，
+    于是几档颜色的视觉重量不再相同——第 3 条曲线天生比第 1 条更抢眼，
+    而它俩在数据上完全平权。宁可整列一起挪，也不让某一档单独变重。
+
+    方向由模式定：深色主题上"更亮"才有对比度，浅色主题上反。
+    """
+    L = DECO_LIGHTNESS[mode]
+    step = 0.02 if mode == "dark" else -0.02
+    cols: tuple[str, ...] = ()
+    for _ in range(12):
+        cols = tuple(oklch_to_srgb((L, DECO_CHROMA[vibe], (seed_hue + s) % 360.0))
+                     for s in DECO_STEPS)
+        if min(contrast(c, bg) for c in cols for bg in bgs if bg) >= DECO_MIN_CONTRAST:
+            return cols
+        L = max(0.30, min(0.95, L + step))
+    return cols        # 平移到头仍未达标：交给 `audit_deco(strict=True)` 报错
+
+
+def theme_from_seed(name: str, seed: str, mode: str = "dark", vibe: str = "calm"):
     """生成一个 `theme.Theme`（延迟导入，避免 palette ↔ theme 循环依赖）。"""
     from .theme import Palette, Theme
-    return Theme(name, Palette(name=name, **build(seed, mode)))
+    return Theme(name, Palette(name=name, **build(seed, mode, vibe)))
 
 
 def self_check() -> list[str]:
     """对生成的配色做几条**与配色无关**的硬校验，返回问题列表。"""
     bad = []
-    for mode in ("dark", "light"):
-        for seed in ("#3d7dff", "#e0a92e", "#35c46a", "#f0524a", "#8b5cf6", "#000000"):
-            try:
-                build(seed, mode)
-            except ValueError as e:
-                bad.append("%s / %s：%s" % (mode, seed, str(e).splitlines()[0]))
+    for vibe in VIBES:
+        for mode in ("dark", "light"):
+            for seed in ("#3d7dff", "#e0a92e", "#35c46a", "#f0524a", "#8b5cf6", "#000000"):
+                try:
+                    build(seed, mode, vibe)
+                except ValueError as e:
+                    bad.append("%s / %s / %s：%s"
+                               % (vibe, mode, seed, str(e).splitlines()[0]))
     return bad

@@ -760,9 +760,14 @@ class CompareCanvas(BaseCanvas):
             return
         nyq = 48000
         # 前两条曲线用**当前主题的主色 / 次级强调色**（分裂互补），
-        # 后面才轮到通用色板：这样"这一批里最重要的两条"看起来是同一套
-        # 配色里的两个声音，而不是从通用色板里各抓一个。
-        seq = (p["accent"], p.get("accent2", p["accent"])) + tuple(CYCLE)
+        # 第 3..7 条用主题的**装饰色阶**（六等分色环，跳过第 1 档——
+        # 它与主色同色相，只是明度不同，并排放会误以为是同一条），
+        # 最后才轮到通用色板：这样"这一批里最重要的几条"看起来是同一套
+        # 配色里的几个声音，而不是从通用色板里各抓一个。
+        # 装饰色阶的每一档都按"对 plot_bg ≥3:1"生成（`palette.audit_deco`），
+        # 所以十条曲线叠在一张图上仍然条条可辨——不用再逐条肉眼核。
+        seq = (p["accent"], p.get("accent2", p["accent"])) \
+            + tuple(p.get("deco") or ())[1:] + tuple(CYCLE)
         for i, (r, cur) in enumerate(self.items[:10]):
             arr = np.asarray(cur, dtype=float)
             col = seq[i % len(seq)]

@@ -134,6 +134,174 @@ class TestAccent2(unittest.TestCase):
             self.assertGreaterEqual(P.contrast(pal["accent2"], pal["plot_bg"]), 3.0)
 
 
+class TestVibeLayers(unittest.TestCase):
+    """风格档：`calm` 与 `pop` 的差别必须是**可测量的**，不是形容词。
+
+    "更鲜艳"这种说法在测试里等于没说。这里用两个可复算的量钉住它：
+    表面的 chroma（彩度）与表面之间的色相位移（色彩推移）。
+    """
+
+    SEEDS = ("#3d7dff", "#e879a6", "#35c46a", "#8b5cf6")
+
+    def test_pop_surfaces_are_more_chromatic(self):
+        """pop 的表面必须比 calm 更带色（不然"缤纷"没有落地）。
+
+        **浅色主题只查 bg / surface_hi**：sRGB 在接近白色的区域几乎没有
+        彩度空间（实测 L=0.995 时请求 C=0.020，出来只剩 0.0026），
+        所以"浅色主题的表面更带色"这句话在 L≈1.0 的两层上**不成立**——
+        那不是 bug，是色域的物理边界。宁可在测试里限定范围，也不假装全成立。
+        """
+        for seed in self.SEEDS:
+            calm, pop = P.build(seed, "dark"), P.build(seed, "dark", "pop")
+            for key in ("bg", "surface", "surface_hi", "surface_raised"):
+                self.assertGreater(
+                    P.srgb_to_oklch(pop[key])[1], P.srgb_to_oklch(calm[key])[1],
+                    "dark / %s / %s：pop 的表面没有更带色" % (seed, key))
+            calm, pop = P.build(seed, "light"), P.build(seed, "light", "pop")
+            for key in ("bg", "surface_hi"):
+                self.assertGreater(
+                    P.srgb_to_oklch(pop[key])[1], P.srgb_to_oklch(calm[key])[1],
+                    "light / %s / %s：pop 的表面没有更带色" % (seed, key))
+
+    def test_calm_surfaces_keep_one_hue(self):
+        """calm 档的表面几乎不动色相——"克制"就是单一色相。
+
+        阈值为什么是 15° 而不是 0：chroma 只有 0.012 时，色相本身**定义不良**
+        （a/b 分量与 8 bit 量化噪声同量级，实测抖动 ±10°）。这不是 bug，
+        是"接近中性灰"的必然结果，所以这里断言的是"小"，不是"零"。
+        """
+        for seed in self.SEEDS:
+            pal = P.build(seed, "dark")
+            hs = [P.srgb_to_oklch(pal[k])[2] for k in ("bg", "surface", "surface_hi",
+                                                       "surface_raised")]
+            drift = max(hs) - min(hs)
+            self.assertLess(drift, 15.0, "calm 表面色相推移 %.1f°：%s"
+                            % (drift, [round(h, 1) for h in hs]))
+
+    def test_pop_shifts_hue_far_more_than_calm(self):
+        """两档的差别必须落在同一个可测量上：表面色相的推移幅度。"""
+        def drift(pal) -> float:
+            hs = [P.srgb_to_oklch(pal[k])[2] for k in ("bg", "surface", "surface_hi",
+                                                       "surface_raised")]
+            return max(hs) - min(hs)
+
+        for seed in self.SEEDS:
+            calm, pop = P.build(seed, "dark"), P.build(seed, "dark", "pop")
+            self.assertGreater(drift(pop), drift(calm) * 2.0,
+                               "%s：pop 的色相推移没有明显大于 calm" % seed)
+            self.assertGreater(drift(pop), 20.0, "%s：pop 的色相推移太弱" % seed)
+
+    def test_pop_surfaces_shift_hue_with_depth(self):
+        """pop 档：bg → surface_raised 色相单调上移，且位移有界。
+
+        有界很重要：色相推移失控会变成"每一层一个颜色"，层级就不再是层级，
+        而是一块调色板。上限 40° 是拍的上限，但**方向与单调性**是可断言的。
+        比较沿**短弧**做：种子色相在 0° 附近时，357°→6° 也是"上移 9°"。
+        """
+        def rise(a: float, b: float) -> float:
+            return (b - a + 180.0) % 360.0 - 180.0        # 沿短弧的有符号差
+
+        for seed in self.SEEDS:
+            pal = P.build(seed, "dark", "pop")
+            hs = [P.srgb_to_oklch(pal[k])[2] for k in ("bg", "surface", "surface_hi",
+                                                       "surface_raised")]
+            for a, b in zip(hs, hs[1:]):
+                self.assertGreater(rise(a, b), 0.0,
+                                   "pop 表面色相没有随深度上移：%s"
+                                   % [round(h, 1) for h in hs])
+            self.assertLess(sum(rise(a, b) for a, b in zip(hs, hs[1:])), 40.0,
+                            "色相推移失控：%s" % [round(h, 1) for h in hs])
+
+    def test_both_vibes_pass_strict_audit(self):
+        for mode in ("dark", "light"):
+            for vibe in P.VIBES:
+                for seed in SEEDS:
+                    pal = P.build(seed, mode, vibe)
+                    bad = [f for f in P.audit(pal) if not f.ok]
+                    self.assertEqual(bad, [], "%s / %s / %s 不达标：%s"
+                                     % (vibe, mode, seed, [f.line() for f in bad]))
+                    bad = [f for f in P.deco_checks(pal) if not f.ok]
+                    self.assertEqual(bad, [], "%s / %s / %s 装饰色阶不可见：%s"
+                                     % (vibe, mode, seed, [f.line() for f in bad]))
+
+    def test_vibe_is_orthogonal_to_mode(self):
+        """明暗与风格是两根轴：pop 也有浅色，浅色也仍然是浅色。"""
+        dark, light = P.build("#3d7dff", "dark", "pop"), P.build("#3d7dff", "light", "pop")
+        L = lambda c: P.srgb_to_oklch(c)[0]                       # noqa: E731
+        self.assertLess(L(dark["bg"]), L(light["bg"]))
+        self.assertGreater(L(dark["text"]), L(light["text"]))
+
+    def test_bad_vibe_rejected(self):
+        with self.assertRaises(ValueError):
+            P.build("#3d7dff", "dark", "vivid")
+
+    def test_calm_is_the_default(self):
+        self.assertEqual(P.build("#3d7dff", "dark"), P.build("#3d7dff", "dark", "calm"))
+
+
+class TestDecoRamp(unittest.TestCase):
+    """装饰色阶：并列的多色要"彼此可分、彼此等重、都看得见"。
+
+    这三件事全是几何/对比度问题，可以钉数字；"好不好看"钉不了，也不该钉。
+    """
+
+    def test_six_steps_evenly_spaced(self):
+        for seed in ("#3d7dff", "#e879a6", "#35c46a"):
+            pal = P.build(seed, "dark", "pop")
+            hs = sorted(P.srgb_to_oklch(c)[2] for c in pal["deco"])
+            gaps = [b - a for a, b in zip(hs, hs[1:])] + [hs[0] + 360 - hs[-1]]
+            self.assertEqual(len(pal["deco"]), 6)
+            self.assertGreaterEqual(min(gaps), 50.0,
+                                    "有色相挨得太近（%.1f°），并列色不可分" % min(gaps))
+            self.assertLessEqual(max(gaps), 70.0, "色相间距不均：%s" % gaps)
+
+    def test_equal_visual_weight(self):
+        """等 L：谁都不比谁显眼（否则第 3 条曲线天生比第 1 条弱）。"""
+        for mode in ("dark", "light"):
+            pal = P.build("#3d7dff", mode, "pop")
+            ls = [P.srgb_to_oklch(c)[0] for c in pal["deco"]]
+            self.assertLess(max(ls) - min(ls), 0.12,
+                            "%s 档装饰色阶明度差 %.3f" % (mode, max(ls) - min(ls)))
+
+    def test_visible_on_every_background_it_is_drawn_on(self):
+        for mode in ("dark", "light"):
+            for seed in ("#3d7dff", "#e879a6", "#000000"):
+                pal = P.build(seed, mode, "pop")
+                for f in P.deco_checks(pal):
+                    self.assertGreaterEqual(f.ratio, P.DECO_MIN_CONTRAST,
+                                            "%s：%s" % (seed, f.line()))
+
+    def test_pop_is_more_saturated_than_calm(self):
+        for mode in ("dark", "light"):
+            calm, pop = P.build("#3d7dff", mode), P.build("#3d7dff", mode, "pop")
+            self.assertGreater(sum(P.srgb_to_oklch(c)[1] for c in pop["deco"]),
+                               sum(P.srgb_to_oklch(c)[1] for c in calm["deco"]))
+
+    def test_achromatic_seed_falls_back_to_default_hue(self):
+        """灰种子：整条色阶**锚定**在回退色相上，不会得到随机起点。
+
+        注意断言的是"第 1 档 ≈ DEFAULT_HUE"，而不是"每一档都 ≈"——
+        装饰色阶本来就是从锚点等分出去的，第 2 档在锚点 +60° 是设计如此。
+        """
+        pal = P.build("#808080", "dark", "pop")
+        anchor = P.srgb_to_oklch(pal["deco"][0])[2]
+        self.assertLess(abs(anchor - P.DEFAULT_HUE), 6.0,
+                        "色阶没有锚定在回退色相上：%.1f°" % anchor)
+
+    def test_ramp_does_not_leak_into_semantics(self):
+        """装饰色阶**不能**替换语义色：合格/有疑/不达标的色相是固定的。
+
+        挡的是"顺手把 success 改成 deco 里某个好看的颜色"——
+        那会让"合格"这个结论换个种子就换个颜色。
+        """
+        for seed in ("#3d7dff", "#e879a6"):
+            pal = P.build(seed, "dark", "pop")
+            for key, hue in P.LEVEL_HUE.items():
+                got = P.srgb_to_oklch(pal[key])[2]
+                self.assertLess(min(abs(got - hue), 360 - abs(got - hue)), 8.0,
+                                "%s 的色相漂了：%.1f°（应 %.1f°）" % (key, got, hue))
+
+
 class TestContrast(unittest.TestCase):
     """WCAG 2.1 对比度的边界值。"""
 
@@ -210,6 +378,38 @@ class TestBuiltinThemes(unittest.TestCase):
             bad = [f for f in P.audit(pal) if not f.ok]
             self.assertEqual(bad, [], "%s 主题有 %d 项不达标：\n%s"
                              % (name, len(bad), "\n".join(f.line() for f in bad)))
+
+    def test_builtin_themes_have_a_deco_ramp(self):
+        """内置主题必须自带装饰色阶，否则界面上的彩色图标/色条会集体失效。
+
+        它们是**生成**的（`palette.build(BUILTIN_SEED, mode, 'pop')`），
+        所以这条同时挡"有人把内置主题改回手写色号、忘了补 deco"。
+        """
+        from audiocheck.ui import theme as T
+        for name in ("dark", "light"):
+            pal = T.THEMES[name].p
+            self.assertEqual(len(pal.deco), 6, "%s 主题的装饰色阶不是 6 档" % name)
+            bad = [f for f in P.deco_checks(pal) if not f.ok]
+            self.assertEqual(bad, [], "%s 主题装饰色阶不可见：\n%s"
+                             % (name, "\n".join(f.line() for f in bad)))
+
+    def test_builtin_theme_is_not_hand_written(self):
+        """内置主题必须是算出来的：换种子或换档位，它得跟着变。"""
+        from audiocheck.ui import theme as T
+        for mode in ("dark", "light"):
+            generated = P.build(T.BUILTIN_SEED, mode, T.BUILTIN_VIBE)
+            for k, v in generated.items():
+                self.assertEqual(v, getattr(T.THEMES[mode].p, k),
+                                 "%s 主题的 %s 与生成结果不一致" % (mode, k))
+
+    def test_qss_exposes_deco_tokens(self):
+        """QSS 里必须真的用到装饰色阶（品牌条），且色值来自当前主题。"""
+        import inspect
+
+        from audiocheck.ui import theme as T
+        self.assertIn("#BrandBar", inspect.getsource(T.qss))
+        q = T.qss(T.DARK)
+        self.assertIn(T.DARK.p.deco[0], q, "品牌条没用上装饰色阶")
 
     def test_no_hardcoded_colors_left_in_qss_template(self):
         """**QSS 模板**里除了登记过的白字，不许再有写死的颜色。
