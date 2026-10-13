@@ -224,8 +224,15 @@ def main(argv=None) -> int:
         it["path"] = "C:/f%03d.wav" % i
         it["file"] = "track_%03d.flac" % i
     w._idx = {it["path"]: i for i, it in enumerate(w.items)}
-    bench.add("P6", "表格刷新 %d 行" % args.rows,
+    bench.add("P6", "表格刷新 %d 行（全量重建）" % args.rows,
               measure(w.refresh_table, max(5, args.repeat // 3)))
+    # ---- P12：分析结果回来时的**增量**刷新（与 P6 同表对照）----
+    # 分析过程中每回来一个文件都要刷新；全量重建是 O(行数)，1000 个文件就是
+    # O(N²)。增量只重画那一行 + 一次与行数无关的轻量刷新。
+    bench.add("P12", "增量更新单行（同 %d 行表）" % args.rows,
+              measure(lambda: (w._update_row("C:/f000.wav"), w._refresh_light()),
+                      max(5, args.repeat // 3)),
+              "O(行数) 指针比较，不重建表")
     w.items, w._idx = base_items, base_idx
     w.refresh_table()
 

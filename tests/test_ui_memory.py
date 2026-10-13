@@ -171,11 +171,23 @@ class TestViewCacheIsBounded(unittest.TestCase):
         self.w._cache.clear()
         self.w.CACHE_MAX_BYTES = budget
 
+    def _register(self, paths):
+        """把路径登记进列表。
+
+        `_view_ready` 现在会**先确认路径还在列表里**（worker 慢一步返回时，
+        条目可能已被删掉；那种结果属于"没人要的东西"，不该占缓存）。
+        所以灌缓存必须先登记——这也让测试更贴近真实调用路径。
+        """
+        w = self.w
+        w.items = [{"path": p, "file": os.path.basename(p), "result": None} for p in paths]
+        w._idx = {it["path"]: i for i, it in enumerate(w.items)}
+
     def test_oversized_cache_is_evicted_by_bytes(self):
         w = self.w
         per_entry = 512 * 256 * 4                    # S 的形状与 dtype 决定单份大小
         self._reset(per_entry * 3)                   # 预算 = 3 份
         t, f = np.zeros(256), np.zeros(512)
+        self._register(["/mem_%d.wav" % i for i in range(12)])
         for i in range(12):
             S = np.zeros((512, 256), dtype=np.float32) + i
             w._view_ready("/mem_%d.wav" % i, "spec", t, f, S)
@@ -189,6 +201,7 @@ class TestViewCacheIsBounded(unittest.TestCase):
         per_entry = 512 * 256 * 4
         self._reset(per_entry * 2)
         t, f = np.zeros(256), np.zeros(512)
+        self._register(["/fifo_%d.wav" % i for i in range(5)])
         for i in range(5):
             w._view_ready("/fifo_%d.wav" % i, "spec", t, f,
                           np.zeros((512, 256), dtype=np.float32))

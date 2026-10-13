@@ -214,7 +214,9 @@ class MainWindow(FramelessWindow):
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setSingleShot(True)
         self._refresh_timer.setInterval(self.REFRESH_COALESCE_MS)
-        self._refresh_timer.timeout.connect(self.refresh_table)
+        # 合并刷新的目标是**轻量刷新**：行本身由 `_update_row` 增量改掉了，
+        # 这里只需把计数/状态/概览这些"与行数无关"的东西更新一次。
+        self._refresh_timer.timeout.connect(self._refresh_light)
 
         self._build()
         self._commands()
@@ -354,6 +356,11 @@ class MainWindow(FramelessWindow):
         self.delegate = VerdictDelegate(self.table)
         self.table.setItemDelegate(self.delegate)
         hh = self.table.horizontalHeader()
+        # **默认按文件名升序**。`setSortingEnabled(True)` 会让 Qt 立刻套用当前
+        # 排序指示，而新表的默认指示是「第 0 列、降序」——于是刚加进来的一批文件
+        # 是**倒序**显示的（整张专辑最后一首排在最上面）。显式定下默认方向。
+        self.table.sortItems(0, Qt.AscendingOrder)
+        hh.setSortIndicator(0, Qt.AscendingOrder)
         hh.setSectionResizeMode(0, QHeaderView.Stretch)
         hh.setMinimumSectionSize(36)
         for i, px in self.COL_W.items():
@@ -629,6 +636,13 @@ class MainWindow(FramelessWindow):
         if not self.queue:
             self.toasts.notify("队列为空", "warn")
             return
+        # **分析途中不能再起一个 worker**：`self.worker = AnalyzeWorker(...)`
+        # 会把正在跑的 QThread 的最后引用覆盖掉，PySide 可能在线程仍在运行时
+        # 销毁 C++ 对象 —— 进程硬崩（不是异常，是直接没）。
+        # 正确行为是把文件留在队列里，等本批结束后自动接着分析。
+        if self.worker and self.worker.isRunning():
+            self.toasts.notify("正在分析，已加入队列（本批结束后自动继续）", "info")
+            return
         todo, self.queue = self.queue, []
         self.act["run"].setEnabled(False)
         self.act["stop"].setEnabled(True)
@@ -655,9 +669,13 @@ class MainWindow(FramelessWindow):
 
     def _add_result(self, r):
         i = self._idx.get(r["path"])
-        if i is not None:
-            self.items[i]["result"] = r
-            self._schedule_refresh()
+        if i is None:
+            return
+        self.items[i]["result"] = r
+        # 增量：只改这一行（O(行数) 的指针比较），不重建整张表。
+        # 计数/状态/概览这些与行数无关的部分合并到 120 ms 一次（见 _schedule_refresh）。
+        self._update_row(r["path"])
+        self._schedule_refresh()
 
     def _schedule_refresh(self):
         """把短时间内的多次刷新合并成一次。
@@ -676,8 +694,11 @@ class MainWindow(FramelessWindow):
         self.act["stop"].setEnabled(False)
         self.pb.setVisible(False)
         self.refresh_table()
-        self.cv_ovw.set_data([i["result"] for i in self.items if i["result"]])
         self.toasts.notify("完成：本次 %d 个文件" % n, "ok")
+        # 分析途中又加了文件（`start()` 把它们留在队列里）：接着分析，
+        # 用户不必守在机器旁边按第二次。
+        if self.queue:
+            self.start()
 
     def clear(self):
         self.items, self._idx, self.queue = [], {}, []
@@ -716,6 +737,8 @@ class MainWindow(FramelessWindow):
         return out
 
     def refresh_table(self):
+        """**全量重建**。只在"表格结构会变"的时候用：筛选、搜索、排序、
+        增删文件、换肤。分析过程中每回来一个文件走的是 `_update_row`（增量）。"""
         items = self._visible()
         hh = self.table.horizontalHeader()
         col, order = hh.sortIndicatorSection(), hh.sortIndicatorOrder()
@@ -726,31 +749,70 @@ class MainWindow(FramelessWindow):
         self.table.setSortingEnabled(True)
         if self.table.rowCount() and col >= 0:
             self.table.sortItems(col, order)
+        self._refresh_light()
+
+    def _refresh_light(self):
+        """只更新**与行数无关**的部分：计数 / 状态 / 批次概览 / 自动选中。
+
+        为什么要把这一层单独拆出来：分析过程中每回来一个文件都要刷新这些
+        （用户要看到"已分析 37 / 200"在动），但**重建整张表是 O(行数)**，
+        200 行实测 25–95 ms，1000 个文件就是 O(N²) 的全表重建 ——
+        界面会在分析途中越拖越卡。拆开之后，这段代价与行数无关。
+        """
+        items = self._visible()
         done = sum(1 for i in self.items if i["result"])
         self.lbl_count.setText("%d / %d" % (len(items), len(self.items)))
         self.cv_ovw.set_data([i["result"] for i in self.items if i["result"]])
         self.status("已分析 %d / %d ｜ 队列 %d" % (done, len(self.items), len(self.queue)))
-        # 分析完自动选中第一行。否则详情面板（结论条 / 环形仪表 / 曲线）全是「—」——
-        # 用户按下「开始分析」看到的是一片空白，还得自己想起来去点某一行。
-        # 只在**没有选中**时才选中，不覆盖用户已经做出的选择；
-        # 只选**已有结果**的行：选到「待分析」行会让 on_select 把 _last_path 记下来，
-        # 等结果回来再选中同一行时，on_select 的 `if self._last_path == p: return`
-        # 会直接返回，详情面板从此再也不更新（实测踩过）。
-        if not self.table.selectedItems():
-            for r in range(self.table.rowCount()):
-                it = self.table.item(r, 0)
-                if it is None:
-                    continue
-                p = it.data(Qt.UserRole)
-                k = self._idx.get(p) if p else None
-                if k is not None and self.items[k]["result"]:
-                    self.table.setCurrentItem(it)
-                    break
+        self._select_first_analyzed()
+
+    def _select_first_analyzed(self):
+        """没有选中任何行时，自动选中第一行**已有结果**的。
+
+        否则详情面板（结论条 / 环形仪表 / 曲线）全是「—」——用户按下
+        「开始分析」看到的是一片空白，还得自己想起来去点某一行。
+        - 只在**没有选中**时才选，不覆盖用户已经做出的选择；
+        - 只选**已有结果**的行：选到「待分析」行会让 on_select 把 _last_sig
+          记下来，等结果回来再选同一行时会被早退优化挡住，详情面板从此不更新（实测踩过）。
+        """
+        if self.table.selectedItems():
+            return
+        for r in range(self.table.rowCount()):
+            cell = self.table.item(r, 0)
+            if cell is None:
+                continue
+            p = cell.data(Qt.UserRole)
+            k = self._idx.get(p) if p else None
+            if k is not None and self.items[k]["result"]:
+                self.table.setCurrentItem(cell)
+                return
+
+    def _update_row(self, path) -> bool:
+        """**增量**刷新某一行。返回是否找到并更新了它。
+
+        扫描找行是 O(行数) 的指针比较（千行量级 ~0.1 ms），比重建整行便宜
+        两个数量级；真到万行再考虑加 path→row 索引——那时再说，现在不预支复杂度。
+        """
+        for r in range(self.table.rowCount()):
+            cell = self.table.item(r, 0)
+            if cell is None:
+                continue
+            if cell.data(Qt.UserRole) == path:
+                k = self._idx.get(path)
+                if k is not None:
+                    self._fill_row(r, self.items[k])
+                return True
+        return False
 
     def _row(self, it):
-        r = it["result"]
         row = self.table.rowCount()
         self.table.insertRow(row)
+        self._fill_row(row, it)
+
+    def _fill_row(self, row: int, it):
+        """把一行 6 个单元格写好。**全量重建与增量更新共用这一处**——
+        两套口径迟早会走岔（例如只改了一边的对齐或颜色）。"""
+        r = it["result"]
         lv = (r or {}).get("level")
         if r:
             vals = [it["file"], "%.1fk/%s" % (r["sr"] / 1000, str(r["bits"]).replace("PCM_", "")),
@@ -969,6 +1031,11 @@ class MainWindow(FramelessWindow):
     def _view_ready(self, path, kind, t, f, S):
         if S is None:
             return
+        # 条目可能已经被删掉（或整个列表被清空）而 worker 还在跑：这时结果
+        # 属于"没人要的东西"，写进缓存只会占着字节预算，还可能被后续
+        # 同名路径误命中。**先确认这个路径还在列表里**。
+        if path not in self._idx:
+            return
         self._cache[(path, kind)] = (t, f, S)
         self._evict_cache()
         mine = [i for i in self.table.selectedItems() if i.column() == 0]
@@ -976,6 +1043,9 @@ class MainWindow(FramelessWindow):
             cv = self.cv_spectro if kind == "spec" else self.cv_wfall
             i = self._idx.get(path)
             cv.set_data(self.items[i]["result"] if i is not None else None, (t, f, S))
+            # 数据是异步来的（一秒上下），让它淡入而不是"啪"地出现——
+            # 这是**信息驱动**的动效：用户由此知道"新内容刚刚到"。
+            motion.fade(cv, self, ms=260)
 
     # ============================================================ 其它
 
@@ -993,6 +1063,9 @@ class MainWindow(FramelessWindow):
         self.items = [i for i in self.items if i["path"] not in drop]
         self.queue = [q for q in self.queue if q not in drop]
         self._idx = {it["path"]: k for k, it in enumerate(self.items)}
+        # 缓存里属于被删条目的条目也要跟着走：否则它们会一直占着字节预算
+        # （最多 96 MB），把还能用得上的条目挤出去。
+        self._cache = {k: v for k, v in self._cache.items() if k[0] not in drop}
         self._last_sig = None
         self.refresh_table()
 
