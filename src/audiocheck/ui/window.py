@@ -56,6 +56,7 @@ from .charts import (
     WaterfallCanvas,
 )
 from .chrome import FramelessWindow
+from .theme import Motion
 from .widgets import (
     Badge,
     CommandPalette,
@@ -1076,7 +1077,10 @@ class MainWindow(FramelessWindow):
             cv.set_data(self.items[i]["result"] if i is not None else None, (t, f, S))
             # 数据是异步来的（一秒上下），让它淡入而不是"啪"地出现——
             # 这是**信息驱动**的动效：用户由此知道"新内容刚刚到"。
-            motion.fade(cv, self, ms=260)
+            # 时长走令牌（原先手写 260 ms，不在任何一张表里）。取 `base`
+            # 而不是 `slow`：`slow` 是"大容器展开"的量级，而这里是一块画布
+            # 的内容到达，200 ms 已经足够让人看见"它是新来的"。
+            motion.fade(cv, self, ms=Motion.base)
 
     # ============================================================ 其它
 

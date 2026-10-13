@@ -719,6 +719,11 @@ class BandCanvas(BaseCanvas):
 class WaterfallCanvas(BaseCanvas):
     """3D 瀑布频谱：把时间轴立起来，低频堆积与高频骤停一目了然。"""
 
+    #: 拖拽重绘的节流间隔（毫秒）。≈8 fps：3D 重绘在本机实测 367 ms/帧，
+    #: 不节流的话每个鼠标移动事件都排一次重绘，越拖越卡、松手后还在补画。
+    #: **不是动效时长**，所以不进 `theme.Motion`（见那张表的 docstring）。
+    DRAG_THROTTLE_MS = 120
+
     def __init__(self):
         # 3D 轴与 constrained layout 不兼容（会把轴挤成 0 宽），这里单独建 figure
         self.fig = Figure(figsize=(6.2, 3.8), dpi=100)
@@ -733,9 +738,11 @@ class WaterfallCanvas(BaseCanvas):
         self._drag = None
         # 拖拽节流：3D 重绘在本机实测 367 ms/帧（2.7 fps），不节流的话
         # 每个鼠标移动事件都排一次重绘，越拖越卡、松手后还在补画。
+        # 120 ms ≈ 8 fps：这是**节流间隔**不是动效时长，所以不进 `Motion` 表，
+        # 但必须具名（B3 的规则：动画时长进表，节流间隔具名 + 在原处说明依据）。
         self._drag_timer = QTimer(self)
         self._drag_timer.setSingleShot(True)
-        self._drag_timer.setInterval(120)
+        self._drag_timer.setInterval(self.DRAG_THROTTLE_MS)
         self.mpl_connect("button_press_event", self._on_press)
         self.mpl_connect("motion_notify_event", self._on_drag)
 

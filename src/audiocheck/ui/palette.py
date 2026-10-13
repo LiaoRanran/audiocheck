@@ -583,6 +583,19 @@ def build(seed: str, mode: str = "dark", vibe: str = "calm") -> dict:
         idx[key] = fit_contrast(oklch_to_srgb((start_l, c, h)), idx[key + "_bg"],
                                 4.5, lighter=dark)
 
+    # ---- 4b. 关闭按钮的**按下**色：比 danger 再深一档 ----
+    # 需要它的原因很具体：窗口关闭按钮的 `:hover` 与 `:pressed` 如果都是
+    # `danger`，按下就没有任何额外反馈（`test_ui_motion` 的
+    # "pressed 不许与 hover 同声明"一条就是这么发现的）。
+    # 只给 danger 生成而不给四个语义色都生成：**只有这一处**需要"按下更深"，
+    # 其余三色的按下态由更大的容器承担，多生成三枚就是三枚没人用的色号。
+    # 更深而不是更浅：白字压在它上面只会更清楚，不需要新的审计条目。
+    hi_l = srgb_to_oklch(idx["danger"])[0] - (0.10 if dark else 0.06)
+    danger_lo = oklch_to_srgb((max(0.25, hi_l), LEVEL_CHROMA["danger"], LEVEL_HUE["danger"]))
+    if dark:
+        danger_lo = fit_contrast(danger_lo, idx["danger_bg"], 4.5, lighter=False)
+    idx["danger_lo"] = danger_lo
+
     # ---- 5. 选中/阴影 ----
     idx["selection"] = mix(idx["primary_soft"], surf, 0.35 if dark else 0.45)
     # 双档阴影 + 顶光高亮。阴影色取**偏冷的中性**而不是纯黑：纯黑压在冷灰底上

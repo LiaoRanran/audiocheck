@@ -138,9 +138,23 @@ class Leading:
 
 @dataclass(frozen=True)
 class Motion:
+    """动效时长（毫秒）。**这是动画时长的唯一来源。**
+
+    B3 定的规则，两句话、各自有测试：
+      * **动效时长**（`motion.fade/pulse/stagger` 的 `ms`、`setDuration`）
+        只许来自本表或 `motion.FAST|BASE|SLOW`（它们是本表的别名）。
+        动画时长散落时，想调"整体手感"要全局搜——而 `Motion` 那三个令牌
+        会退化成"声明了但没落点"。
+      * **节流/去抖间隔**（`setInterval`、合并刷新的窗口）**不是动效时长**，
+        不塞进本表：它们各自的值都跟一段具体性能事实绑在一起
+        （28 ms 是"人眼看不出合并"、120 ms 是"跟文件到达同量级"），
+        搬到表里就离家了。要求是**必须具名**并在原处写清为什么是这个值。
+
+    Qt 的插值范围是 100–300 ms（超过 300 会觉得迟钝），本表在此区间内。
+    """
     fast: int = 120          # 悬停
-    base: int = 200          # 展开/切换
-    slow: int = 320          # 抽屉
+    base: int = 200          # 展开/切换/内容到达
+    slow: int = 320          # 抽屉（大容器）
 
 
 @dataclass(frozen=True)
@@ -195,6 +209,9 @@ class Palette:
     warning: str = "#e0a92e"
     danger: str = "#f0524a"
     info: str = "#38bdf8"
+    #: `danger` 的**按下**色（比它深一档）。只给窗口关闭按钮用：那个按钮的
+    #: 悬停已经是全红，按下若还是同一个红就等于没有反馈。见 `palette.build()`。
+    danger_lo: str = "#c23b34"
 
     # 语义色的背景态（用于徽标/胶囊底）
     success_bg: str = "#0c2015"
@@ -401,8 +418,12 @@ QToolTip {{ background:{surface_raised}; color:{text}; border:1px solid {border_
 #TitleText {{ font-size:{body_sm}px; color:{text_dim}; letter-spacing:{tr_body_sm}px; }}
 #WinBtn {{ background:transparent; border:0; border-radius:{r_md}px; }}
 #WinBtn:hover {{ background:{hover}; }}
+/* 窗口按钮（最小化/最大化/关闭）是"按下即生效"的：按下态要比悬停更实，
+   否则点下去的那几十毫秒里界面没有任何反馈。 */
+#WinBtn:pressed {{ background:{hover_hi}; }}
 #WinBtn#Close:hover {{ background:{danger}; }}
 #WinBtn#Close:hover {{ color:#fff; }}
+#WinBtn#Close:pressed {{ background:{danger_lo}; }}
 
 /* ===== 侧边栏 ===== */
 #SideBar {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
@@ -480,6 +501,11 @@ QLineEdit, QComboBox, QSpinBox {{ background:{surface_hi}; border:1px solid {bor
     border-radius:{r_lg}px; padding:{xs}px {md}px; color:{text};
     selection-background-color:{primary}; font-size:{body}px; }}
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus {{ border-color:{border_focus}; }}
+/* 禁用态：**必须比"看起来一样"多做一步**。少了这条，一个不可编辑的输入框
+   与可编辑的长得一模一样——用户会去点它，然后以为界面卡了。
+   （WCAG 1.4.3 把禁用控件排除在对比度要求外，所以这里只求"看得出不同"。） */
+QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled {{
+    background:{surface}; color:{text_disabled}; border-color:{border}; }}
 QLineEdit[invalid="true"] {{ border-color:{danger}; }}
 QComboBox::drop-down {{ border:0; width:22px; }}
 QComboBox QAbstractItemView {{ background:{surface_raised}; border:1px solid {border_hi};
@@ -522,10 +548,14 @@ QScrollBar:vertical {{ background:transparent; width:10px; margin:0; }}
 QScrollBar::handle:vertical {{ background:{border_hi}; border-radius:5px; min-height:36px;
     margin:2px; }}
 QScrollBar::handle:vertical:hover {{ background:{text_faint}; }}
+/* 按住滑块拖动时要与"只是悬停"区分开：滚动条是**拖拽类**控件，
+   悬停=准备好，按下=正在拖。少了 :pressed，拖动过程中手感和悬停一样。 */
+QScrollBar::handle:vertical:pressed {{ background:{text_dim}; }}
 QScrollBar:horizontal {{ background:transparent; height:10px; }}
 QScrollBar::handle:horizontal {{ background:{border_hi}; border-radius:5px; min-width:36px;
     margin:2px; }}
 QScrollBar::handle:horizontal:hover {{ background:{text_faint}; }}
+QScrollBar::handle:horizontal:pressed {{ background:{text_dim}; }}
 QScrollBar::add-line, QScrollBar::sub-line {{ width:0; height:0; }}
 QScrollBar::add-page, QScrollBar::sub-page {{ background:transparent; }}
 
@@ -580,7 +610,7 @@ QSplitter::handle:hover {{ background:{primary_soft}; }}
         deco3=(p.deco[3] if len(p.deco) > 3 else p.accent2),
         deco4=(p.deco[4] if len(p.deco) > 4 else p.accent2),
         deco5=(p.deco[5] if len(p.deco) > 5 else p.accent2),
-        danger=p.danger, hover=p.hover, selection=p.selection,
+        danger=p.danger, danger_lo=p.danger_lo, hover=p.hover, selection=p.selection,
         font=t.font, body=int(ty.body), body_sm=int(ty.body_sm), body_md=int(ty.body_md),
         caption=int(ty.caption), micro=int(ty.micro), display=int(ty.display),
         # 字距令牌：QSS 里只许出现这些值，不许手写 px
