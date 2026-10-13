@@ -274,7 +274,7 @@ class MainWindow(FramelessWindow):
         sb = QStatusBar()
         sb.setContentsMargins(16, 0, 16, 0)
         self.pb = QProgressBar()
-        self.pb.setFixedWidth(200)
+        self.pb.setMaximumWidth(200)
         self.pb.setVisible(False)
         self.lbl_stat = QLabel("就绪")
         sb.addWidget(self.lbl_stat, 1)
@@ -318,13 +318,13 @@ class MainWindow(FramelessWindow):
         self.ed_search = QLineEdit()
         self.ed_search.setPlaceholderText("搜索文件名")
         self.ed_search.setClearButtonEnabled(True)
-        self.ed_search.setFixedWidth(180)
+        self.ed_search.setMaximumWidth(180)
         self.ed_search.textChanged.connect(self.refresh_table)
         h.addWidget(self.ed_search)
         self.cb_filter = QComboBox()
         self.cb_filter.addItems(["全部", "仅不达标", "仅有疑", "仅合格", "仅未分析"])
         # 112 = 4×28，上栅格。原 110 是随手写的，与筛选框内的文字宽度也无关系。
-        self.cb_filter.setFixedWidth(112)
+        self.cb_filter.setMaximumWidth(112)
         self.cb_filter.currentIndexChanged.connect(self.refresh_table)
         h.addWidget(self.cb_filter)
         return bar
@@ -372,7 +372,10 @@ class MainWindow(FramelessWindow):
             self.table.setColumnWidth(i, px)
         hh.setHighlightSections(False)
         self.table.verticalHeader().setDefaultSectionSize(32)
-        self.table.setMinimumWidth(400)
+        # 400 会把整窗的最小宽度顶到 **1166 逻辑像素**，而 150% 缩放下的 1920 屏
+        # 只有 1138——差这 28px 就是"右侧被切掉一条"（用户实测报的）。
+        # 320 仍够放四列数字 + 判定胶囊；表格本来就有横向滚动条。
+        self.table.setMinimumWidth(320)
         v.addWidget(self.table, 1)
 
         self.drop_hint = QLabel("把文件或文件夹拖到这里")
@@ -1225,12 +1228,37 @@ class MainWindow(FramelessWindow):
         super().resizeEvent(e)
         self.toasts.sync_geometry()
 
+    def _clamp_to_screen(self):
+        """把窗口几何**夹回当前桌面**（位置与尺寸都夹）。
+
+        为什么必须有：`restoreGeometry` 存的是**逻辑像素**，而它忠实还原你存的
+        东西——换了 DPI 缩放或换了显示器之后，那个尺寸可能比现在的屏幕还大。
+        实测：存的是 2538 逻辑像素宽，而当前屏幕的逻辑宽度只有 1138
+        （1707 物理像素 / 150% 缩放），于是窗口右侧 60% 直接跑到屏幕外，
+        用户看到的是"界面缺一块"，而**没有任何报错**。
+
+        位置同样要夹：换显示器后旧坐标可能整个落在屏幕外（窗口"打开却看不见"）。
+        """
+        from PySide6.QtWidgets import QApplication
+        scr = QApplication.primaryScreen()
+        if scr is None:
+            return
+        av = scr.availableGeometry()
+        f = self.frameGeometry()
+        if f.width() > av.width() or f.height() > av.height():
+            self.resize(min(f.width(), av.width()), min(f.height(), av.height()))
+            f = self.frameGeometry()
+        x = min(max(f.x(), av.x()), av.x() + av.width() - f.width())
+        y = min(max(f.y(), av.y()), av.y() + av.height() - f.height())
+        self.move(max(av.x(), x), max(av.y(), y))
+
     def _restore(self):
         from PySide6.QtCore import QSettings
         s = QSettings("audiocheck", "gui")
         g = s.value("geometry")
         if g:
             self.restoreGeometry(g)
+            self._clamp_to_screen()
         n = s.value("theme")
         if n in T.THEMES:
             # **必须走 apply_theme，不能只给 self.theme 赋值。**
