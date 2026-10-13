@@ -246,6 +246,13 @@ NEUTRAL_CHROMA_MAX = 0.0125
 #: 0.08 让两侧各偏 ≤7°：暗处 283°、亮处 293°——都还在仪器灰家族内。
 WARM_COOL_MAX = 0.08
 
+#: 判定结论条（slab）的明度与请求彩度。明度由**色域**反解：
+#: 暗色 L0.38 处 danger 能到 C0.140、success C0.120（够用），
+#: 亮色要到 L0.79 才让 danger 保住 C0.115（再亮就被夹到 0.076）。
+#: 请求彩度 0.115 取锚点图高彩的 P50（0.123）略下方——**不超锚点**。
+SLAB_L = {"dark": 0.38, "light": 0.79}
+SLAB_C = 0.115
+
 #: 双档阴影。**Qt 的 QSS 没有 box-shadow**（实测：写了不报错也不生效），
 #: 所以阴影只能由效果对象或自绘实现，参数集中在这里。
 #: 光的方向统一为**顶光**：dy 为正（往下投）、dx 略负（光从左上方来）。
@@ -288,11 +295,26 @@ VIBE_SURFACE_HUE = {
 #: 同 L 保证它们亮度相同（谁都不比谁显眼，否则"第 3 条曲线天生比第 1 条弱"）。
 #: 它**不承担语义**：语义只有 success/warning/danger 三个固定色相。
 DECO_STEPS = (0.0, 60.0, 120.0, 180.0, 240.0, 300.0)
-DECO_CHROMA = {"calm": 0.10, "pop": 0.18}
+#: 装饰色阶的彩度：**calm 压在"高彩"口径（C>0.10）之下**，pop 仍可取饱和。
+#: 理由（B7.1 做法 2 + 勘误 §5.5）：六色环是"ACG 那一轮"的遗产，它很细、
+#: 面积判据抓不到，却把"一枚 accent"**稀释成六个色相**——实测主族占比只有
+#: 64.1%，而判据要求 ≥85%。压到口径之下之后：六色**依然可分**（色相差 60°，
+#: 在低彩下也能分辨），但界面只剩一条 accent 在"说彩度高的那句话"。
+DECO_CHROMA = {"calm": 0.082, "pop": 0.18}
 #: 装饰色阶的明度按模式镜像：深色主题上要亮、浅色主题上要深。
 DECO_LIGHTNESS = {"dark": 0.70, "light": 0.55}
 #: 装饰色阶要满足的非文本对比度（WCAG 1.4.11：图形对象 3:1）。
 DECO_MIN_CONTRAST = 3.0
+
+#: **"高彩"的口径**：OKLCH 彩度超过它才算高彩。面积与色相族两条统计判据
+#: 都用这个阈值，所以它必须是**唯一真源**——测试（`tests/test_ui_b7_color.py`）
+#: 与量尺（`packaging/hue_family_report.py`）都从这里取，各写一份迟早会对不上。
+#: 取值 0.10：锚点图高彩的 P50 是 0.123，阈值取在它下方一档。
+#: ⚠ 换空间就换数字：同一张图 OKLCH C>0.10 是 0.68% 时，
+#: HSV S>0.35 是 1.83%、HSL S>0.35 是 21.9%（差 6 倍）。
+HIGH_CHROMA_C = 0.10
+#: 色相族的判据：单一 30° 桶在高彩像素里的占比下限。
+HUE_FAMILY_MIN = 0.85
 
 
 @dataclass(frozen=True)
@@ -331,6 +353,25 @@ CHECKS: tuple[tuple[str, str, str, float], ...] = (
     ("有疑胶囊 warning / warning_bg", "warning", "warning_bg", 4.5),
     ("不达标胶囊 danger / danger_bg", "danger", "danger_bg", 4.5),
     ("选中行文字 text / selection", "text", "selection", 4.5),
+    # 判定结论条：它是**判定语义唯一的大面积着色**（见 `SLAB_L`），
+    # 上面坐着正文（lbl_verdict 用 text）与次要行（lbl_file 用 slab_dim），
+    # 两个角色都要按 AA/AAA 核。结论条同时要能读出"是一个独立物件"（3:1）。
+    ("结论条正文 text / success_slab", "text", "success_slab", 7.0),
+    ("结论条正文 text / warning_slab", "text", "warning_slab", 7.0),
+    ("结论条正文 text / danger_slab", "text", "danger_slab", 7.0),
+    ("结论条次文 slab_dim / success_slab", "slab_dim", "success_slab", 4.5),
+    ("结论条次文 slab_dim / warning_slab", "slab_dim", "warning_slab", 4.5),
+    ("结论条次文 slab_dim / danger_slab", "slab_dim", "danger_slab", 4.5),
+    # ⚠ 这条**不是** 3:1，而是 1.5:1，理由必须写清楚（否则下一个人会以为漏了）：
+    #   * WCAG 1.4.11 的 3:1 是给**小尺寸 UI 组件**的边界，用来"认出这个控件"。
+    #     结论条是 880×140 的**大面积**色块，人眼对大面积的明度差不敏感得多
+    #     （实测 1.57:1 已经清楚可辨，见 shots/b7/）；
+    #   * 更要紧的是：**判定语义由文字承载**（胶囊上写着"不达标"），
+    #     底色只是冗余强化。1.4.11 管的是"理解内容所必需的图形"，这里不缺它。
+    #   阈值登记为 1.5：够看出"这里有一块面板"，又不逼着把结论条做成黑块。
+    ("结论条与卡片底可分辨（大面积，登记阈 1.5）", "success_slab", "surface", 1.5),
+    ("结论条与卡片底可分辨（大面积，登记阈 1.5）", "warning_slab", "surface", 1.5),
+    ("结论条与卡片底可分辨（大面积，登记阈 1.5）", "danger_slab", "surface", 1.5),
     ("关闭按钮白字 / danger", "#ffffff", "danger", 4.5),
     ("图表刻度 text_faint / plot_bg", "text_faint", "plot_bg", 4.5),
     ("卡片描边 border_hi / surface（装饰性，仅记录）", "border_hi", "surface", 1.0),
@@ -582,6 +623,33 @@ def build(seed: str, mode: str = "dark", vibe: str = "calm") -> dict:
         start_l = 0.72 if dark else 0.52
         idx[key] = fit_contrast(oklch_to_srgb((start_l, c, h)), idx[key + "_bg"],
                                 4.5, lighter=dark)
+
+        # ---- 4a. 判定结论条（slab）：**判定语义唯一的大面积着色** ----
+    # 来历：勘误 §5.6 给了处置顺序「① 先收 deco → ② 再量玫瑰够不够显眼 →
+    # ③ 若仍不够，加大玫瑰的面积」，并点名"顶部结论条"就是玫瑰的面积该长的地方
+    # （它承载信息，不是装饰）。这里就是 ③ 的落点。
+    #
+    # 为什么是"结论条"而不是别的：**它是唯一面积大、且不随状态飘移的载体**。
+    # 判定胶囊只有 60×22，表格里的判定徽章随文件数变，曲线在绘图区（判据明确排除）。
+    # 结论条在总览页恒在，尺寸由布局定 —— 这是"高彩面积"能成为判据的前提。
+    #
+    # ⚠ **warning 在暗色主题下做不到 C>0.10**：sRGB 色域里 H85 在 L0.38 处
+    # 最大彩度只有 ~0.078（黄在低明度下可用彩度比红/绿小得多，实测见
+    # `out/_slab_probe.py` 的输出）。这不是实现缺陷，是色域的物理边界——
+    # 如实登记，并用它说明"高彩面积"判据**依赖当前选中的判定状态**。
+    slab_l = SLAB_L[mode]
+    step = -0.012 if dark else 0.012          # 背离文字的方向（暗底往下、亮底往上）
+    idx["slab_dim"] = oklch_to_srgb((0.74 if dark else 0.40, 0.012, NEUTRAL_HUE))
+    for key in ("success", "warning", "danger"):
+        h = LEVEL_HUE[key]
+        cand = ""
+        for _ in range(30):
+            cand = oklch_to_srgb((slab_l, SLAB_C, h))
+            if (contrast(idx["text"], cand) >= 7.0
+                    and contrast(idx["slab_dim"], cand) >= 4.5):
+                break
+            slab_l += step
+        idx[key + "_slab"] = cand
 
     # ---- 4b. 关闭按钮的**按下**色：比 danger 再深一档 ----
     # 需要它的原因很具体：窗口关闭按钮的 `:hover` 与 `:pressed` 如果都是

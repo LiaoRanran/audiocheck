@@ -595,13 +595,15 @@ class EmptyState(QWidget):
 class StatCard(QFrame):
     """紧凑指标卡：字段名 + 数值 + 单位。数值过长时省略，完整值给 tooltip。
 
-    顶端有一条 2px 的**装饰色条**（取装饰色阶里属于这一格的那一档）。
-    它是纯装饰：不承担语义（语义色只用于判定胶囊），也不读数——
-    但 18 张卡并排时，没有它就是一整片同色块，而有了它，
-    每张卡有自己的位置标识，扫一眼能回到同一个格子。
+    顶端有一条 2px 的**中性顶光**（不再是装饰色阶，B7.1 做法 2）。
+    它承担的还是同一件事——18 张卡并排时每张卡有自己的上缘，
+    扫一眼能回到同一个格子——只是改用**明度**表达而不是**色相**：
+    18 条彩色卡条会连成 6 条横贯全屏的彩带，实测吃掉全图高彩的 42.4%，
+    却只把"一枚 accent"稀释成六个色相（主族占比掉到 64%）。
+    颜色在 app 级 QSS 的 `QFrame#CardAccent` 里，部件侧不碰样式表。
     """
 
-    def __init__(self, theme: T.Theme, slot: int = 0):
+    def __init__(self, theme: T.Theme):
         super().__init__()
         self.setObjectName("Card")
         v = QVBoxLayout(self)
@@ -628,7 +630,6 @@ class StatCard(QFrame):
         inner.addWidget(self.v)
         v.addWidget(body, 1)
         self.apply_theme(theme)
-        self.set_slot(slot)
 
     def set(self, key: str, value: str, tooltip: str = "") -> None:
         self.k.setText(key)
@@ -637,18 +638,6 @@ class StatCard(QFrame):
         # 让中文落在等宽族上，靠的就是"逐字形回退"，部分机器直接给方框。
         self.v.setFont(T.pick_text_font(value, self._t.type.body_md, self._t.font_family))
         self.setToolTip(tooltip or value)
-
-    def set_slot(self, slot: int) -> None:
-        """色条取装饰色阶的第几档。
-
-        颜色走 **app 级 QSS 的属性选择器**（`QFrame#CardAccent[slot="3"]`），
-        不给每张卡单独 `setStyleSheet`。这不是风格选择，是量出来的：
-        18 张卡各带一份样式表时，换肤的 `setStyleSheet` 要多花 ~90 ms
-        （每份私有样式表都要重新解析一遍）。规则集中在主题里，换肤只算一次。
-        """
-        self.accent.setProperty("slot", str(int(slot)))
-        self.accent.style().unpolish(self.accent)
-        self.accent.style().polish(self.accent)
 
     def apply_theme(self, t: T.Theme) -> None:
         self._t = t
@@ -661,8 +650,8 @@ class StatCard(QFrame):
         # `QLabel#Hero` 规则并存时，Qt 对各属性的合并行为并不明确。
         self.v.setFont(T.pick_text_font(self.v.text(), t.type.body_md, t.font_family))
         self.v.setStyleSheet("color:%s" % t.p.text)
-        # 色条**不在这里重刷**：它的颜色来自 app 级 QSS 的属性选择器，
-        # 换肤时 QSS 一换，6 条规则全部跟着换——部件侧无事可做。
+        # 顶条**不在这里重刷**：它的颜色来自 app 级 QSS 的一条规则，
+        # 换肤时 QSS 一换它跟着换——部件侧无事可做。
 
 
 class Gauge(QWidget):
@@ -677,6 +666,10 @@ class Gauge(QWidget):
         self.main = "—"
         self.sub = " 真实截止"
         self.caption = ""
+        #: 是否压在**大面积着色**上（判定结论条）。为 True 时次要文字改用
+        #: `slab_dim`：结论条底色比卡片底深，`text_faint` 在它上面只有 ~2.9:1，
+        #: 而这两行是 11px 小字。见 `palette.SLAB_L` 与 `CHECKS` 里的结论条几对。
+        self.on_slab = False
         # 环形进度的**缓动值**：数字跳变看不出"变了多少"，指针扫过去才看得出。
         # 走 `motion.tween`（不碰 matplotlib）——画布重绘是按百毫秒计的，
         # 而这只小部件的动画每帧只是几个 drawArc，代价可以忽略。
@@ -744,7 +737,10 @@ class Gauge(QWidget):
         f.setPointSizeF(self.t.type.caption)
         f.setBold(False)
         pr.setFont(f)
-        pr.setPen(QColor(p.text_faint))
+        # 压在大面积着色上时（`on_slab`）次要文字要换色：`text_faint` 在结论条
+        # 底色上只有 ~2.9:1，而这两行是 11px 小字。这不是"顺手换色"——
+        # 结论条的底色进 CHECKS 时就把 `slab_dim` 一起解出来了（见 palette.SLAB_L）。
+        pr.setPen(QColor(p.slab_dim if self.on_slab else p.text_faint))
         pr.drawText(QRectF(0, h * 0.55, w, h * 0.18), Qt.AlignCenter, self.sub)
         if self.caption:
             pr.drawText(QRectF(0, h * 0.71, w, h * 0.20), Qt.AlignCenter, self.caption)

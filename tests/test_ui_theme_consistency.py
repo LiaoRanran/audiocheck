@@ -154,12 +154,14 @@ class TestThemeConsistency(unittest.TestCase):
         self.assertGreaterEqual(len(set(accents[:len(ramp)])), 3,
                                 "前几项就重复了，色阶没铺开")
 
-    def test_metric_cards_carry_deco_strip(self):
-        """指标卡的色条要按槽位取装饰色阶（18 张卡并列，各自一个色）。
+    def test_metric_card_strip_is_not_deco(self):
+        """指标卡的顶条**不许**再用装饰色阶（B7.1 判据 6）。
 
-        颜色在 **app 级 QSS** 里按 `slot` 属性查表，不在部件上写样式表——
-        后者每张卡一份私有样式表，实测把换肤的 `setStyleSheet` 推高 ~90 ms。
-        所以这里断言的是"槽位铺开"+"QSS 里真的有色阶色值"两件事。
+        这是从"有 deco 色条"改成"没有 deco 色条"的**反向断言**——留一条
+        明确的反向测试，比删掉旧测试更有用：它挡的是"以后有人觉得卡条
+        空着可惜，又把色阶接回去"。
+        来历：18 张卡的色条连成 6 条横贯全屏的彩带，实测吃掉全图高彩的
+        42.4%，却把主族占比压到 64.1%（判据要求 ≥85%）。
         """
         from audiocheck.ui.widgets import StatCard
         w = self.w
@@ -173,14 +175,14 @@ class TestThemeConsistency(unittest.TestCase):
         w._cards(r)
         cards = w.findChildren(StatCard)
         self.assertTrue(cards, "总览页应当有指标卡")
-        slots = [c.accent.property("slot") for c in cards]
-        ramp = w.theme.p.deco
-        self.assertEqual([str(i) for i in range(len(ramp))], slots[:len(ramp)],
-                         "色条槽位没有按装饰色阶顺序铺开")
-        self.assertGreater(len(set(slots)), 1, "所有卡的色条同一个槽位")
+        self.assertIsNone(cards[0].accent.property("slot"),
+                          "卡条又按槽位取色了（B7.1 已把它改成中性顶光）")
         q = T.qss(w.theme)
-        for d in ramp:
-            self.assertIn(d, q, "装饰色阶色值 %s 没有进入 QSS（槽位查不到颜色）" % d)
+        import re as _re
+        for sel, body in _re.findall(r"([^{}]+)\{([^{}]*)\}", q):
+            if "CardAccent" in sel:
+                self.assertNotIn("deco", body,
+                                 "CardAccent 的规则里还有 deco：%s" % sel.strip())
         w.items, w._idx, w._last_sig = [], {}, None
         w.apply_theme(T.DARK)
 

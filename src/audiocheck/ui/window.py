@@ -454,7 +454,11 @@ class MainWindow(FramelessWindow):
 
     def _banner(self):
         f = QFrame()
-        f.setObjectName("Card")
+        # **判定结论条**：objectName 决定它按 `level` 属性取判定语义色（B7.1）。
+        # 它不再叫 "Card"——因为"卡片"与"判定结论"是两种东西：
+        # 前者是中性容器，后者是**判定语义唯一的大面积着色**。同名会让
+        # 后来的人以为可以给任意卡片上色。
+        f.setObjectName("VerdictBanner")
         h = QHBoxLayout(f)
         m = self.theme.space
         h.setContentsMargins(m.lg, m.md, m.lg, m.md)
@@ -475,6 +479,9 @@ class MainWindow(FramelessWindow):
         box.addWidget(self.lbl_file)
         h.addLayout(box, 1)
         self.gauge = Gauge(124, self.theme)
+        # 仪表压在结论条的着色上：它的次要文字要换 `slab_dim`（11px 小字，
+        # 在结论条底色上 `text_faint` 只有 ~2.9:1）。
+        self.gauge.on_slab = True
         h.addWidget(self.gauge, 0, Qt.AlignVCenter)
         return f
 
@@ -927,6 +934,12 @@ class MainWindow(FramelessWindow):
         p = self.theme.p
         self.badge.setText(LEVEL_CN.get(lv, lv))
         self.badge.set_level(lv, self.theme)
+        # 结论条的底色按判定走（QSS 属性选择器）：**这是判定语义唯一的大面积
+        # 着色**。换文件 → 换底色，一次 repolish 就够，不用 setStyleSheet。
+        self.banner.setProperty("level", {"ok": "ok", "warn": "warn",
+                                          "bad": "bad"}.get(lv, "warn"))
+        self.banner.style().unpolish(self.banner)
+        self.banner.style().polish(self.banner)
         # 信息驱动的动效：只有"有疑 / 不达标"才脉一下——结论值得看一眼。
         # 常驻装饰会持续吃 CPU，也会被习惯性忽略，那样动效就失去意义了。
         if lv in ("warn", "bad"):
@@ -969,12 +982,11 @@ class MainWindow(FramelessWindow):
             ("编码器串", (r.get("meta") or {}).get("vendor") or "—"),
         ]
         cards = []
-        # 每张卡的色条从**装饰色阶**里按序号取（槽位，颜色在 QSS 里查表）：
-        # 18 张卡是并列关系，各自的色条让"扫一眼回到同一格"成为可能
-        # （纯装饰，不承担语义）。
-        n_slots = len(self.theme.p.deco) or 1
+        # 卡片的顶条**不再是装饰色阶**（B7.1 做法 2）：18 张卡的色条会连成
+        # 6 条横贯全屏的彩带，实测贡献了全图高彩的 42.4% 却只把"一枚 accent"
+        # 稀释成六个色相。现在它是中性顶光，按 QSS 取色，不再需要槽位参数。
         for i, (k, v) in enumerate(pairs):
-            c = StatCard(self.theme, i % n_slots)
+            c = StatCard(self.theme)
             c.set(k, str(v))
             self.grid.addWidget(c, i // 6, i % 6)
             cards.append(c)

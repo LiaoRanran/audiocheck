@@ -223,6 +223,16 @@ class Palette:
     danger_bd: str = "#6b2521"
     info_bd: str = "#12506a"
 
+    #: **判定结论条**：判定语义唯一的大面积着色（B7.1）。
+    #: 三档 + 它自己的次要文字色。参数由色域反解，来历见 `palette.SLAB_L`；
+    #: 对比度判据在 `palette.CHECKS` 里逐条列着（正文 7:1 / 次文 4.5:1）。
+    #: ⚠ 暗色主题下 `warning_slab` 的彩度**到不了 C0.10**（sRGB 色域边界，H85
+    #: 在 L0.36 处最大约 0.073）——这不是缺陷，是黄的可用彩度比红/绿小得多。
+    success_slab: str = "#004a0e"
+    warning_slab: str = "#4e3800"
+    danger_slab: str = "#6c1a1b"
+    slab_dim: str = "#aaaab2"
+
     # 选中 / 悬停叠加
     selection: str = "#1a2740"
     hover: str = "#1a1f29"
@@ -255,6 +265,11 @@ class Palette:
     def level_bd(self, level: str) -> str:
         return {"ok": self.success_bd, "warn": self.warning_bd,
                 "bad": self.danger_bd}.get(level, self.border_hi)
+
+    def level_slab(self, level: str) -> str:
+        """判定结论条的底色（**判定语义唯一的大面积着色**）。"""
+        return {"ok": self.success_slab, "warn": self.warning_slab,
+                "bad": self.danger_slab}.get(level, self.surface_hi)
 
 
 def plot_palette(p: Palette) -> dict:
@@ -452,17 +467,30 @@ QToolTip {{ background:{surface_raised}; color:{text}; border:1px solid {border_
 QFrame#Card, QWidget#Card {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
     stop:0 {surface_hi}, stop:1 {surface}); border:1px solid {border};
                              border-radius:{r_xl}px; }}
-/* 指标卡顶端的 2px 色条：按 `slot` 属性取装饰色阶的某一档。
-   **为什么用属性选择器而不是逐卡 setStyleSheet**：18 张卡各带一份私有
-   样式表时，换肤要逐个重新解析——实测把 setStyleSheet 推高 ~90 ms。
-   规则集中在主题里，换肤只算一次；换主题时 6 条规则一起换。 */
-QFrame#CardAccent {{ border:0; border-top-left-radius:{r}px; border-top-right-radius:{r}px; }}
-QFrame#CardAccent[slot="0"] {{ background:{deco0}; }}
-QFrame#CardAccent[slot="1"] {{ background:{deco1}; }}
-QFrame#CardAccent[slot="2"] {{ background:{deco2}; }}
-QFrame#CardAccent[slot="3"] {{ background:{deco3}; }}
-QFrame#CardAccent[slot="4"] {{ background:{deco4}; }}
-QFrame#CardAccent[slot="5"] {{ background:{deco5}; }}
+/* 指标卡顶端的 2px 色条：**从装饰色阶撤出，改中性顶光**（B7.1 做法 2）。
+   来历：18 张卡的色条连成 6 条横贯全屏的彩色长条，实测贡献了**全图高彩的
+   42.4%** 却只引入噪声（勘误 §5.2 逐行扫描量到的）。它们很细，面积判据抓不到，
+   但把"一枚 accent"稀释成了六个色相（主族占比只有 64.1%）。
+   现在它承担的还是同一件事——"18 张卡并排时，每张卡有自己的上缘"——
+   只是用**明度**表达而不是**色相**：这是"顶光"的语言，与 B7.4 的"亮边"同源，
+   不再新增一个色相。
+   **为什么保留这块而不是删掉**：删了就退回"一整片同色块"，
+   而"扫一眼回到同一格"是这张网格的实用功能，不是装饰。 */
+QFrame#CardAccent {{ border:0; border-top-left-radius:{r}px;
+    border-top-right-radius:{r}px; background:{top_light}; }}
+
+/* ===== 判定结论条（判定语义唯一的大面积着色） ===== */
+/* 来历：勘误 §5.6 的处置顺序「① 先收 deco → ② 再量玫瑰够不够 → ③ 加大玫瑰面积」，
+   并点名"顶部结论条"是玫瑰的面积该长的地方（它承载信息，不是装饰）。
+   按 `level` 属性取色，换肤时只重算一遍 QSS——不给它 setStyleSheet。 */
+QFrame#VerdictBanner {{ border:0; border-radius:{r_xl}px; }}
+QFrame#VerdictBanner[level="ok"] {{ background:{ok_slab}; }}
+QFrame#VerdictBanner[level="warn"] {{ background:{warn_slab}; }}
+QFrame#VerdictBanner[level="bad"] {{ background:{bad_slab}; }}
+/* 结论条上的次要文字（文件名 · 编码 · 路径）与正文分开取色：
+   底色变深之后 `text_faint` 只有 2.9:1（不达标），这一色是专为它解出来的。 */
+#VerdictBanner QLabel#Caption {{ color:{slab_dim}; }}
+#VerdictBanner QLabel#Hero, #VerdictBanner QLabel#HeroUnit {{ color:{text}; }}
 /* SectionTitle 用字距而不是字重做层级：本机中文字体只有 400/700 两档，
    原来写 font-weight:600 会被 Qt 吸附到 700（还会打 findfont 告警），
    于是"600"和"700"渲染出来一模一样——那个层级是假的。 */
@@ -604,13 +632,16 @@ QSplitter::handle:hover {{ background:{primary_soft}; }}
         top_light=p.top_light,
         # 装饰色阶按序号展开成独立占位符：QSS 模板里写 `{deco[0]}` 会与
         # Python 的格式串解析纠缠（中括号不是合法占位符），显式摊开最直白。
+        # QSS 里只剩品牌条的**三个小段**用 deco（B7.1：deco 保留但只做小色块，
+        # 不做大面积强调线）。卡片的色条已改中性顶光，另外三档 deco 只在
+        # Python 侧用（侧边栏导航图标按顺序取满六档），所以不再进 QSS 占位符。
         deco0=(p.deco[0] if len(p.deco) > 0 else p.accent2),
-        deco1=(p.deco[1] if len(p.deco) > 1 else p.accent2),
         deco2=(p.deco[2] if len(p.deco) > 2 else p.accent2),
-        deco3=(p.deco[3] if len(p.deco) > 3 else p.accent2),
         deco4=(p.deco[4] if len(p.deco) > 4 else p.accent2),
-        deco5=(p.deco[5] if len(p.deco) > 5 else p.accent2),
         danger=p.danger, danger_lo=p.danger_lo, hover=p.hover, selection=p.selection,
+        # 判定结论条（判定语义唯一的大面积着色）与它自己的次要文字色
+        ok_slab=p.success_slab, warn_slab=p.warning_slab, bad_slab=p.danger_slab,
+        slab_dim=p.slab_dim,
         font=t.font, body=int(ty.body), body_sm=int(ty.body_sm), body_md=int(ty.body_md),
         caption=int(ty.caption), micro=int(ty.micro), display=int(ty.display),
         # 字距令牌：QSS 里只许出现这些值，不许手写 px
