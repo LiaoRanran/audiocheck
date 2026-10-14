@@ -572,6 +572,14 @@ def qss(t: Theme) -> str:
     return """
 /* ===== 基础 ===== */
 * {{ outline: 0; }}
+/* ⚠ `outline: 0` 会把**所有**控件的 focus ring 一起干掉（当年为去掉虚线框加的）。
+   B14 §3D 要求"focus ring 可见"（可及性），所以必须补一条 themed focus 边：
+   焦点态用 `border_focus`（比常态亮一档）+ 1px，键盘用户因此看得见自己在哪。
+   **写在所有 `border` 简写之后**（同特异度后写的赢）。 */
+QWidget:focus {{ border-color:{border_focus}; }}
+QPushButton:focus, QToolButton:focus, QComboBox:focus, QLineEdit:focus,
+QSpinBox:focus, QCheckBox:focus, QListWidget:focus, QTableWidget:focus,
+QTabBar:focus {{ border:1px solid {border_focus}; }}
 QWidget {{ background:{bg}; color:{text}; font-size:{body}px; {font_css} }}
 QMainWindow, QDialog {{ background:{bg}; }}
 QToolTip {{ background:{surface_raised}; color:{text}; border:1px solid {border_hi};

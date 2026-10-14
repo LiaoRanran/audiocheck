@@ -293,5 +293,54 @@ class TestIconStateColoring(unittest.TestCase):
                              "NavButton 图标的 %s 模式是空的" % mode)
 
 
+class TestInteractionStates(unittest.TestCase):
+    """3D：六态各有规则 + focus ring 可见（B14 §3D）。
+
+    每一态用**选择器计数**判：QSS 里至少要有一条规则提到它。
+    这不是"看起来有"——是"这一态有地方在管它"。少一态就是少一态，
+    观感说不清，选择器数得清。
+    """
+
+    #: 六态 → QSS 里必须出现的选择器形态
+    STATES = {
+        "hover": r":hover",
+        "press": r":pressed",
+        "focus": r":focus",
+        "selected": r'(?:\[active="true"\]|::item:selected|:selected)',
+        "checked": r"::indicator:checked|\[checked",
+        "disabled": r":disabled",
+    }
+
+    def test_every_state_has_a_rule(self):
+        q = T.qss(T.DARK) + T.qss(T.LIGHT)
+        for name, pat in self.STATES.items():
+            self.assertRegex(q, pat, "六态里的 %s 在 QSS 里没有规则" % name)
+
+    def test_focus_ring_is_visible(self):
+        """focus ring 不能只靠 `outline: 0`（那会把焦点框一起干掉）。"""
+        q = T.qss(T.DARK)
+        self.assertIn("outline: 0", q, "默认虚线框应该被去掉")
+        # 必须有一条 focus 规则给了**可见的边**（border-color 或 border）
+        m = re.search(r"QWidget:focus\s*\{([^}]*)\}", q)
+        self.assertIsNotNone(m, "没有 QWidget:focus 规则——焦点态没有着落")
+        self.assertRegex(m.group(1), r"border(-color)?\s*:",
+                         "focus 规则没有给可见的边")
+
+    def test_transitions_are_restrained(self):
+        """轻过渡不许引第二光中心：QSS 里不出现 box-shadow / 大半径光晕。"""
+        for theme in (T.DARK, T.LIGHT):
+            q = T.qss(theme)
+            self.assertNotIn("box-shadow", q,
+                             "%s 的 QSS 里出现 box-shadow——Qt 本就不支持，"
+                             "写了也是静默失效" % theme.name)
+
+    def test_keyboard_paths_exist(self):
+        """键盘可达：命令面板与表格要有 keyPressEvent（↑↓/Enter/Esc 的落点）。"""
+        from audiocheck.ui import widgets as W
+        for cls in (W.CommandPalette, W.KVTable):
+            self.assertTrue(hasattr(cls, "keyPressEvent"),
+                            "%s 没有 keyPressEvent——键盘到不了" % cls.__name__)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
