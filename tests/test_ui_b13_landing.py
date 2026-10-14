@@ -29,6 +29,7 @@ from audiocheck.ui import theme as T  # noqa: E402
 
 FONTS = os.path.join(_ROOT, "src", "audiocheck", "assets", "fonts")
 UI = os.path.join(_ROOT, "src", "audiocheck", "ui")
+_SRC = os.path.join(_ROOT, "src")     # 3C 判据按 src 根扫全仓引用
 
 
 def _no_comments(s: str) -> str:
@@ -187,6 +188,72 @@ class TestBorderWeight(unittest.TestCase):
         # 顺序：border-top 必须出现在 border 简写之后（否则被重置，静默失效）
         self.assertGreater(card.index("border-top"), card.index("border:1px"),
                            "border-top 写在 border 简写之前——会被静默重置")
+
+
+class TestIconRegistry(unittest.TestCase):
+    """3C：内嵌矢量三类齐 + **不许静默空白**。
+
+    "缺图标不许静默空白"的机器形态：扫全仓 `icon_name=` / `make_pixmap(` 的
+    引用，**每一个名字都必须在 `make_pixmap` 的注册表里**。注册表外的名字
+    现在会走到 `else` 分支（返回一个空白 pixmap）——那正是"看起来有图标、
+    其实什么都没画"的静默失败，本项目已经在字体/QSS 上踩过三次同型的坑。
+    """
+
+    #: 三类（B14 §3C 点名）：导航 / 状态 / 动作
+    REQUIRED = {
+        "nav": ("wave", "list", "disc", "gear"),
+        "status": ("shield", "ok", "warn", "bad"),
+        "action": ("expand", "collapse", "play", "export"),
+    }
+
+    def _registry(self):
+        src = open(os.path.join(_SRC, "audiocheck", "ui", "theme.py"),
+                   encoding="utf-8").read()
+        a = src.index("def make_pixmap")
+        b = src.index("def ", a + 10)
+        return set(re.findall(r'if name == "([a-z_]+)"', src[a:b]))
+
+    def test_three_categories_are_complete(self):
+        reg = self._registry()
+        for cat, names in self.REQUIRED.items():
+            for n in names:
+                self.assertIn(n, reg, "%s 类缺图标 %r" % (cat, n))
+
+    def test_every_reference_resolves(self):
+        """全仓引用必须在注册表里——否则就是静默空白。"""
+        reg = self._registry()
+        bad = []
+        for base, _dirs, files in os.walk(os.path.join(_SRC, "audiocheck")):
+            if "__pycache__" in base:
+                continue
+            for fn in files:
+                if not fn.endswith(".py"):
+                    continue
+                p = os.path.join(base, fn)
+                src = open(p, encoding="utf-8").read()
+                src = re.sub(r'"""(?:.|\n)*?"""', '""', src)
+                for m in re.finditer(r'(?:icon_name\s*=\s*|make_pixmap\(\s*)'
+                                     r'["\']([a-z_]+)["\']', src):
+                    if m.group(1) not in reg:
+                        bad.append("%s: %r" % (os.path.relpath(p, _SRC), m.group(1)))
+        self.assertEqual(bad, [], "引用了不存在的图标（会静默空白）：%s" % bad[:6])
+
+    def test_registry_entries_are_drawn(self):
+        """注册表里每个分支都真的画了东西（`drawLine/drawEllipse/drawPoly*`）。
+
+        防"加了名字没画"——那种条目比缺名字更隐蔽：它存在、能被引用、
+        但渲染出来是空白。
+        """
+        src = open(os.path.join(_SRC, "audiocheck", "ui", "theme.py"),
+                   encoding="utf-8").read()
+        a = src.index("def make_pixmap")
+        b = src.index("def ", a + 10)
+        body = src[a:b]
+        for name in re.findall(r'if name == "([a-z_]+)"', body):
+            seg = body[body.index('name == "%s"' % name):]
+            nxt = re.search(r'\n    (?:el)?if name ==|\n    else:', seg[10:])
+            seg = seg[:10 + nxt.start()] if nxt else seg
+            self.assertRegex(seg, r"pr\.draw", "图标 %r 没有绘制调用" % name)
 
 
 if __name__ == "__main__":

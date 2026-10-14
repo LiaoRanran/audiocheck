@@ -1301,6 +1301,32 @@ def make_pixmap(name: str, color: str, size: int = 18, weight: float = 1.6) -> Q
             pen2.setWidthF(weight)
             pr.setPen(pen2)
             pr.setBrush(Qt.NoBrush)
+    elif name == "bad":
+        pr.drawLine(QPointF(m, m), QPointF(s - m, s - m))
+        pr.drawLine(QPointF(s - m, m), QPointF(m, s - m))
+    elif name == "collapse":
+        pr.drawPolyline([QPointF(m, s - m), QPointF(s / 2, s * 0.35),
+                         QPointF(s - m, s - m)])
+    elif name == "disc":
+        pr.drawEllipse(QRectF(m, m, s - 2 * m, s - 2 * m))
+        pr.drawEllipse(QRectF(s * 0.42, s * 0.42, s * 0.16, s * 0.16))
+    elif name == "expand":
+        pr.drawPolyline([QPointF(m, s * 0.60), QPointF(s / 2, s - m),
+                         QPointF(s - m, s * 0.60)])
+    elif name == "list":
+        for i in range(3):
+            y = m + i * (s - 2 * m) / 2.0
+            pr.drawLine(QPointF(m, y), QPointF(s - m, y))
+            pr.drawLine(QPointF(m, y), QPointF(m + s * 0.16, y))
+    elif name == "ok":
+        pr.drawPolyline([QPointF(m + s * 0.08, s * 0.54),
+                         QPointF(s * 0.42, s - m - s * 0.06),
+                         QPointF(s - m, m + s * 0.10)])
+    elif name == "warn":
+        pr.drawPolyline([QPointF(s / 2, m), QPointF(s - m, s - m), QPointF(m, s - m),
+                         QPointF(s / 2, m)])
+        pr.drawLine(QPointF(s / 2, s * 0.40), QPointF(s / 2, s * 0.62))
+        pr.drawLine(QPointF(s / 2, s * 0.74), QPointF(s / 2, s * 0.75))
     pr.end()
     return pm
 
