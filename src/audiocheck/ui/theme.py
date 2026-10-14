@@ -746,7 +746,8 @@ QComboBox QAbstractItemView {{ background:{surface_raised}; border:1px solid {bo
     selection-background-color:{primary}; color:{text}; padding:{xs}px; border-radius:{r_md}px; }}
 QCheckBox {{ spacing:{sm}px; color:{text}; font-size:{body}px; }}
 QCheckBox::indicator {{ width:16px; height:16px; border-radius:{r_sm}px;
-    border:1px solid {border_hi}; background:{surface_hi}; }}
+    border:1px solid {border_hi}; border-top:1px solid {border}; border-bottom:1px solid {top_light};
+    background:{surface_hi}; }}
 QCheckBox::indicator:checked {{ background:{primary}; border-color:{primary}; }}
 QCheckBox::indicator:disabled {{ border-color:{border}; background:{surface}; }}
 
@@ -758,13 +759,14 @@ QCheckBox::indicator:disabled {{ border-color:{border}; background:{surface}; }}
    而这张表里有中文文件名、有整页中文的元数据表——整体等宽等于把中文
    全部推给"逐字形回退"，落到哪个字体不可控，部分机器上直接是方框。 */
 QTableWidget {{ background:{surface_veil}; alternate-background-color:{surface_hi_veil};
-    gridline-color:transparent; border:1px solid {border}; border-radius:{r_xl}px;
+    gridline-color:transparent; border:1px solid {border}; border-top:1px solid {top_light};
+    border-radius:{r_xl}px;
     selection-background-color:{selection}; selection-color:{text};
     font-size:{body_sm}px; }}
 QTableWidget::item {{ padding:{xs}px {sm}px; border:0; }}
 QTableWidget::item:selected {{ background:{selection}; color:{text}; }}
 QHeaderView::section {{ background:{surface_hi}; color:{text_dim}; border:0;
-    border-bottom:1px solid {border}; padding:{sm}px {md}px;
+    border-top:1px solid {top_light}; border-bottom:1px solid {border}; padding:{sm}px {md}px;
     font-weight:700; font-size:{caption}px; letter-spacing:{tr_caps_caption}px; }}
 QHeaderView::section:hover {{ color:{text}; }}
 QTableCornerButton::section {{ background:{surface_hi}; border:0; }}
@@ -780,14 +782,14 @@ QTabBar::tab:disabled {{ color:{text_disabled}; }}
 /* ===== 滚动条（细、圆角、悬停才明显） ===== */
 QScrollBar:vertical {{ background:transparent; width:10px; margin:0; }}
 QScrollBar::handle:vertical {{ background:{border_hi}; border-radius:{r_instrument}px; min-height:36px;
-    margin:2px; }}
+    border-top:1px solid {top_light}; border-bottom:1px solid {border}; margin:2px; }}
 QScrollBar::handle:vertical:hover {{ background:{text_faint}; }}
 /* 按住滑块拖动时要与"只是悬停"区分开：滚动条是**拖拽类**控件，
    悬停=准备好，按下=正在拖。少了 :pressed，拖动过程中手感和悬停一样。 */
 QScrollBar::handle:vertical:pressed {{ background:{text_dim}; }}
 QScrollBar:horizontal {{ background:transparent; height:10px; }}
 QScrollBar::handle:horizontal {{ background:{border_hi}; border-radius:{r_instrument}px; min-width:36px;
-    margin:2px; }}
+    border-top:1px solid {top_light}; border-bottom:1px solid {border}; margin:2px; }}
 QScrollBar::handle:horizontal:hover {{ background:{text_faint}; }}
 QScrollBar::handle:horizontal:pressed {{ background:{text_dim}; }}
 QScrollBar::add-line, QScrollBar::sub-line {{ width:0; height:0; }}
