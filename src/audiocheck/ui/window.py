@@ -45,6 +45,7 @@ from ..core.views import spectrogram as view_spectrogram
 from ..core.views import waterfall as view_waterfall
 from . import motion
 from . import theme as T
+from .atmosphere import AtmosphereHost
 from .charts import (
     BandCanvas,
     CompareCanvas,
@@ -196,7 +197,7 @@ class MainWindow(FramelessWindow):
             app.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
         super().__init__(title="audiocheck", subtitle="音源质量检测")
 
-        self.theme: T.Theme = T.DARK
+        self.theme: T.Theme = T.DARK          # 默认档；亮色默认要走 _restore/config 路径（B14 待定）
         # 由种子色生成的主题（`ui/palette.py`）。None = 用内置 DARK/LIGHT。
         self.seed: str | None = None
         self.seed_mode: str | None = None
@@ -230,7 +231,13 @@ class MainWindow(FramelessWindow):
 
     def _build(self):
         host = self.content()
-        root = QHBoxLayout(host)
+        outer = QVBoxLayout(host)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        # B14 §3：内容浮在 G1 氛围底上（氛围退到边衬 / 间隙）
+        self.atmo = AtmosphereHost(host)
+        outer.addWidget(self.atmo)
+        root = QHBoxLayout(self.atmo)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
