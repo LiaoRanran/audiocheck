@@ -242,7 +242,9 @@ class TestRenderUnchanged(unittest.TestCase):
         code = _code(CHARTS)
         self.assertIn('interpolation="nearest"', code,
                       "频谱图的 interpolation 被动了——数据映射不是配色")
-        self.assertRegex(code, r"vmin=-90\b")
+        # B14 精度：dB 窗改成**具名常量**（固定窗 = 跨文件可比，专业软件通行做法）
+        self.assertRegex(code, r"SPECTRO_DB_RANGE\s*=\s*90")
+        self.assertRegex(code, r"vmin=-SPECTRO_DB_RANGE\b")
         self.assertRegex(code, r"vmax=0\b")
 
     def test_no_default_matplotlib_colormaps_left(self):

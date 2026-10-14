@@ -282,6 +282,14 @@ class BaseCanvas(FigureCanvasQTAgg):
 #: 但比原始的 2049 行少 5.7 倍，这正是 imshow 比 pcolormesh 快的主要来源。
 RESAMPLE_ROWS = 360
 
+#: 频谱图 / 瀑布图的 dB 显示窗（相对峰值）。
+#:
+#: **固定窗，不是每文件自适应**——这是专业软件的通行做法，理由是可**跨文件比较**：
+#: 自适应窗会让"两张看着差不多亮"的图其实量纲不同（一张 40dB 窗、一张 90dB 窗），
+#: 肉眼分不出、结论就错。数据在画之前做了 `S - nanmax(S)`（峰值归一到 0 dB），
+#: 所以窗就是"**峰值下 N dB**"。90 dB 覆盖 CD 级动态范围（16bit 理论 96 dB）的绝大部分。
+SPECTRO_DB_RANGE = 90.0
+
 #: 纵轴刻度（Hz）
 TICKS_HZ = (20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000)
 
@@ -774,7 +782,7 @@ class SpectrogramCanvas(BaseCanvas):
             self._rs_cache = np.clip(
                 _resample_rows(S - np.nanmax(S), f, np.geomspace(20.0, f[-1],
                                                                  RESAMPLE_ROWS)),
-                -90, 0)
+                -SPECTRO_DB_RANGE, 0.0)
             self._rs_key = key
         db = self._rs_cache
         # **对数频轴重采样 + imshow**，替代 `pcolormesh` + 对数轴。
@@ -785,7 +793,7 @@ class SpectrogramCanvas(BaseCanvas):
         # 代价只在"频域采样密度"上（360 行 ≈ 每 1/24 倍频程一行，够读）。
         mesh = ax.imshow(db, aspect="auto", origin="lower",
                          extent=(t[0], t[-1], math.log10(20.0), math.log10(f[-1])),
-                         cmap=rd_cmap(), vmin=-90, vmax=0, interpolation="nearest",
+                         cmap=rd_cmap(), vmin=-SPECTRO_DB_RANGE, vmax=0.0, interpolation="nearest",
                          zorder=1)
         ax.set_ylim(math.log10(20.0), math.log10(f[-1]))
         ax.grid(False)
