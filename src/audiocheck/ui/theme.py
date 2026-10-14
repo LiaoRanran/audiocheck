@@ -566,6 +566,12 @@ def hairline_px(dpr: float = 1.0) -> str:
     return "0.5px" if float(dpr) >= HAIRLINE_DPR else "1px"
 
 
+def _rgba(hexv: str, alpha: float) -> str:
+    """hex → `rgba(r,g,b,a)`。B14 §3 氛围铺满：主容器半透，让氛围透上来。"""
+    h = hexv.lstrip("#")
+    return "rgba(%d,%d,%d,%s)" % (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), alpha)
+
+
 def qss(t: Theme) -> str:
     p, sp, ty = t.p, t.space, t.type
     tk = t.tracking
@@ -580,7 +586,7 @@ QWidget:focus {{ border-color:{border_focus}; }}
 QPushButton:focus, QToolButton:focus, QComboBox:focus, QLineEdit:focus,
 QSpinBox:focus, QCheckBox:focus, QListWidget:focus, QTableWidget:focus,
 QTabBar:focus {{ border:1px solid {border_focus}; }}
-QWidget {{ background:{bg}; color:{text}; font-size:{body}px; {font_css} }}
+QWidget {{ background:{bg_veil}; color:{text}; font-size:{body}px; {font_css} }}
 QMainWindow, QDialog {{ background:{bg}; }}
 QToolTip {{ background:{surface_raised}; color:{text}; border:1px solid {border_hi};
             border-top:1px solid {top_light};
@@ -603,7 +609,7 @@ QToolTip {{ background:{surface_raised}; color:{text}; border:1px solid {border_
 
 /* ===== 侧边栏 ===== */
 #SideBar {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-           stop:0 {surface}, stop:1 {bg}); border-right:1px solid {border}; }}
+           stop:0 {surface_veil}, stop:1 {bg_veil}); border-right:1px solid {border}; }}
 #BrandName {{ font-size:{body_md}px; font-weight:700; color:{text}; letter-spacing:{tr_body_md}px; }}
 #BrandSub {{ font-size:{micro}px; color:{text_faint}; letter-spacing:{tr_micro}px; }}
 /* 品牌下的三色条：**只用装饰色阶**（deco[0]/[2]/[4]）。
@@ -630,7 +636,7 @@ QToolTip {{ background:{surface_raised}; color:{text}; border:1px solid {border_
    **必须写在 `border` 简写之后**——QSS 同特异度下后写的赢，而 `border`
    简写会把 `border-top` 一起重置（第一次写就被静默吃掉过）。 */
 QFrame#Card, QWidget#Card {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-    stop:0 {surface_hi}, stop:1 {surface}); border:1px solid {border};
+    stop:0 {surface_hi_veil}, stop:1 {surface_veil}); border:1px solid {border};
                              border-radius:{r_xl}px;
     border-top:1px solid {top_light}; border-bottom:1px solid {border}; }}
 /* 指标卡顶端的 2px 色条：**从装饰色阶撤出，改中性顶光**（B7.1 做法 2）。
@@ -871,6 +877,10 @@ QSplitter::handle:hover {{ background:{primary_soft}; }}
         r=max(0, t.radius.xl - 1),
         r_nano=t.radius.nano, r_tiny=t.radius.tiny,
         r_instrument=t.radius.instrument,
+        # B14 §3 氛围铺满：主容器半透（α=0.86 ≈ GR 面板不透明度），G1 透上来
+        bg_veil=_rgba(t.p.bg, 0.86),
+        surface_veil=_rgba(t.p.surface, 0.86),
+        surface_hi_veil=_rgba(t.p.surface_hi, 0.86),
         )
 
 
