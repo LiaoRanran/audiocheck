@@ -634,6 +634,11 @@ class SpectrumCanvas(BaseCanvas):
         ax.axvline(nyq, color=p["text_faint"], lw=1.0, ls=":", zorder=2)
         ax.text(nyq, lo + (top - lo) * .02, " 奈奎斯特 %.1fk" % (nyq / 1000),
                 color=p["text_faint"], fontsize=p['fs_tick'], va="bottom", ha="right", rotation=90)
+        # B14 精度：**披露频率分辨率**。曲线是 16384-FFT（Δf≈2.7Hz）、频谱图是
+        # 4096-FFT（Δf≈10.8Hz）——同一截止在两图落在**不同精度**上，不写出来读数不可信。
+        if len(f) > 1:
+            ax.text(0.995, 0.02, "Δf ≈ %.3g Hz" % float(f[1] - f[0]), transform=ax.transAxes,
+                    color=p["text_faint"], fontsize=p['fs_tick'], ha="right", va="bottom")
 
         # 填充 .16→.10：原来低频段糊成一块，把曲线本身盖住了
         ax.fill_between(f, db, lo, color=p["accent"], alpha=.10, lw=0, zorder=2)
@@ -803,6 +808,10 @@ class SpectrogramCanvas(BaseCanvas):
         # 纵轴刻度：位置是 log10(Hz)，标签写 Hz（读起来和原来一样）
         ax.set_yticks([math.log10(v) for v in TICKS_HZ if v < f[-1]])
         ax.set_yticklabels([_hz_label(v) for v in TICKS_HZ if v < f[-1]])
+        # B14 精度：披露频率分辨率（Δf = 相邻 bin 间距，从数据直接算，不靠 nperseg 猜）
+        if len(f) > 1:
+            ax.text(0.995, 0.02, "Δf ≈ %.3g Hz" % float(f[1] - f[0]), transform=ax.transAxes,
+                    color=p["text_faint"], fontsize=p['fs_tick'], ha="right", va="bottom", zorder=3)
         self._colorbar(mesh, p)
         self.draw()
 
