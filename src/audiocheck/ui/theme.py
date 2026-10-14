@@ -898,7 +898,7 @@ QSplitter::handle:hover {{ background:{primary_soft}; }}
 #: （"1" 和 "8" 宽度不同），而且眼睛没法沿竖线扫一列数。
 #: QSS 的 font-family 不支持多族回退链，所以这里只取栈首，配合
 #: mono_qfont() 的 styleHint 做双保险（族名找不到时 Qt 自动落系统等宽）。
-MONO_STACK = ("Cascadia Mono", "Cascadia Code", "Consolas", "SF Mono", "Menlo",
+MONO_STACK = ("IBM Plex Mono", "Cascadia Mono", "Cascadia Code", "Consolas", "SF Mono", "Menlo",
               "DejaVu Sans Mono", "Liberation Mono", "Courier New")
 
 

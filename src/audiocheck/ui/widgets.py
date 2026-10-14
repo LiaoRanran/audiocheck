@@ -641,7 +641,7 @@ class StatCard(QFrame):
         self.v.setText(value)
         # 值里可能是中文（厂牌 / 编码器串）→ 按内容选字体。
         # 让中文落在等宽族上，靠的就是"逐字形回退"，部分机器直接给方框。
-        self.v.setFont(T.pick_text_font(value, self._t.type.body_md, self._t.font_family))
+        self.v.setFont(T.mono_qfont(self._t.type.body_md))   # B14 字排版：数值走等宽（列对齐）
         self.setToolTip(tooltip or value)
 
     def apply_theme(self, t: T.Theme) -> None:
