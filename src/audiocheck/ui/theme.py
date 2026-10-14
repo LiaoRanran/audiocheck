@@ -1340,6 +1340,26 @@ def icon(name: str, color: str = "#e8ecf3", size: int = 18) -> QIcon:
     return ic
 
 
+def icon_states(name: str, normal: str, size: int = 17,
+                active: str = "", disabled: str = "") -> QIcon:
+    """同一支笔画三种状态色，挂成 `QIcon` 的三个模式（3C 态着色）。
+
+    ⚠ **为什么必须这么做**：QSS 的 `:hover`/`:pressed`/`:disabled` 只能改
+    **背景与文字色**，改不了 pixmap 图标的颜色。只调 `setIcon(单色)` 的话，
+    鼠标移上去只有底色在变、图标不变——"态着色跟随主题"对图标就是空的。
+    Qt 的正解是 `QIcon` 多模式：按钮在自己对应状态自动取对应模式，
+    **不需要事件钩子**（事件钩子会漏：leaveEvent 没收到就卡在 hover 色）。
+
+    `active` 缺省用 `normal`（那一态不换色，只靠 QSS 的背景表达），
+    `disabled` 缺省用 `text_disabled` 一类的弱色——由调用方给。
+    """
+    ic = QIcon()
+    ic.addPixmap(make_pixmap(name, normal, size), QIcon.Mode.Normal)
+    ic.addPixmap(make_pixmap(name, active or normal, size), QIcon.Mode.Active)
+    ic.addPixmap(make_pixmap(name, disabled or normal, size), QIcon.Mode.Disabled)
+    return ic
+
+
 def app_icon(p: Palette = DARK_P) -> QIcon:
     """程序图标：频谱砖墙——低区密、高区骤停（本工具的立意为"看内容"）。"""
     pm = QPixmap(128, 128)

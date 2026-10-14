@@ -20,12 +20,14 @@ for _p in (os.path.join(_ROOT, "src"),):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+from PySide6.QtGui import QIcon  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 APP = QApplication.instance() or QApplication([])
 
 from audiocheck.ui import palette as P  # noqa: E402
 from audiocheck.ui import theme as T  # noqa: E402
+from audiocheck.ui import widgets as W  # noqa: E402
 
 FONTS = os.path.join(_ROOT, "src", "audiocheck", "assets", "fonts")
 UI = os.path.join(_ROOT, "src", "audiocheck", "ui")
@@ -254,6 +256,41 @@ class TestIconRegistry(unittest.TestCase):
             nxt = re.search(r'\n    (?:el)?if name ==|\n    else:', seg[10:])
             seg = seg[:10 + nxt.start()] if nxt else seg
             self.assertRegex(seg, r"pr\.draw", "图标 %r 没有绘制调用" % name)
+
+
+class TestIconStateColoring(unittest.TestCase):
+    """3C 接线：图标三态着色（active/hover/disabled 跟随主题）。
+
+    判据量的是 **QIcon 的三个模式都非空**——那是"态着色真的接上了"的
+    机器形态。只给单色 pixmap 的图标在这条上会红。
+    """
+
+    def test_icon_has_three_modes(self):
+        for name in ("wave", "list", "gear", "ok", "bad", "expand"):
+            ic = T.icon_states(name, "#888888", 17)
+            for mode in (QIcon.Mode.Normal, QIcon.Mode.Active, QIcon.Mode.Disabled):
+                pm = ic.pixmap(17, 17, mode)
+                self.assertFalse(pm.isNull(),
+                                 "%s 的 %s 模式是空的——那一态没有着色" % (name, mode))
+
+    def test_modes_are_different_colors(self):
+        """三态不能是同一张图——否则"着色"是假的。"""
+        ic = T.icon_states("wave", "#888888", 17, active="#ff0000",
+                           disabled="#001111")
+        a = ic.pixmap(17, 17, QIcon.Mode.Normal).toImage()
+        b = ic.pixmap(17, 17, QIcon.Mode.Active).toImage()
+        c = ic.pixmap(17, 17, QIcon.Mode.Disabled).toImage()
+        self.assertNotEqual(a.pixel(8, 8), b.pixel(8, 8), "Normal 与 Active 同色")
+        self.assertNotEqual(a.pixel(8, 8), c.pixel(8, 8), "Normal 与 Disabled 同色")
+
+    def test_nav_button_icon_has_three_modes(self):
+        """`NavButton` 真件上的图标也必须是三态（接线判据）。"""
+        btn = W.NavButton("k", "标签", "wave", T.DARK)
+        ic = btn.icon()
+        self.assertFalse(ic.isNull(), "NavButton 没有图标")
+        for mode in (QIcon.Mode.Normal, QIcon.Mode.Active, QIcon.Mode.Disabled):
+            self.assertFalse(ic.pixmap(17, 17, mode).isNull(),
+                             "NavButton 图标的 %s 模式是空的" % mode)
 
 
 if __name__ == "__main__":

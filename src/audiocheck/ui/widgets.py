@@ -115,7 +115,11 @@ class NavButton(QToolButton):
             # 装饰色阶生成时就是按这条判据挑的，这里再兜一层——
             # 手写主题可能给不出合格的 deco。
             col = _visible_on(col, t.p.primary_soft)
-        self.setIcon(T.icon(self._icon_name, col, 17))
+        # 三态着色：hover/press 用亮一档的同色，disabled 用弱色。
+        # ⚠ 不能只给单色 pixmap——QSS 改不了图标色（见 `icon_states` 的说明）。
+        hover = _visible_on(col, t.p.hover_hi) if col != t.p.text_dim else t.p.text
+        self.setIcon(T.icon_states(self._icon_name, col, 17,
+                                   active=hover, disabled=t.p.text_disabled))
         self.setText(self._label)
         self.setProperty("active", active)
         self.style().unpolish(self)
