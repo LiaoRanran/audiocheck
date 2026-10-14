@@ -262,7 +262,7 @@ class TestRenderUnchanged(unittest.TestCase):
         self.assertIn("cmap=spectro_cmap()", code, "频谱图 imshow 没用 spectro_cmap()")
         self.assertGreaterEqual(len(re.findall(r"spectro_cmap\(\)", code)), 2,
                                 "瀑布图也应走 spectro_cmap()")
-        self.assertIn("cmap = rd_cmap()", code, "瀑布图的色图不是 rd_cmap()")
+        self.assertIn("cmap = spectro_cmap()", code, "瀑布图的色图不是 spectro_cmap()")
 
 
 # ============================ B9.3b：直接标注 + 特效 ============================
