@@ -33,6 +33,12 @@ from audiocheck.ui import palette as P  # noqa: E402
 from audiocheck.ui import theme as T  # noqa: E402
 
 T.init_fonts(APP)
+
+
+def pump(ms: int = 0) -> None:
+    """走事件循环（**必须派发 DeferredDelete**——B9.2 的计数坑）。"""
+    import perf_probe
+    perf_probe.pump(APP, ms / 1000.0 if ms else 0.05)
 CHARTS = os.path.join(_SRC, "audiocheck", "ui", "charts.py")
 
 
@@ -229,6 +235,157 @@ class TestRenderUnchanged(unittest.TestCase):
         self.assertEqual(len(re.findall(r"\bcmap=rd_cmap\(\)", code)), 1,
                          "频谱图的色图不是 rd_cmap()")
         self.assertIn("cmap = rd_cmap()", code, "瀑布图的色图不是 rd_cmap()")
+
+
+# ============================ B9.3b：直接标注 + 特效 ============================
+
+def _cmp_canvas(n_files: int = 3):
+    """造一个装好 n 条曲线的对比画布（**必须由调用方 close**）。"""
+    import numpy as np
+
+    from audiocheck.ui import charts as _C
+    cv = _C.CompareCanvas()
+    cv.resize(900, 520)
+    # ⚠ 画布吃的是**调色板字典**（`p["accent"]`），不是 `Theme` 对象——
+    # 窗口侧经 `T.plot_palette(t.p, t)` 转换后传下来。第一版直接传 `T.DARK`，
+    # 报 `'Theme' object is not subscriptable`。
+    cv.apply_theme(T.plot_palette(T.DARK.p, T.DARK))
+    items = []
+    for i in range(n_files):
+        f = np.geomspace(20.0, 20000.0, 240)
+        s = -40.0 - i * 6.0 - 20.0 * np.exp(-f / (3000.0 + i * 900.0))
+        items.append(({"file": "曲目%d.flac" % i, "sr": 44100,
+                       "cutoff_khz": 16.0 + i, "cutoff_hz": 16000.0 + i * 500},
+                      np.stack([f, s], axis=1)))
+    cv.set_data(items)
+    cv.redraw()
+    pump(40)
+    return cv
+
+
+def _drop_cv(cv) -> None:
+    """画布也必须拆（纪律 1）：matplotlib 的 figure 会跟着 Qt 对象一起留。"""
+    from PySide6.QtCore import QCoreApplication, QEvent
+    cv.close()
+    cv.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    APP.processEvents()
+
+
+def _texts(cv):
+    """画布上所有可见的 `Text`（含末端标注）。"""
+    out = []
+    for ax in cv.fig.axes:
+        out.extend(ax.texts)
+    return out
+
+
+class TestDirectLabels(unittest.TestCase):
+    """判据 9：直接标注五条（存在 / 不重叠 / 不出界 / 降级可见 / pick 保留）。"""
+
+    def setUp(self):
+        self.cv = _cmp_canvas(3)
+
+    def tearDown(self):
+        _drop_cv(self.cv)
+
+    def test_labels_exist_and_are_colored_like_their_curve(self):
+        """① 存在：每条可见曲线的右端有一个同色的名字。"""
+        cv = self.cv
+        self.assertFalse(cv.direct_degraded, "3 条曲线不该降级")
+        self.assertEqual(len(cv.end_labels), len(cv._lines),
+                         "末端标注数与曲线数不一致")
+        for lab, ln in zip(cv.end_labels, cv._lines):
+            self.assertEqual(_rgba(lab.get_color()), _rgba(ln.get_color()),
+                             "标注颜色与曲线不一致——读者没法把两者对上")
+            self.assertTrue(lab.get_text().strip(), "标注是空的")
+
+    def test_labels_do_not_overlap(self):
+        """② 不重叠：任意两个标注的屏幕矩形不相交（确定性避让的结果）。"""
+        cv = self.cv
+        cv.fig.canvas.draw()          # 需要 renderer 才能算 window_extent
+        boxes = [(lab.get_text(), lab.get_window_extent(cv.fig.canvas.get_renderer()))
+                 for lab in cv.end_labels]
+        for i, (na, ba) in enumerate(boxes):
+            for nb, bb in boxes[i + 1:]:
+                inter = ba.intersection(ba, bb) if hasattr(ba, "intersection") else None
+                overlap = inter is not None and inter.width > 1 and inter.height > 1
+                self.assertFalse(overlap, "标注 %r 与 %r 压在一起" % (na, nb))
+
+    def test_labels_stay_inside_the_plot_area(self):
+        """③ 不出界：标注矩形必须落在坐标区（axes）内。"""
+        cv = self.cv
+        cv.fig.canvas.draw()
+        rend = cv.fig.canvas.get_renderer()
+        ab = cv.ax.get_window_extent(rend)
+        for lab in cv.end_labels:
+            bb = lab.get_window_extent(rend)
+            self.assertGreaterEqual(bb.x0, ab.x0 - 1, "标注越出左边界")
+            self.assertLessEqual(bb.x1, ab.x1 + 1, "标注越出右边界（被裁=读不到）")
+            self.assertGreaterEqual(bb.y0, ab.y0 - 1, "标注越出下边界")
+            self.assertLessEqual(bb.y1, ab.y1 + 1, "标注越出上边界")
+
+    def test_degradation_is_visible_not_silent(self):
+        """④ 超量降级**可见**：曲线数 > MAX_DIRECT 时回图例，且置标志。
+
+        "降级不许静默"是这一条的全部意义：用户必须能从**代码状态**看出
+        "现在走的是图例而不是末端标注"，而不是靠肉眼猜。
+        """
+        cv = _cmp_canvas(10)
+        try:
+            self.assertGreater(len(cv._lines), cv.MAX_DIRECT)
+            self.assertTrue(cv.direct_degraded, "超量了却没置降级标志")
+            self.assertEqual(cv.end_labels, [], "降级了却还在画末端标注")
+            leg = getattr(cv, "_legend", None)
+            self.assertIsNotNone(leg, "降级回图例，但图例不见了——那就真丢信息了")
+        finally:
+            _drop_cv(cv)
+
+    def test_pick_still_works_and_labels_are_clickable(self):
+        """⑤ pick 保留：点标注能开关对应曲线（B8-H1 明确要求"至少标注可点"）。"""
+        cv = self.cv
+        cv.fig.canvas.draw()
+        lab = cv.end_labels[0]
+        ln = cv._lines[0]
+        before = ln.get_visible()
+        cv._toggle_by_artist(lab)        # 与 pick_event 同一条路径
+        self.assertNotEqual(ln.get_visible(), before, "点标注没有开关曲线")
+        cv._toggle_by_artist(lab)
+        self.assertEqual(ln.get_visible(), before, "再点一次应回到原状")
+
+
+class TestEffects(unittest.TestCase):
+    """判据 17：特效三招里的两招可机器判（第三招靠截图人工复核）。"""
+
+    def test_cutoff_wash_alpha_within_budget(self):
+        """截止淡染 alpha ≤0.10——写进断言，不是"我们调得很淡"。"""
+        self.assertLessEqual(C.CUTOFF_FADE_ALPHA, 0.10)
+        cv = _cmp_canvas(2)
+        try:
+            washes = [a for a in cv.ax.patches
+                      if a.get_alpha() is not None and a.get_alpha() <= C.CUTOFF_FADE_ALPHA]
+            self.assertTrue(washes, "绘图区里没有截止淡染（或 alpha 超预算）")
+        finally:
+            _drop_cv(cv)
+
+    def test_panel_has_a_one_pixel_rim_light(self):
+        """绘图面板上缘 1px 亮边：**量像素**，不是查代码里有没有那行。"""
+        self.assertEqual(C.PANEL_RIM_H, 1)
+        cv = _cmp_canvas(1)
+        try:
+            img = cv.grab().toImage()
+            self.assertGreater(img.width(), 8)
+            rim = img.pixelColor(6, 0).name()
+            below = img.pixelColor(6, 4).name()
+            self.assertNotEqual(rim, below, "上缘没有亮边（第 0 行与第 4 行同色）")
+        finally:
+            _drop_cv(cv)
+
+
+def _rgba(col):
+    """把 matplotlib 颜色归一成 `#rrggbb`，便于跨类型比较。"""
+    from matplotlib.colors import to_hex
+    return to_hex(col)
 
 
 if __name__ == "__main__":

@@ -162,7 +162,41 @@ def cycle_for(pal: dict) -> tuple:
 
 
 
+#: 特效参数（B9.3b）。**常量而不是内联字面量**：判据要能直接引用它们，
+#: 而不是去源码里正则匹配某个数字（那样改一个字面量就能骗过判据）。
+#:
+#: 截止淡染的透明度。上限 0.10 是写进判据的预算：它是一条**提示**，
+#: 不是一块色域——超过这个值就开始与数据墨抢注意力（六条"不廉价"判据里的
+#: "光有落点、不到处发光"）。取 0.08 留一点余量。
+CUTOFF_FADE_ALPHA = 0.08
+#: 绘图面板上缘亮边的高度（px）。1px = "Rim light"的最小可见量；
+#: 2px 会读成"边框"，那又是廉价感的来源。与浮层"亮边配暗线"同一物理模型。
+PANEL_RIM_H = 1
+
+
 class BaseCanvas(FigureCanvasQTAgg):
+    def paintEvent(self, ev):
+        """在 Qt 层补一条上缘亮边（特效第 2 招：Rim light）。
+
+        **为什么画在 `paintEvent` 而不是 matplotlib 里**：数据墨（曲线、
+        色图、网格）由 matplotlib 画，而这条边是**帧层**的东西——它不属于
+        任何一组数据，也不该随坐标轴缩放而移动。分层是判据"特效只碰帧层"
+        的实现方式：帧层改错了，数据墨一点不受影响。
+        """
+        super().paintEvent(ev)
+        p = getattr(self, "p", None)
+        if not p:
+            return
+        col = p.get("top_light") or p.get("border_hi")
+        if not col:
+            return
+        pr = QPainter(self)
+        pr.setPen(QPen(QColor(col), PANEL_RIM_H))
+        # y=0 那条线：Qt 的 1px 线在 y=0 会有一半落在控件外，但截图里
+        # 第 0 行确实被点亮（判据量的是 grab() 的第 0 行），所以照画。
+        pr.drawLine(0, 0, self.width() - 1, 0)
+        pr.end()
+
     # 内容已变但当前不可见 → 标脏，等 showEvent 再画。
     # 放在类属性上：WaterfallCanvas 直接调 FigureCanvasQTAgg.__init__、不走
     # super().__init__，类属性是它唯一能稳定拿到该字段的途径。
@@ -986,6 +1020,11 @@ class CompareCanvas(BaseCanvas):
         super().__init__(6.2, 3.6)
         self.ax = self.fig.add_subplot(111)
         self.items = []
+        #: 末端标注对象（判据 9 要用）与降级标志（判据 9 第 4 条要用）。
+        #: 在构造里就给初值：`set_data([])` 之后的 `redraw` 可能在
+        #: `_draw_end_labels` 之前就被别处读到（构造函数顺序不是接口）。
+        self.end_labels = []
+        self.direct_degraded = False
         # ---- 缩放 / 平移（与频谱曲线同一套逻辑，见 SpectrumCanvas）----
         self._full_x = (20.0, 24000.0)
         self._view_x = None            # None = 未缩放 / 数据刚换过（见 SpectrumCanvas）
@@ -1110,6 +1149,13 @@ class CompareCanvas(BaseCanvas):
         mouse = getattr(ev, "mouseevent", None)
         if leg is None or mouse is None or mouse.inaxes is not self.ax:
             return
+        # ⚠ 顺序要紧：**先测末端标注，再测图例**。标注贴在曲线右端、图例在
+        # 左下角，正常不重叠；但放大后图例会挤到右边，若先测图例就可能
+        # 把"点标注"误判成"点图例"。
+        for lab in getattr(self, "end_labels", []):
+            if lab.get_visible() and lab.get_window_extent().contains(mouse.x, mouse.y):
+                self._toggle_by_artist(lab)
+                return
         for text, line in zip(leg.get_texts(), self._lines):
             if not text.get_visible():
                 continue
@@ -1160,6 +1206,12 @@ class CompareCanvas(BaseCanvas):
             cut = r.get("cutoff_hz")
             if cut:
                 ax.axvline(cut, color=col, lw=1.0, ls="--", alpha=.55, zorder=2)
+                # 特效第 1 招（**光有落点**）：截止位置拖一条极低透明度竖向淡染。
+                # 只给**第一条**曲线画——"一屏一处最强"（特效第 3 招）：10 条
+                # 各染一道会变成一片底色，反而看不出"截止在哪"。
+                if i == 0:
+                    ax.axvspan(cut * 0.985, cut * 1.015, color=col,
+                               alpha=CUTOFF_FADE_ALPHA, lw=0, zorder=1.5)
         ax.axhline(0, color=p["text_faint"], lw=.7, ls=":", zorder=1)
         # 全距按当前数据的最大奈奎斯特算；换一批文件要回全距
         self._full_x = (20.0, float(nyq))
@@ -1172,7 +1224,111 @@ class CompareCanvas(BaseCanvas):
                         facecolor=p["surface2"], edgecolor=p["border_hi"], labelcolor=p["text"])
         leg.get_frame().set_linewidth(.8)
         self._legend = leg
+        self._draw_end_labels(ax, p)
         self.draw()
+
+    #: 末端标注的上限（判据 9 第 4 条）。**8 的由来**：一屏能舒适容纳的贴边
+    #: 标签数——10 条曲线时标签会连成一整列，"这条是谁"反而更难对。
+    #: 超量**降级回图例**并置 `direct_degraded` 标志：降级不许静默。
+    MAX_DIRECT = 8
+    #: 标签之间的最小垂直间距（像素）。**实测**：9pt 标签的
+    #: window_extent 高 **14.1px**（900×520 画布，offscreen），
+    #: 取 18 = 字高 + 约 4px 空隙。取 15 时实测间距只有 12.3px——字压字。
+    LABEL_GAP = 18.0
+
+    def _draw_end_labels(self, ax, p) -> None:
+        """每条可见曲线的右端贴一个同色的名字（B8-H1 的四条做法）。
+
+        **避让是确定性的**：按末端 y 排序后**一趟推匀**（`yy = max(y, 上一个+间隙)`），
+        不做迭代求解——迭代的收敛性依赖初值，同一份数据可能摆出两种样子。
+        """
+        self.end_labels = []
+        self.direct_degraded = False
+        # ⚠ `self.items` 的每个元素是 `(r, cur)` **二元组**（曲线循环里
+        # `for i, (r, cur) in enumerate(self.items)` 就是这么解的）。
+        # 第一版写成 `zip(self._lines, self.items)`，于是 `r` 拿到的是元组，
+        # `r.get("file")` 抛 `'tuple' object has no attribute 'get'`。
+        vis = [(ln, it[0]) for ln, it in zip(self._lines, self.items)]
+        if not vis:
+            return
+        if len(vis) > self.MAX_DIRECT:
+            self.direct_degraded = True      # **降级可见**：图例还在，标志置上
+            return
+        y0, y1 = ax.get_ylim()
+        span = y1 - y0
+        # ⚠ **不能用 `ax.get_window_extent().height` 单独估像素**：redraw 可能
+        # 发生在布局之前，那时它是 0，`gap = 15*88/1` 会被放大成整个量程，
+        # 于是所有标签被推到同一条线上——判据 ② 实测就是这样红的
+        # （"曲目0.flac 与 曲目1.flac 压在一起"）。
+        # 控件高度是**始终有效**的量，取它乘一个坐标区占比，并加下限兜底。
+        try:
+            h_widget = float(self.height())
+        except Exception:                       # 探针/无 GUI 场景
+            h_widget = 0.0
+        # **优先用真实坐标区高度**（上一轮 draw 留下的值在布局后就是准的）；
+        # 只有它不可信（还没画过、≈0）时才退回控件高度估。
+        h_ext = float(ax.get_window_extent().height)
+        h_px = h_ext if h_ext > 60.0 else max(60.0, h_widget * 0.60)
+        gap = self.LABEL_GAP * span / h_px    # 像素间隙 → 数据单位
+        pts = []
+        for ln, r in vis:
+            if not ln.get_visible():
+                continue
+            x, y = ln.get_xdata(), ln.get_ydata()
+            k = len(x) - 1
+            while k > 0 and not np.isfinite(y[k]):
+                k -= 1
+            pts.append((float(y[k]), float(x[k]), ln, r))
+        # 按末端 y 排序 → 一趟推匀（确定性）
+        pts.sort(key=lambda t: t[0])
+        # 一趟推匀：`yy = max(自己的位置, 上一个 + 间隙)`——**确定性、无迭代**。
+        placed = []
+        last = None
+        for y, x, ln, r in pts:
+            yy = y if last is None else max(y, last + gap)
+            placed.append([yy, x, ln, r])
+            last = yy
+        # 顶到上界时**整块下移**，不是逐个夹——逐个夹会让越界的几个
+        # 全部落到 `y1-gap` 同一点上，反而制造碰撞（第一版的第二个错）。
+        over = placed[-1][0] - (y1 - gap)
+        if over > 0:
+            for it in placed:
+                it[0] -= over
+        for yy, x, ln, r in placed:
+            yy = min(max(yy, y0 + gap), y1 - gap)        # 极端情形兜底
+            lab = ax.annotate(self._short(r), xy=(x, yy), xytext=(-6, 0),
+                              textcoords="offset points", ha="right", va="center",
+                              color=ln.get_color(), fontsize=p["fs_tick"], zorder=6)
+            lab.audiocheck_line = ln                    # pick 时靠它找曲线
+            self.end_labels.append(lab)
+
+    @staticmethod
+    def _short(r) -> str:
+        """末端标签的名字：**只要文件名**，超长截断。
+
+        不用图例那串 `名字 ｜ 16.0k`——末端标签贴着曲线，读者已经在看那条线了，
+        再挂截止值就是重复；截断到 16 字符是为了让标签不被坐标区右边界吃掉。
+        """
+        name = str(r.get("file") or "")
+        return name if len(name) <= 16 else name[:15] + "…"
+
+    def _toggle_by_artist(self, artist) -> None:
+        """按被点的对象开关对应曲线（标注与图例走同一条路径）。"""
+        for ln in self._lines:
+            if artist is ln:
+                self._set_visible(ln, not ln.get_visible())
+                return
+            if getattr(artist, "audiocheck_line", None) is ln:
+                self._set_visible(ln, not ln.get_visible())
+                return
+
+    def _set_visible(self, ln, vis: bool) -> None:
+        ln.set_visible(vis)
+        # 标注跟着曲线一起开关：只剩一条线旁边挂三个名字会更乱
+        for lab in getattr(self, "end_labels", []):
+            if getattr(lab, "audiocheck_line", None) is ln:
+                lab.set_visible(vis)
+        self.draw_idle()
 
 
 # --------------------------------------------------------------------- 批次概览
