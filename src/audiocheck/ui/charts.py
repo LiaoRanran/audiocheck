@@ -919,7 +919,7 @@ class WaterfallCanvas(BaseCanvas):
     #: 拖拽重绘的节流间隔（毫秒）。≈8 fps：3D 重绘在本机实测 367 ms/帧，
     #: 不节流的话每个鼠标移动事件都排一次重绘，越拖越卡、松手后还在补画。
     #: **不是动效时长**，所以不进 `theme.Motion`（见那张表的 docstring）。
-    DRAG_THROTTLE_MS = 120
+    DRAG_THROTTLE_MS = 40      # B14 E.2-5：拖拽更丝滑（原 120 有肉眼可见的顿挫）
 
     def __init__(self):
         # 3D 轴与 constrained layout 不兼容（会把轴挤成 0 宽），这里单独建 figure
@@ -932,6 +932,8 @@ class WaterfallCanvas(BaseCanvas):
         self.data = None
         self._msg = "选择条目后自动生成"
         self._elev, self._azim = 26, -58
+        self._elev0, self._azim0 = 26, -58      # 复位目标（B14 E.2-5）
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._drag = None
         # 拖拽节流：3D 重绘在本机实测 367 ms/帧（2.7 fps），不节流的话
         # 每个鼠标移动事件都排一次重绘，越拖越卡、松手后还在补画。
@@ -978,6 +980,21 @@ class WaterfallCanvas(BaseCanvas):
         if was_dragging:
             self.redraw()              # 松手补一帧最终角度（拖拽期间被节流掉的那部分）
         super().mouseReleaseEvent(ev)
+
+    def reset_view(self):
+        """复位视角（B14 E.2-5）：回到初始 elev/azim。**幂等**（连按两次结果一致）。"""
+        self._elev, self._azim = self._elev0, self._azim0
+        self.redraw()
+
+    def mouseDoubleClickEvent(self, ev):        # 双击复位
+        self.reset_view()
+        super().mouseDoubleClickEvent(ev)
+
+    def keyPressEvent(self, ev):                # R / 0 复位
+        if ev.key() in (Qt.Key.Key_R, Qt.Key.Key_0):
+            self.reset_view()
+            return
+        super().keyPressEvent(ev)
 
     def _has_data(self):
         return self.data is not None   # data=None 表示还没生成
