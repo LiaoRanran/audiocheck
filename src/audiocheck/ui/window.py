@@ -238,7 +238,7 @@ class MainWindow(FramelessWindow):
         self.atmo = AtmosphereHost(host)
         outer.addWidget(self.atmo)
         root = QHBoxLayout(self.atmo)
-        root.setContentsMargins(0, 0, 0, 0)
+        root.setContentsMargins(18, 18, 18, 18)   # 内容内缩 ⇒ G1 氛围露在边衬（D0）
         root.setSpacing(0)
 
         self.sidebar = SideBar(self.theme)
