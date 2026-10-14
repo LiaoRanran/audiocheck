@@ -291,6 +291,7 @@ class MainWindow(FramelessWindow):
 
     def _toolbar(self):
         bar = QWidget()
+        bar.setObjectName("Toolbar")
         bar.setFixedHeight(52)
         h = QHBoxLayout(bar)
         h.setContentsMargins(16, 12, 16, 12)

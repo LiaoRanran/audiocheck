@@ -596,7 +596,10 @@ QToolTip {{ background:{surface_raised}; color:{text}; border:1px solid {border_
 /* 光的方向：窗口自上而下变亮一档，读起来像"光从上面来"。
    整块纯色会很呆；而渐变只用了两个已有令牌，没有新增任何色号。 */
 #TitleBar {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-           stop:0 {surface_hi}, stop:1 {surface}); border-bottom:1px solid {border}; }}
+           stop:0 {surface_hi}, stop:1 {surface}); border-top:1px solid {top_light};
+           border-bottom:1px solid {border}; }}
+/* B14 上下边框：工具条下缘 1px 暗线定界（上缘的"光"由标题栏顶边承担）。 */
+#Toolbar {{ border-bottom:1px solid {border}; }}
 #TitleText {{ font-size:{body_sm}px; color:{text_dim}; letter-spacing:{tr_body_sm}px; }}
 #WinBtn {{ background:transparent; border:0; border-radius:{r_md}px; }}
 #WinBtn:hover {{ background:{hover}; }}
@@ -706,6 +709,7 @@ QLabel#Caption {{ color:{text_faint}; font-size:{caption}px; letter-spacing:{tr_
 
 /* ===== 按钮 ===== */
 QPushButton {{ background:{surface_hi}; border:1px solid {border_hi};
+               border-top:1px solid {top_light}; border-bottom:1px solid {border};
                border-radius:{r_lg}px; padding:{sm}px {lg}px; color:{text}; font-size:{body}px; }}
 QPushButton:hover {{ background:{hover_hi}; border-color:{border_focus}; }}
 QPushButton:pressed {{ background:{surface}; }}
@@ -727,6 +731,7 @@ QToolButton#Primary:pressed {{ background:{primary_hi}; }}
 
 /* ===== 输入 ===== */
 QLineEdit, QComboBox, QSpinBox {{ background:{surface_hi}; border:1px solid {border};
+    border-top:1px solid {border}; border-bottom:1px solid {top_light};
     border-radius:{r_lg}px; padding:{xs}px {md}px; color:{text};
     selection-background-color:{primary}; font-size:{body}px; }}
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus {{ border-color:{border_focus}; }}
@@ -790,6 +795,7 @@ QScrollBar::add-page, QScrollBar::sub-page {{ background:transparent; }}
 
 /* ===== 状态栏 ===== */
 QStatusBar {{ background:{surface}; border-top:1px solid {border};
+              border-bottom:1px solid {bg};
               color:{text_dim}; font-size:{caption}px; }}
 QStatusBar::item {{ border:0; }}
 QProgressBar {{ background:{surface_hi}; border:0; border-radius:{r_tiny}px; height:4px;
