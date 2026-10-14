@@ -106,10 +106,36 @@ class TestRuntimeFontFamily(unittest.TestCase):
             T.set_ui_family(old)
 
     def test_init_fonts_wires_all_three_steps(self):
+        """B14 §4-①：契约**变了**，所以这条跟着重定（改判据报数）。
+
+        旧契约（B9）：`init_fonts` 解析出中文字体 → `set_ui_family` 写进令牌 →
+        QSS 里出现那个族名。三步都对，但它**只覆盖中文字体**：西文/数字仍在
+        系统字体上，于是"字体在场"这件事从来没被断言过（B10/B10.5 的零字体教训）。
+
+        新契约（B13/B14）：
+          ① 装载 `assets/fonts/` 的 OFL 字体，**断言三族在手**（缺族 fail loudly）；
+          ② `ui_family()` == `init_fonts()` 返回值 == app 主族（**唯一真源**）；
+          ③ app 字体走 `setFamilies([Plex, Noto])` 真回退链，而 **QSS 不写
+             font-family**——QSS 的单族名会覆盖 app 的回退链，把中文推给逐字形
+             回退（不可控）。所以"QSS 无假多族链"= **没有 font-family**。
+        """
         fam = T.init_fonts(APP)
-        self.assertTrue(fam, "没解析出中文字体族")
-        self.assertEqual(T.ui_family(), fam, "解析了却没写进主题令牌")
-        self.assertIn(fam, T.qss(T.DARK), "主题 QSS 没用上解析出来的族")
+        self.assertTrue(fam, "没解析出字体族")
+        self.assertEqual(T.ui_family(), fam, "ui_family() 与 init_fonts() 不一致——"
+                                             "契约要求唯一真源")
+        # app 主族必须真的是它（不是"令牌写了但 app 没设"）
+        self.assertEqual(APP.font().families()[0] if APP.font().families() else "",
+                         T.BUNDLED_FAMILIES[0], "app 主族不是 Plex")
+        # QSS 不许出现假多族链：要么没有 font-family（装载成功时），
+        # 要么只有单族（降级路径）——**绝不许出现逗号分隔的多族**
+        q = T.qss(T.DARK)
+        self.assertNotRegex(q, r"font-family:\s*[^;]*,",
+                            "QSS 里出现了多族假链（Qt 不可靠）")
+        # 三族在场（这条才是"零字体教训"的真修）
+        from PySide6.QtGui import QFontDatabase
+        have = set(QFontDatabase.families())
+        for want in T.BUNDLED_FAMILIES:
+            self.assertIn(want, have, "发货字体缺族：%s" % want)
 
 
 class TestConsoleEncoding(unittest.TestCase):

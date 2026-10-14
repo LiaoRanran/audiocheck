@@ -364,18 +364,91 @@ def ui_family() -> str:
     return _UI_FAMILY
 
 
-def init_fonts(app=None) -> str:
-    """加载中文字体 → 设成应用字体 → 写进主题令牌。**必须在建窗口之前调用。**
+#: 发货字体目录（OFL，随包）。**这是"零字体教训"的真修**（B10/B10.5 → B13 §2A）：
+#: 此前每一轮都在**降级字体**上验收——系统没装就落到 YaHei，而 YaHei 只有
+#: 400/700 两档字重（B9 实测：写 `font-weight:600` 被吸附到 700，层级是假的）。
+#: 捆绑 + 断言之后，"字体在场"从祈祷变成启动时的事实。
+BUNDLED_FONT_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "fonts")
 
-    这三件事必须一起做：只注册字体文件（`load_cjk_fonts`）而 QSS 里仍写着
-    对不上的族名，等于没做（中文照样方框）。
+#: 目标族名（**实测值**，不是猜的：`out/_b13_fams.py` 逐个 file → families() 打出）。
+#: 九个文件注册出三个族，Noto 是可变字体（VF）单文件覆盖全部字重。
+BUNDLED_FAMILIES = ("IBM Plex Sans", "IBM Plex Mono", "Noto Sans SC")
+
+_LOADED_BUNDLED: list = []
+#: 发货字体是否装载成功。装载成功 ⇒ `qss()` **不再写 `font-family`**：
+#: QSS 的单族名会**覆盖** app 级 `setFont(setFamilies([Plex, Noto]))` 的真回退链，
+#: 于是中文被推给逐字形回退（本项目在等宽字体上踩过、B9 的注释也记着）。
+#: 所以"QSS 不写多族假链"的正确落点是**不写**，让 app 字体的链说话。
+_BUNDLED_ACTIVE: list = []
+
+
+def load_bundled_fonts(assert_present: bool = True) -> list:
+    """装载 `assets/fonts/` 下全部字体，并**断言三个族在手**（缺族 fail loudly）。
+
+    为什么非断言不可：`addApplicationFont` 失败时**返回 -1 且不抛异常**，
+    于是静默落回系统字体——本项目在字体上已踩三次（QSS 多族回退、
+    无 QApplication 就查 QFontDatabase、离屏下 `families()` 列不出系统字体）。
+    没有断言，"装载了"就只是希望。
     """
+    from PySide6.QtGui import QFontDatabase
+
+    if _LOADED_BUNDLED:
+        return _LOADED_BUNDLED
+    if not os.path.isdir(BUNDLED_FONT_DIR):
+        if assert_present:
+            raise RuntimeError("缺发货字体目录 %s（OFL 资产必须随包）" % BUNDLED_FONT_DIR)
+        return []
+    files = sorted(f for f in os.listdir(BUNDLED_FONT_DIR)
+                   if f.lower().endswith((".ttf", ".otf")))
+    if not files:
+        raise RuntimeError("%s 里没有字体文件" % BUNDLED_FONT_DIR)
+    for f in files:
+        idx = QFontDatabase.addApplicationFont(os.path.join(BUNDLED_FONT_DIR, f))
+        if idx < 0:
+            raise RuntimeError("字体装载失败：%s（addApplicationFont 返回 -1）" % f)
+    have = set(QFontDatabase.families())
+    missing = [x for x in BUNDLED_FAMILIES if x not in have]
+    if missing and assert_present:
+        raise RuntimeError(
+            "发货字体缺族 %s——`families()` 只有 %d 个。"
+            "⚠ 若为 0，说明没走 `addApplicationFont`（离屏环境列不出系统字体，"
+            "这正是本项目记过三次的坑）" % (missing, len(have)))
+    _LOADED_BUNDLED.extend(files)
+    _BUNDLED_ACTIVE.append(True)      # 供 qss() 判断：装载成功就不再写 font-family
+    return _LOADED_BUNDLED
+
+
+def init_fonts(app=None) -> str:
+    """装载**发货字体**（OFL，带断言）→ 设成应用字体 → 写进主题令牌。
+    **必须在建窗口之前调用。**
+
+    与旧版的区别：先把 `assets/fonts/` 的 OFL 字体装进去（Plex 管西文/数字、
+    思源管中文），**断言三个族都在**；然后才走原有的中文字体解析链作为兜底
+    （其他机器上缺 Plex 时仍能出中文，只是会记录为降级）。
+    """
+    primary = ""
+    try:
+        load_bundled_fonts()
+        # ⚠ 这里**不走 QSS**：QSS 的 `font-family` 多族回退链在 Qt 里不可靠
+        # （本项目用过一次等宽字体踩过）。`setFamilies` 才是真回退链：
+        # 拉丁走 Plex、中文缺字时落思源。
+        primary = BUNDLED_FAMILIES[0]
+    except RuntimeError as e:
+        # 不静默：缺资产是配置错误，不是运行时小毛病
+        print("⚠ 发货字体未装载：%s" % e)
     fams = load_cjk_fonts()
     fam = pick_family(fams)
     if app is not None:
-        app.setFont(QFont(fam, 10))
-    set_ui_family(fam)
-    return fam
+        f = QFont(primary or fam, 10)
+        if primary:
+            f.setFamilies([BUNDLED_FAMILIES[0], BUNDLED_FAMILIES[2]])
+        app.setFont(f)
+    # **唯一真源**（B14 §4-①）：`ui_family()`、`init_fonts()` 的返回值、
+    # app 的主族必须是同一个名字。发货字体在场 ⇒ 一律 "IBM Plex Sans"；
+    # 没装载 ⇒ 落回系统解析出的中文字体（降级路径，会打印告警）。
+    set_ui_family(primary or fam)
+    return primary or fam
 
 
 @dataclass(frozen=True)
@@ -470,7 +543,7 @@ def qss(t: Theme) -> str:
     return """
 /* ===== 基础 ===== */
 * {{ outline: 0; }}
-QWidget {{ background:{bg}; color:{text}; font-size:{body}px; font-family:{font}; }}
+QWidget {{ background:{bg}; color:{text}; font-size:{body}px; {font_css} }}
 QMainWindow, QDialog {{ background:{bg}; }}
 QToolTip {{ background:{surface_raised}; color:{text}; border:1px solid {border_hi};
             border-top:1px solid {top_light};
@@ -729,7 +802,13 @@ QSplitter::handle:hover {{ background:{primary_soft}; }}
         ok_band=p.success_band, warn_band=p.warning_band, bad_band=p.danger_band,
         # 结论条描边用的判定色（二次反光），不新增色号
         tint_dim=p.tint_dim,
-        font=t.font, body=int(ty.body), body_sm=int(ty.body_sm), body_md=int(ty.body_md),
+        # 发货字体在位**且仍是主族** ⇒ QSS 不写 font-family（写单族名会覆盖
+        # app 的 `setFamilies([Plex, Noto])` 真回退链，把中文推给逐字形回退）。
+        # 一旦有人显式 `set_ui_family(非 bundle 族)` 覆盖，就恢复写它——
+        # 覆盖必须**看得见**（否则运行时改族名会静默失效，那又是一次假绿）。
+        font_css=("" if (_BUNDLED_ACTIVE and _UI_FAMILY in BUNDLED_FAMILIES)
+                  else "font-family:%s;" % t.font),
+        body=int(ty.body), body_sm=int(ty.body_sm), body_md=int(ty.body_md),
         caption=int(ty.caption), micro=int(ty.micro), display=int(ty.display),
         hero=int(ty.hero),
         # 字距令牌：QSS 里只许出现这些值，不许手写 px
