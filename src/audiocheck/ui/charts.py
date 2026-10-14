@@ -9,7 +9,6 @@ import matplotlib
 import numpy as np
 
 matplotlib.use("QtAgg")
-import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg  # noqa: E402
 from matplotlib.figure import Figure  # noqa: E402
 from matplotlib.gridspec import GridSpec  # noqa: E402
@@ -18,6 +17,7 @@ from PySide6.QtGui import QColor, QFont, QPainter, QPen  # noqa: E402
 from PySide6.QtWidgets import QStyle, QStyledItemDelegate  # noqa: E402
 
 from ..config import BAND_CN, BANDS  # noqa: E402
+from . import palette as P  # noqa: E402
 from . import theme as T  # noqa: E402
 from . import zoom as Z  # noqa: E402
 from .theme import LEVEL_CN, LEVEL_COLOR_KEY  # noqa: E402
@@ -39,9 +39,113 @@ if _CJK:
     matplotlib.rcParams["font.sans-serif"] = [_CJK]
 matplotlib.rcParams["axes.unicode_minus"] = False
 
-# 对比视图的配色（刻意避开状态色，防止与「合格/不达标」混淆）
-CYCLE = ["#3d7dff", "#8b5cf6", "#06b6d4", "#22c55e", "#eab308", "#ec4899",
-         "#f97316", "#14b8a6", "#a855f7", "#0ea5e9"]
+# ============================== 玫瑰钻石色轨（B9.3a）==============================
+#
+# 用户 B9.2 后的判决："色彩和绘图依旧一股 AI 味道"——三个可测签名就是
+# matplotlib 的默认色图（`magma` / `viridis`）与 Tailwind 彩虹 `CYCLE`：
+# 它们与项目色相族（冷紫 H286 / 玫瑰 H10）毫无关系，是"教程默认值"的味。
+#
+# **D 玫瑰钻石**的依据不是审美偏好，是锚点图的**实测色轨**：
+#   * 身体（全体像素中位）C ≤0.034 全程低彩，H291–350（冷紫罗兰）
+#   * 玫瑰（高彩 C≥0.10）**只出现在 L0.55–0.85**（透光带），H6.6–14.7，C0.11–0.13
+#   * 最顶部（L>0.9）C=0.004（几乎无彩的冷白，H340）
+# ⇒ "钻石质感"的数学结构 = **色相走 U 形**（冷 → 玫瑰 → 冷）
+#                           + **彩度走钟形**（玫瑰在内部发光、冷白从表面出射）。
+#
+# ⚠ **诚实边界**：钻石的**镜面闪点**是光模拟，频谱图里不能造假（每个像素是
+#   一个真实测量值）；D 的顶档那一片近白只暗示"能量很强"，不是编造高频细节。
+#   **核心锐利不变**：`interpolation="nearest"` 与 `vmin/vmax` 一个都不动。
+#
+#: D 的**规范定义**：九点 (t, L, C, H)。唯一真源——**hex 是产物，不许手抄**
+#: （判据 14：仓库里出现手抄的九档 hex 即失败）。改任何一个数都要重过三条断言。
+ROSE_DIAMOND_LCH = (
+    (0.000, 0.12, 0.030, 310.0),
+    (0.125, 0.25, 0.035, 320.0),
+    (0.250, 0.40, 0.032, 330.0),
+    (0.375, 0.55, 0.075, 350.0),
+    (0.500, 0.65, 0.115, 10.0),
+    (0.625, 0.78, 0.110, 12.0),
+    (0.750, 0.90, 0.045, 330.0),
+    (0.875, 0.96, 0.015, 340.0),
+    (1.000, 0.99, 0.006, 345.0),
+)
+
+#: 曲线族的采样位点：暗色取 t **高段**（亮曲线配暗底）、亮色取**低段**
+#: （深曲线配亮底）。同一条色轨各取一半 ⇒ 曲线与频谱图**同源**。
+CURVE_T = {
+    "dark": (0.32, 0.44, 0.56, 0.68, 0.80, 0.92),
+    "light": (0.06, 0.18, 0.30, 0.42, 0.54, 0.66),
+}
+
+
+def _hex_to_rgb(h: str):
+    h = h.lstrip("#")
+    return tuple(int(h[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
+
+
+def _rd_lch_at(t: float):
+    """在规范表上按 t 线性插值出 (L, C, H)——**色相走最短弧**。
+
+    色相不能直接线性插值：从 350° 到 10° 的"直线"会穿过 180°（绿色），
+    把 U 形拐点插成彩虹。实测：不转最短弧时 t0.44 的色相落在 **180°**——
+    那正是"第三色相族"的来源。
+    """
+    tab = ROSE_DIAMOND_LCH
+    if t <= tab[0][0]:
+        return tab[0][1:]
+    if t >= tab[-1][0]:
+        return tab[-1][1:]
+    for i in range(len(tab) - 1):
+        t0, L0, c0, h0 = tab[i]
+        t1, L1, c1, h1 = tab[i + 1]
+        if t0 <= t <= t1:
+            k = (t - t0) / (t1 - t0)
+            dh = (h1 - h0 + 180.0) % 360.0 - 180.0      # 最短弧
+            return L0 + (L1 - L0) * k, c0 + (c1 - c0) * k, (h0 + dh * k) % 360.0
+    raise AssertionError("t=%r 落在表外：取值表必须覆盖 [0,1]" % t)
+
+
+def rose_diamond_cmap():
+    """D 色图：由 `ROSE_DIAMOND_LCH` 经**项目的** `oklch_to_srgb` 生成。"""
+    from matplotlib.colors import LinearSegmentedColormap
+
+    cols = [P.oklch_to_srgb((L, c, h)) for _t, L, c, h in ROSE_DIAMOND_LCH]
+    cm = LinearSegmentedColormap.from_list("rose_diamond", cols, N=256)
+    cm.audiocheck_source = ROSE_DIAMOND_LCH         # 供判据追溯来源
+    return cm
+
+
+_RD_CACHE = None
+
+
+def rd_cmap():
+    """缓存过的 D 色图（`imshow` 每次重建会白付解析代价）。"""
+    global _RD_CACHE
+    if _RD_CACHE is None:
+        _RD_CACHE = rose_diamond_cmap()
+    return _RD_CACHE
+
+
+def rd_color(t: float) -> str:
+    """色轨上 t 处的颜色（给曲线与标记用）——与色图**同源**，不是两套配色。"""
+    L, c, h = _rd_lch_at(t)
+    return P.oklch_to_srgb((L, c, h))
+
+
+def curve_colors(dark: bool = True) -> list:
+    """对比视图的曲线族：从 D 色轨按主题分段采样。"""
+    return [rd_color(t) for t in CURVE_T["dark" if dark else "light"]]
+
+
+def cycle_for(pal: dict) -> tuple:
+    """按**底色明度**判断主题，返回该主题的曲线族。
+
+    判断放在这里而不是要求调用方多传一个 `dark` 参数：少一个能传错的地方
+    （`pal` 本来就在手边）。
+    """
+    dark = P.srgb_to_oklch(pal.get("bg", "#111111"))[0] < 0.5
+    return tuple(curve_colors(dark))
+
 
 
 class BaseCanvas(FigureCanvasQTAgg):
@@ -627,7 +731,7 @@ class SpectrogramCanvas(BaseCanvas):
         # 代价只在"频域采样密度"上（360 行 ≈ 每 1/24 倍频程一行，够读）。
         mesh = ax.imshow(db, aspect="auto", origin="lower",
                          extent=(t[0], t[-1], math.log10(20.0), math.log10(f[-1])),
-                         cmap="magma", vmin=-90, vmax=0, interpolation="nearest",
+                         cmap=rd_cmap(), vmin=-90, vmax=0, interpolation="nearest",
                          zorder=1)
         ax.set_ylim(math.log10(20.0), math.log10(f[-1]))
         ax.grid(False)
@@ -817,7 +921,7 @@ class WaterfallCanvas(BaseCanvas):
         db = _resample_rows(db, f2, fl)
         lf = np.log10(fl)
         n = db.shape[1]
-        cmap = plt.get_cmap("viridis")
+        cmap = rd_cmap()
         # 只画有限条谱线，太多会糊成一团
         step = max(1, n // 30)
         idxs = list(range(0, n, step))
@@ -1028,7 +1132,7 @@ class CompareCanvas(BaseCanvas):
         # 装饰色阶的每一档都按"对 plot_bg ≥3:1"生成（`palette.audit_deco`），
         # 所以十条曲线叠在一张图上仍然条条可辨——不用再逐条肉眼核。
         seq = (p["accent"], p.get("accent2", p["accent"])) \
-            + tuple(p.get("deco") or ())[1:] + tuple(CYCLE)
+            + tuple(p.get("deco") or ())[1:] + cycle_for(p)
         self._lines = []
         for i, (r, cur) in enumerate(self.items[:10]):
             arr = np.asarray(cur, dtype=float)
