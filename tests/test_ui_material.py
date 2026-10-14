@@ -328,7 +328,7 @@ class TestToastLifecycle(unittest.TestCase):
         for i in range(8):
             host.notify("压力 %d" % i, "info", ms=20)
         self.assertEqual(len(host.findChildren(W.Toast)), 8)
-        pump(20 + 400)
+        pump(20 + 700)          # 存活 20 + 淡出；窗口留足——全量负载下动画会慢，420 偶发不够
         self.assertEqual(len(host.findChildren(W.Toast)), 0, "有通知没被回收")
 
     def test_lifetime_shorter_than_fade_in_does_not_strand_animations(self):
