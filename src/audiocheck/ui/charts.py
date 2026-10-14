@@ -1010,13 +1010,24 @@ class WaterfallCanvas(BaseCanvas):
         db = _resample_rows(db, f2, fl)
         lf = np.log10(fl)
         n = db.shape[1]
-        cmap = rd_cmap()
-        # 只画有限条谱线，太多会糊成一团
-        step = max(1, n // 30)
+        cmap = spectro_cmap()
+        # B14：**填充带状切片**（PolyCollection）——原来是细线，没有立体/深度感；
+        # 填充后每片是"实体"，远近叠起来才有瀑布的纵深。
+        from matplotlib.collections import PolyCollection
+        step = max(1, n // 34)
         idxs = list(range(0, n, step))
+        verts, facecols = [], []
         for i in idxs:
-            col = cmap(0.06 + 0.88 * i / max(1, n - 1))
-            ax.plot(lf, db[:, i], zs=i, zdir="y", color=col, lw=1.5, alpha=.98)
+            u = i / max(1, n - 1)
+            v = ([(lf[0], -SPECTRO_DB_RANGE)] + list(zip(lf, db[:, i]))
+                 + [(lf[-1], -SPECTRO_DB_RANGE)])
+            verts.append(v)
+            # 深度线索：越靠后（时间越早）越淡越暗 → 纵深
+            col = cmap(0.10 + 0.82 * u)
+            facecols.append((float(col[0]), float(col[1]), float(col[2]), 0.42 + 0.52 * u))
+        poly = PolyCollection(verts, facecolors=facecols,
+                              edgecolors=(1.0, 1.0, 1.0, 0.12), linewidths=0.3)
+        ax.add_collection3d(poly, zs=idxs, zdir="y")
         ax.set_zlim(-90, 0)
         ax.set_ylim(0, n)
         ax.set_xlim(lf[0], lf[-1])

@@ -256,11 +256,12 @@ class TestRenderUnchanged(unittest.TestCase):
             self.assertNotIn(bad, code, "还在用 matplotlib 默认色图 %s" % bad)
 
     def test_imshow_uses_the_project_colormap(self):
-        """频谱图用 `spectro_cmap()`（B14：专业科学色图 inferno）；
-        曲线仍用 `rd_cmap()`（品牌色）。**两者分工**：密度场=科学色图，线/点=品牌色。"""
+        """密度图用 `spectro_cmap()`（B14：专业科学色图 inferno）——频谱图 imshow +
+        瀑布图填充切片都走它；曲线仍用 `rd_cmap()`（品牌色）。**分工：密度场=科学色图，线/点=品牌色。**"""
         code = _code(CHARTS)
-        self.assertEqual(len(re.findall(r"\bcmap=spectro_cmap\(\)", code)), 1,
-                         "频谱图的色图不是 spectro_cmap()")
+        self.assertIn("cmap=spectro_cmap()", code, "频谱图 imshow 没用 spectro_cmap()")
+        self.assertGreaterEqual(len(re.findall(r"spectro_cmap\(\)", code)), 2,
+                                "瀑布图也应走 spectro_cmap()")
         self.assertIn("cmap = rd_cmap()", code, "瀑布图的色图不是 rd_cmap()")
 
 
