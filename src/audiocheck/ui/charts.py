@@ -282,8 +282,9 @@ class BaseCanvas(FigureCanvasQTAgg):
     def _ax_style(self, ax, xlabel=None, ylabel=None):
         p = self.p
         ax.set_facecolor(p["plot_bg"])
+        ax.minorticks_on()      # B14 E.2-2：开次刻度——否则下面那条 minor 网格是空的（"看着没网格"的真因）
         ax.grid(True, which="major", color=p["grid"], lw=.7, zorder=0)
-        ax.grid(True, which="minor", color=p["grid"], lw=.35, alpha=.5, zorder=0)
+        ax.grid(True, which="minor", color=p["grid"], lw=.35, alpha=.45, zorder=0)
         ax.tick_params(colors=p["text_faint"], labelsize=p['fs_tick'], length=3)
         for s in ax.spines.values():
             s.set_color(p["border"])
@@ -826,6 +827,12 @@ class SpectrogramCanvas(BaseCanvas):
         # 纵轴刻度：位置是 log10(Hz)，标签写 Hz（读起来和原来一样）
         ax.set_yticks([math.log10(v) for v in TICKS_HZ if v < f[-1]])
         ax.set_yticklabels([_hz_label(v) for v in TICKS_HZ if v < f[-1]])
+        # B14 E.2-2 次刻度：主刻度之间按 2–9 倍频程细分，读频率时不用"估"
+        minor = [math.log10(v * m) for v in (10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000)
+                 for m in (2, 3, 4, 5, 6, 7, 8, 9)
+                 if 20.0 <= v * m < f[-1]]
+        ax.set_yticks(minor, minor=True)
+        ax.tick_params(axis="y", which="minor", length=2, color=p["text_faint"])
         # B14 精度：披露频率分辨率（Δf = 相邻 bin 间距，从数据直接算，不靠 nperseg 猜）
         if len(f) > 1:
             ax.text(0.995, 0.02, "Δf ≈ %.3g Hz" % float(f[1] - f[0]), transform=ax.transAxes,
