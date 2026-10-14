@@ -554,6 +554,18 @@ LEVEL_COLOR_KEY = {"ok": "ok", "warn": "warn", "bad": "bad"}
 
 # ------------------------------------------------------------------ QSS 生成
 
+#: 发丝线的 DPR 阈值：≥2 时改用 0.5px。理由：QSS 的 1px 是**逻辑像素**，
+#: DPR=2 的屏上会渲染成 2 物理像素——发丝线变"两根"，看起来是糊的。
+#: 0.5 逻辑 px 在 DPR2 上正好 1 物理 px（DPR1 上 Qt 会把它对齐到 1px，
+#: 所以阈值以下仍用 1）。
+HAIRLINE_DPR = 2.0
+
+
+def hairline_px(dpr: float = 1.0) -> str:
+    """发丝线的 QSS 宽度（带单位）。**纯函数，判据直接引它**。"""
+    return "0.5px" if float(dpr) >= HAIRLINE_DPR else "1px"
+
+
 def qss(t: Theme) -> str:
     p, sp, ty = t.p, t.space, t.type
     tk = t.tracking
@@ -605,9 +617,14 @@ QToolTip {{ background:{surface_raised}; color:{text}; border:1px solid {border_
               letter-spacing:{tr_caps_micro}px; padding:{md}px {md}px {xs}px; }}
 
 /* ===== 卡片 / 分区 ===== */
+/* 面板双线（GR 双线边框的 Qt 等价物）：外 1px 暗线定边界，
+   上缘 1px 亮边当"光从上面来"。⚠ 与 `#Toast/#Palette` 同一条纪律：
+   **必须写在 `border` 简写之后**——QSS 同特异度下后写的赢，而 `border`
+   简写会把 `border-top` 一起重置（第一次写就被静默吃掉过）。 */
 QFrame#Card, QWidget#Card {{ background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
     stop:0 {surface_hi}, stop:1 {surface}); border:1px solid {border};
-                             border-radius:{r_xl}px; }}
+                             border-radius:{r_xl}px;
+    border-top:1px solid {top_light}; border-bottom:1px solid {border}; }}
 /* 指标卡顶端的 2px 色条：**从装饰色阶撤出，改中性顶光**（B7.1 做法 2）。
    来历：18 张卡的色条连成 6 条横贯全屏的彩色长条，实测贡献了**全图高彩的
    42.4%** 却只引入噪声（勘误 §5.2 逐行扫描量到的）。它们很细，面积判据抓不到，
@@ -628,7 +645,8 @@ QFrame#CardAccent {{ border:0; border-top-left-radius:{r}px;
    好几倍。拆开后：tint 承担"判定语义有面积"，band 承担"高彩在说哪一档"。
    ⚠ 判据也随之修订：高彩面积目标 3.0–4.0% → **0.6–1.5%**（载体从块变线，
    面积下降是设计意图）。**不许为了凑面积把带子加粗回块**——那是走回头路。 */
-QFrame#VerdictBanner {{ border:1px solid {border_hi}; border-radius:{r_xl}px; }}
+QFrame#VerdictBanner {{ border:1px solid {border_hi}; border-radius:{r_xl}px;
+    border-top:1px solid {top_light}; }}
 QFrame#VerdictBanner[level="ok"] {{ background:{ok_tint}; }}
 QFrame#VerdictBanner[level="warn"] {{ background:{warn_tint}; }}
 QFrame#VerdictBanner[level="bad"] {{ background:{bad_tint}; }}

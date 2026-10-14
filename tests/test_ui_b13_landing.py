@@ -24,6 +24,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 APP = QApplication.instance() or QApplication([])
 
+from audiocheck.ui import palette as P  # noqa: E402
 from audiocheck.ui import theme as T  # noqa: E402
 
 FONTS = os.path.join(_ROOT, "src", "audiocheck", "assets", "fonts")
@@ -148,6 +149,44 @@ class TestRadiusTokens(unittest.TestCase):
         self.assertEqual(got, sorted(self.REGISTERED),
                          "QSS 模板的裸半径集合是 %s，登记表是 %s"
                          % (got, sorted(self.REGISTERED)))
+
+
+class TestBorderWeight(unittest.TestCase):
+    """③ 边框"可辨不抢"：border 不许比网格线重太多（B14 §3B）。
+
+    基准是**已登记的网格线对比**（B9 立的"可辨不抢"口径）。实测
+    （`out/_b14_3b2.py`）：dark border/bg = 1.30、grid/bg = 1.18；
+    light border/bg = 1.18、grid/bg = 1.16。边框定边界、网格是背景纹理，
+    前者略强是正常的，但不该**明显**强——强到跟数据墨抢就是设计错误。
+    容差取 1.15×（实测余量：dark 1.30 ≤ 1.36、light 1.18 ≤ 1.33）。
+    """
+
+    def test_border_is_not_heavier_than_the_gridline(self):
+        for theme in (T.DARK, T.LIGHT):
+            p = theme.p
+            grid = P.contrast(p.grid, p.bg)
+            border = P.contrast(p.border, p.bg)
+            self.assertLessEqual(border, grid * 1.15,
+                                 "%s：边框 %.2f:1 比网格线 %.2f:1 的 1.15 倍还重"
+                                 % (theme.name, border, grid))
+
+    def test_hairline_scales_with_dpr(self):
+        """DPR≥2 → 0.5px（否则 1 逻辑 px 渲染成 2 物理 px，发丝线糊成两根）。"""
+        self.assertEqual(T.hairline_px(1.0), "1px")
+        self.assertEqual(T.hairline_px(1.5), "1px")
+        self.assertEqual(T.hairline_px(2.0), "0.5px")
+        self.assertEqual(T.hairline_px(3.0), "0.5px")
+
+    def test_panel_has_the_double_line_border(self):
+        """双线边框在 QSS 里**真的写着**（`border-top` 在 `border` 简写之后）。"""
+        q = T.qss(T.DARK)
+        card = q[q.index("QFrame#Card"):]
+        card = card[:card.index("}")]
+        self.assertIn("border-top:1px solid", card,
+                      "#Card 没有上缘亮边——双线边框没统一")
+        # 顺序：border-top 必须出现在 border 简写之后（否则被重置，静默失效）
+        self.assertGreater(card.index("border-top"), card.index("border:1px"),
+                           "border-top 写在 border 简写之前——会被静默重置")
 
 
 if __name__ == "__main__":
