@@ -296,14 +296,20 @@ def _hz_label(v: float) -> str:
 def _resample_rows(db, f, fl):
     """把 (n_f, n_t) 的 dB 矩阵按**对数频轴**重采样成 (len(fl), n_t)。
 
-    线性插值即可：这里的目的是出图，不是做谱估计；而 fl 的密度高于 Bark 带，
-    插值带来的平滑不会引入"看不见的伪影"（1/24 倍频程 < 临界频带 1/12）。
+    **峰值保持，不做线性插值**（B14 精度）：线性插值会把**窄峰/深谷**平均掉，
+    而砖墙截止、陷波这类"一条细线"正是本工具要看的东西（插值后它变淡、甚至消失）。
+    改成每行取相邻两 bin 的**较大者**：峰不丢；上采样时退化为最近邻，不制造假分辨率。
     """
     f = np.asarray(f, dtype=float)
-    idx = np.clip(np.searchsorted(f, fl), 1, len(f) - 1)
-    lo, hi = f[idx - 1], f[idx]
-    w = (fl - lo) / np.maximum(hi - lo, 1e-12)
-    return db[idx - 1] * (1.0 - w)[:, None] + db[idx] * w[:, None]
+    n = len(fl)
+    edges = np.clip(np.searchsorted(f, fl), 1, len(f))
+    out = np.empty((n, db.shape[1]), dtype=db.dtype)
+    lo = 0
+    for i in range(n):
+        hi = max(lo + 1, int(edges[i]))
+        out[i] = db[lo:hi].max(axis=0)          # 带内峰值保持
+        lo = hi
+    return out
 
 
 # --------------------------------------------------------------------- Bark 标度
