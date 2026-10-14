@@ -766,6 +766,34 @@ class SpectrogramCanvas(BaseCanvas):
         # 对数频域重采样结果的缓存（键 = 数据身份 + 行数 + 列数，见 redraw）
         self._rs_key = None
         self._rs_cache = None
+        self._cursor = None                     # B14 E.2-3 游标读数（时间/频率/dB）
+        self.mpl_connect("motion_notify_event", self._on_hover)
+
+    def _on_hover(self, ev):
+        """B14 E.2-3：鼠标处读数。**不知道就说不知道**（数据没渲染/不在轴内 → 藏起）。"""
+        p = self.p
+        if (p is None or not self.data or self._rs_cache is None
+                or ev.inaxes is not self.ax or ev.xdata is None or ev.ydata is None):
+            if self._cursor is not None:
+                self._cursor.set_visible(False)
+                self.draw_idle()
+            return
+        t, f, _S = self.data
+        fq = 10.0 ** float(ev.ydata)
+        rows = np.geomspace(20.0, f[-1], self._rs_cache.shape[0])
+        j = int(np.clip(np.searchsorted(rows, fq), 0, len(rows) - 1))
+        k = int(np.clip(np.searchsorted(t, float(ev.xdata)), 0, len(t) - 1))
+        txt = "%.2fs  %.0f Hz  %.1f dB" % (float(ev.xdata), fq, float(self._rs_cache[j, k]))
+        if self._cursor is None:
+            self._cursor = self.ax.text(
+                0.015, 0.03, txt, transform=self.ax.transAxes, color=p["text"],
+                fontsize=p['fs_tick'], va="bottom", ha="left", zorder=5,
+                bbox=dict(boxstyle="round,pad=0.28", fc=p["surface"],
+                          ec=p["border_hi"], lw=.6))
+        else:
+            self._cursor.set_text(txt)
+        self._cursor.set_visible(True)
+        self.draw_idle()
 
     def set_data(self, r=None, data=None, msg=None):
         # 同一份数据（对象身份相同）再喂一次不必重画：`_load_view` 命中缓存时
