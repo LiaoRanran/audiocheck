@@ -13,7 +13,6 @@
 归一化位置、**文字对合成背景的对比**、**判定带对氛围的对比**、锚件是否在场。
 判据脚本读它 + **重新量 PNG 自己的像素**做交叉验证（不许只信这份 json）。
 """
-import io
 import json
 import os
 import sys
@@ -26,8 +25,6 @@ for _p in (os.path.join(ROOT, "packaging"),):
     sys.path.insert(0, _p)
 
 import _kit as K  # noqa: E402
-
-from PySide6.QtCore import Qt  # noqa: E402
 from PySide6.QtWidgets import QWidget  # noqa: E402
 
 #: 面板遮罩 alpha。**B14 §11-④ 重新定标：0.45 → 0.55**（报数，不是静默改）。
@@ -52,7 +49,7 @@ def load_mk(tag: str):
     """取骨架的 `mk_win`——**用 `__name__` 非 `__main__` 执行**，跳过它的入口，
     否则 import 一次就顺手往 shots/b10 再出一遍图。"""
     path = os.path.join(PROTO, "skeleton_%s.py" % tag)
-    src = io.open(path, encoding="utf-8").read()
+    src = open(path, encoding="utf-8").read()
     ns = {"__name__": "skeleton_%s" % tag, "__file__": path}
     exec(compile(src, path, "exec"), ns)
     return ns["mk_win"]
@@ -111,7 +108,7 @@ if __name__ == "__main__":
     for tag in ("s1", "s2"):
         for kind in ("g1", "g2"):
             recs.append(one(tag, kind, cases["ok"]))
-    with io.open(os.path.join(OUT, "report.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(OUT, "report.json"), "w", encoding="utf-8") as f:
         json.dump({"alpha": ALPHA, "records": recs}, f, ensure_ascii=False, indent=1)
     pngs = sorted(f for f in os.listdir(OUT) if f.endswith(".png"))
     print("\nshots/b105: %d 张 → %s" % (len(pngs), pngs))

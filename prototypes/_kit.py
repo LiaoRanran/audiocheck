@@ -220,7 +220,8 @@ def _atmo_hex(kind: str, u: float, v: float) -> str:
 def atmosphere(kind: str, w: int, h: int, cells: int = 64):
     """预计算氛围底图（`QImage`）。按 (kind, w, h) 缓存——每帧只做一次 blit。"""
     from PySide6.QtCore import Qt as _Qt
-    from PySide6.QtGui import QColor as _QC, QImage
+    from PySide6.QtGui import QColor as _QC
+    from PySide6.QtGui import QImage
 
     key = (kind, w, h, cells)
     if key in _ATMO:
@@ -394,25 +395,6 @@ class PlotWidget:
         return _P()
 
 
-class PlotWidget:
-    """把 `plot_curve` 包成控件。**四骨架共用一支画笔**——竞品要比的是
-    版面（谁在哪、占多大），不是四个人的笔迹差异。"""
-
-    def make(case, notes=(), pad=0):
-        from PySide6.QtWidgets import QWidget as _QWidget
-
-        class _P(_QWidget):
-            def paintEvent(self, ev):
-                from PySide6.QtGui import QPainter as _QP
-                pr = _QP(self)
-                r = self.rect()
-                plot_curve(pr, (r.x() + pad, r.y() + pad,
-                                r.width() - 2 * pad, r.height() - 2 * pad),
-                           case["curve"], case["level"], notes=notes)
-                pr.end()
-        return _P()
-
-
 class AtmoRoot:
     """氛围底图容器：`paintEvent` 里一次 blit 预计算的 `QImage`。
 
@@ -421,7 +403,8 @@ class AtmoRoot:
 
     def wrap(kind: str, inner):
         from PySide6.QtGui import QPainter as _QP
-        from PySide6.QtWidgets import QVBoxLayout as _V, QWidget as _W
+        from PySide6.QtWidgets import QVBoxLayout as _V
+        from PySide6.QtWidgets import QWidget as _W
 
         class _A(_W):
             def paintEvent(self, ev):
