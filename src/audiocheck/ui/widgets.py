@@ -537,7 +537,7 @@ class SeedDialog(QDialog):
         # 混进"最弱一环"会让人以为配色不达标——报告口径要跟结论一致。
         text_findings = [f for f in audit(pal) if f.required >= 4.5]
         worst = min(text_findings, key=lambda f: f.ratio)
-        self.lbl.setText("全部 %d 条 WCAG 判据通过 ✓ ｜ 文字类最弱一环 %.1f:1（%s，要求 %.1f）"
+        self.lbl.setText("全部 %d 条 WCAG 判据通过 ✓ ｜ 文字类最弱一环 %.1f:1（%s，要求 %.1f）"
                          "｜ 装饰阶 %d 档均已 ≥3:1"
                          % (len(audit(pal)), worst.ratio, worst.pair.split(" / ")[0],
                             worst.required, len(d)))

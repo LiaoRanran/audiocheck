@@ -20,9 +20,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SRC = os.path.join(_ROOT, "src")
-for _p in (_SRC, os.path.join(_ROOT, "packaging")):
+for _p in (_SRC, os.path.join(_ROOT, "packaging"), os.path.join(_ROOT, "prototypes")):
     if _p not in sys.path:
-        sys.path.insert(0, _p)
+        sys.path.insert(0, _p)     # prototypes 在列：B10.5 的氛围判据要 import _kit
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
@@ -386,6 +386,147 @@ def _rgba(col):
     """把 matplotlib 颜色归一成 `#rrggbb`，便于跨类型比较。"""
     from matplotlib.colors import to_hex
     return to_hex(col)
+
+
+# ============================ B10.5：氛围组合（5 条） ============================
+
+B105 = os.path.join(_ROOT, "shots", "b105")
+#: 提示词 §4 点名的四个文件名——判据按**清单**核，不是"有多少算多少"。
+B105_FILES = ("s1_g1.png", "s1_g2.png", "s2_g1.png", "s2_g2.png")
+
+
+def _b105_rgb(name: str):
+    """读一张 BMP/PNG 的像素（numpy，向量化——逐像素在 1400×900 上太慢）。"""
+    import numpy as np
+    from PIL import Image
+
+    p = os.path.join(B105, name)
+    if not os.path.exists(p):
+        raise unittest.SkipTest("缺 %s（先跑 prototypes/compose_b105.py）" % name)
+    return np.asarray(Image.open(p).convert("RGB"), dtype=np.float64) / 255.0
+
+
+class TestAtmosphereCompositions(unittest.TestCase):
+    """B10.5 §3：氛围在场 / 文字对比 / 曲线可读 / 无 banding / 恒定锚。"""
+
+    def setUp(self):
+        import json
+        rp = os.path.join(B105, "report.json")
+        self.report = (json.load(open(rp, encoding="utf-8"))
+                       if os.path.exists(rp) else {"records": []})
+
+    def test_four_named_files_exist(self):
+        """交付清单：恰好那四个名字（多一张少一张都不算交付）。"""
+        got = sorted(f for f in os.listdir(B105) if f.endswith(".png")) \
+            if os.path.isdir(B105) else []
+        for f in B105_FILES:
+            self.assertIn(f, got, "缺交付图 %s" % f)
+
+    def test_atmosphere_is_present(self):
+        """① 底色不再是纯灰：每图中位彩度 ≥0.03（G1 预期更高）。
+
+        口径：OKLCH **C** 的中位数，整图统计（含面板——面板是半透明的，
+        氛围会透上来，正是这一条要证的东西）。
+        """
+        import numpy as np
+        for name in B105_FILES:
+            rgb = _b105_rgb(name)
+            flat = rgb.reshape(-1, 3)
+            lin = np.where(flat <= 0.04045, flat / 12.92, ((flat + 0.055) / 1.055) ** 2.4)
+            lms = lin @ np.array([
+                [0.4122214708, 0.5363325363, 0.0514459929],
+                [0.2119034982, 0.6806995451, 0.1073969566],
+                [0.0883024619, 0.2817188376, 0.6299787005]]).T
+            lab = np.cbrt(lms) @ np.array([
+                [0.2104542553, 0.7936177850, -0.0040720468],
+                [1.9779984951, -2.4285922050, 0.4505937099],
+                [0.0259040371, 0.7827717662, -0.8086757660]]).T
+            med = float(np.median(np.hypot(lab[:, 1], lab[:, 2])))
+            self.assertGreaterEqual(med, 0.03,
+                                    "%s 中位彩度 %.4f < 0.03——氛围没在场" % (name, med))
+
+    def test_text_contrast_against_composited_background(self):
+        """② 面板文字对**合成后**背景 ≥4.5:1。
+
+        先量 PNG 里面板区域的**实际底色**，再拿它算对比——而不是拿令牌算。
+        面板 alpha 不够就加，**不许给文字加描边糊弄**（提示词 §5.4）。
+        """
+        import numpy as np  # 本方法单独用（众数估计），不放在模块头
+        for rec in self.report["records"]:
+            name = rec["image"]
+            rgb = _b105_rgb(name)
+            top = rgb[:70, :, :].reshape(-1, 3)          # 顶栏条带
+            # ⚠ 底色的估计用**众数**（出现最多的那个 8 位色），不是均值：
+            # 条带里有深色文字和 4px 判定带，均值会被它们拉暗——第一版用均值
+            # 得到"对比不足 4.5:1"的**假警报**（渲染脚本记的是 11.76:1）。
+            # 面板底色在像素数上占绝对多数，众数才是它的估计。
+            q = (top * 255.0).round().astype(int)
+            keys = q[:, 0] * 65536 + q[:, 1] * 256 + q[:, 2]
+            vals, counts = np.unique(keys, return_counts=True)
+            k = int(vals[int(np.argmax(counts))])
+            mid = np.array([(k >> 16) & 255, (k >> 8) & 255, k & 255]) / 255.0
+            bg = "#%02x%02x%02x" % tuple(int(round(c * 255)) for c in mid)
+            # 文字色取**亮色主题**的正文色（B10.5 氛围版统一亮色）
+            c = P.contrast(T.THEMES["light"].p.text, bg)
+            self.assertGreaterEqual(c, 4.5,
+                                    "%s 的文字对实测底色 %s 只有 %.2f:1" % (name, bg, c))
+
+    def test_curve_readable_over_atmosphere(self):
+        """③ 曲线（判定档色）对氛围 ≥3:1——氛围不许盖过主角。
+
+        采样点在**氛围图上**取（`_kit._atmo_hex`），不是在 PNG 上找曲线
+        （找曲线要分割，那才是易错的）。
+        """
+        import _kit as K
+        for rec in self.report["records"]:
+            kind, lv = rec["atmosphere"], rec["level"]
+            for u, v in ((0.1, 0.7), (0.5, 0.6), (0.9, 0.5)):
+                bg = K._atmo_hex(kind, u, v)
+                c = P.contrast(K.band(lv), bg)
+                self.assertGreaterEqual(
+                    c, 3.0, "%s：%s 曲线在 (%.1f,%.1f) 对氛围只有 %.2f:1"
+                    % (rec["image"], lv, u, v, c))
+
+    def test_no_banding_in_the_background(self):
+        """④ 氛围平滑：相邻 8px 色差 ≤2/255（多停靠点防色带）。
+
+        ⚠ **量的对象是氛围图本身，不是整张截图**——第一版量了截图的左侧
+        竖条，结果报"相邻差 205/255"：那条竖条里是**侧栏面板**（S1 的
+        56px 图标条）与它的文字边缘，我把 UI 内容的边当成了色带。
+        色带是**渐变生成**的缺陷，就该在生成物上量。
+        截图侧的等价检查由判据③（曲线对氛围的对比）与②（文字对合成底的
+        对比）覆盖，它们都按位置取样，不受 UI 边缘干扰。
+        """
+        import _kit as K
+        import numpy as np
+        for kind in ("g1", "g2"):
+            img = K.atmosphere(kind, 1400, 900)
+            w, h = img.width(), img.height()
+            a = np.empty((h, w, 3))
+            for y in range(h):
+                for x in range(0, w, 8):
+                    c = img.pixelColor(x, y)
+                    a[y, x] = (c.red(), c.green(), c.blue())
+            strip = a[:, ::8, :]
+            for axis, name in ((1, "横向"), (0, "纵向")):
+                d = np.abs(np.diff(strip, axis=axis))
+                worst = float(d.max()) if d.size else 0.0
+                self.assertLessEqual(worst, 2.0,
+                                     "%s 氛围%s 8 格相邻差 %.2f/255——有 banding"
+                                     % (kind, name, worst))
+
+    def test_constant_anchor_present(self):
+        """⑤ 恒定锚：文件名 + 判定态 + hero 三件套**每张**都在。
+
+        锚由渲染脚本在**渲染时**核（`report.json` 的 `anchors`），因为
+        "在场"是结构事实；这里只断言它被记下来了且齐。
+        """
+        self.assertEqual(len(self.report["records"]), 4, "记账条数不是 4")
+        for rec in self.report["records"]:
+            a = rec["anchors"]
+            self.assertTrue(a["file"], "%s 缺文件名锚" % rec["image"])
+            self.assertTrue(a["verdict"], "%s 缺判定态锚" % rec["image"])
+            self.assertTrue(a["hero"], "%s 缺 hero 锚（真实截止）" % rec["image"])
 
 
 if __name__ == "__main__":

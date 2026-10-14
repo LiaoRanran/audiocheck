@@ -194,9 +194,31 @@ class TestCjkLatinMix(unittest.TestCase):
         self.assertEqual(T.mix("", "x"), "x")                     # 空段不插
 
     def test_thin_space_is_within_the_quarter_em_band(self):
-        """thin space 实测 ≤1/4 汉字宽；普通空格**超了**（0.316 em）。
+        """间隙字符 ≤1/4 汉字宽；**机制是 U+00A0，不是 U+2009**（B14 §4-② 重标定）。
 
-        这条是"为什么不能用普通空格"的凭据——不是猜的，是量出来的。
+        ## 为什么改（报数，不是静默调阈值）
+
+        B1 定这条时的事实：YaHei 下普通空格 **0.316 em（超 1/4）**、thin space
+        约 1/5 em（达标）⇒ 旧断言写成"普通空格必须超标，否则 thin space 没有存在理由"。
+
+        B14 换成 IBM Plex + 思源后**逐字符 × 逐族实测**（`out/_b14_spaces.py`）：
+
+        | 字符 | Plex | Noto |
+        |---|---|---|
+        | U+0020 | 0.211 ✓ | 0.211 ✓ |
+        | U+00A0 | 0.211 ✓ | 0.211 ✓ |
+        | U+2009 | 0.105 ✓ | **0.579 ✗** |
+        | U+3000 | 1.000 ✗ | 1.000 ✗ |
+
+        ⇒ 两条同时变：① **普通空格达标了**（0.211 ≤ 0.25），旧断言的前提消失；
+        ② **U+2009 反而不可用**——混排处的字形由 CJK 族（Noto）提供，而 Noto 把
+        thin space 映射到 0.579 em（超上限 2.3 倍）。
+        ⇒ 新机制 **U+00A0**：两个族都 0.211 em，且**不断行**（"44.1 kHz" 不被折行
+        拆开）。它的存在理由从"更窄"变成"**源码里可辨 + 不断行**"——普通空格在
+        源码里不可见，那正是 B1 踩过的坑（`"44.1 kHz"` 与 `"44.1<U+00A0>kHz"`
+        长得一样，折行行为不同）。
+
+        **阈值（1/4 汉字）没有动**，动的是字符——这就是"按字体重标定"。
         """
         f = T.pick_text_font("音", 14.0, T.ui_family())
         m = QFontMetricsF(f)
@@ -204,10 +226,15 @@ class TestCjkLatinMix(unittest.TestCase):
         thin = m.horizontalAdvance(self.THIN)
         plain = m.horizontalAdvance(" ")
         self.assertGreater(han, 0)
+        self.assertEqual(self.THIN, "\u00a0",
+                         "间隙字符必须是 U+00A0（B14 §4-② 按 Plex/Noto 重标定）")
         self.assertLessEqual(thin, han / 4.0 + 1e-6,
-                             "thin space %.3f em 超出 1/4 em" % (thin / han))
-        self.assertGreater(plain, han / 4.0,
-                           "普通空格已经达标了？那 thin space 就没有存在理由")
+                             "间隙字符 %.3f em 超出 1/4 em" % (thin / han))
+        # 新凭据：U+00A0 与 U+0020 **等宽**（实测都 0.211 em）——所以"更窄"
+        # 不再是它的存在理由；理由换成"源码可辨 + 不断行"（见 docstring）。
+        self.assertAlmostEqual(thin / han, plain / han, places=2,
+                               msg="U+00A0 与普通空格不再等宽了？重跑 "
+                                   "out/_b14_spaces.py 再定机制")
 
     def test_no_fullwidth_space_or_double_space_in_visible_strings(self):
         """可见字符串里不许有全角空格，或**紧邻中文**的连续半角空格。

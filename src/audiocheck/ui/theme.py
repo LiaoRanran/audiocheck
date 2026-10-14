@@ -412,7 +412,7 @@ def load_bundled_fonts(assert_present: bool = True) -> list:
     if missing and assert_present:
         raise RuntimeError(
             "发货字体缺族 %s——`families()` 只有 %d 个。"
-            "⚠ 若为 0，说明没走 `addApplicationFont`（离屏环境列不出系统字体，"
+            "⚠ 若为0，说明未走（addApplicationFont）——离屏环境列不出系统字体，"
             "这正是本项目记过三次的坑）" % (missing, len(have)))
     _LOADED_BUNDLED.extend(files)
     _BUNDLED_ACTIVE.append(True)      # 供 qss() 判断：装载成功就不再写 font-family
@@ -953,13 +953,32 @@ def figure_qfont(size_pt: float, family: str = ""):
     return f
 
 
-#: 中西文之间的间隙字符。clreq 的要求是 **≤1/4 汉字宽**：
-#: 全角空格（U+3000）是 1 em，超了；两个半角空格约 0.5 em，也超了；
-#: **thin space（U+2009）是 1/5 em**，落在要求内。
+#: 中西文之间的间隙字符。clreq 的要求是 **≤1/4 汉字宽**。
+#:
+#: ⚠ **B14 §4-② 按新发货字体重标定**（改的是机制，不是阈值——阈值没动）：
+#: 逐字符 × 逐族实测（`out/_b14_spaces.py`，14pt，汉字宽 19px）：
+#:
+#: | 字符 | IBM Plex Sans | Noto Sans SC |
+#: |---|---|---|
+#: | U+0020 普通空格 | 0.211 em ✓ | 0.211 em ✓ |
+#: | **U+00A0 不断行空格** | **0.211 em ✓** | **0.211 em ✓** |
+#: | U+2009 thin space | 0.105 em ✓ | **0.579 em ✗** |
+#: | U+3000 全角空格 | 1.000 em ✗ | 1.000 em ✗ |
+#:
+#: ⇒ **U+2009 在捆绑字体下不可用**：Noto Sans SC 把 thin space 映射到接近汉字的
+#: 宽度（0.579 em，超上限 2.3 倍），而混排处的字形正是由 CJK 族（Noto）提供的。
+#: B1 选它是因为在 YaHei 下它约 1/5 em——**换字体后机制失效**，这正是"按字体
+#: 标定"的意义：**阈值不变，字符换**。
+#: ⇒ 改用 **U+00A0**：两个族里都 0.211 em（≤1/4 汉字），而且**不断行**——
+#: "44.1 kHz" 不会被折行拆开，比 U+0020 多一条排版收益。
+#:
 #: 为什么非要一个字符而不是直接打空格：手打的空格在源码里看不见——
-#: `"44.1 kHz"` 与 `"44.1　kHz"` 长得一模一样，后者却宽 4 倍。
+#: 普通空格与 U+00A0 长得一模一样，宽度与折行行为却不同。
 #: 于是提供 `mix()`，并在测试里扫"手打全角空格 / 连续两个半角空格"。
-THIN_SPACE = "\u2009"
+GAP_SPACE = "\u00a0"
+#: 兼容名（旧代码/旧测试可能仍引用 THIN_SPACE）。**指向新机制**，
+#: 不留"两个名字两种机制"的岔路——那正是本轮修掉的病。
+THIN_SPACE = GAP_SPACE
 
 
 def mix(*parts: str) -> str:
@@ -975,7 +994,7 @@ def mix(*parts: str) -> str:
     out: list[str] = []
     for i, s in enumerate(parts):
         if i and out and _need_gap(out[-1], s):
-            out.append(THIN_SPACE)
+            out.append(GAP_SPACE)
         out.append(s)
     return "".join(out)
 

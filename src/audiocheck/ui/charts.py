@@ -567,7 +567,7 @@ class SpectrumCanvas(BaseCanvas):
             self._bg = None
             self._drop_hover()
             ax.clear()
-            self._ax_style(ax, "频率 Hz", "相对电平 dB")
+            self._ax_style(ax, "频率 Hz", "相对电平 dB")
             ax.text(.5, .5, "选择左侧条目以查看频谱", ha="center", va="center",
                     color=p["text_faint"], transform=ax.transAxes, fontsize=p['fs_caption'])
             ax.set_xticks([])
@@ -594,7 +594,7 @@ class SpectrumCanvas(BaseCanvas):
         top = float(np.percentile(db, 99.8))
         lo = max(top - 95, float(db.min()) - 3)
         ax.clear()
-        self._ax_style(ax, "频率 Hz", "相对电平 dB")
+        self._ax_style(ax, "频率 Hz", "相对电平 dB")
 
         # ---- Bark 临界频带底纹 ----
         # 人耳的频率分辨率是按临界频带走的下（<500Hz 约 100Hz 恒定，>500Hz 约 0.2·f），
@@ -750,7 +750,7 @@ class SpectrogramCanvas(BaseCanvas):
             return
         self.fig.set_facecolor(p["surface"])
         ax.clear()
-        self._ax_style(ax, "时间 s", "频率 Hz")
+        self._ax_style(ax, "时间 s", "频率 Hz")
         if not self.data:
             if self._cbar is not None:
                 self._cbar.ax.set_visible(False)   # 空数据不该留着一条没有含义的色条
@@ -1174,9 +1174,9 @@ class CompareCanvas(BaseCanvas):
             return
         self.fig.set_facecolor(p["surface"])
         ax.clear()
-        self._ax_style(ax, "频率 Hz", "相对电平 dB")
+        self._ax_style(ax, "频率 Hz", "相对电平 dB")
         if not self.items:
-            ax.text(.5, .5, "在左侧按住 Ctrl 选中多个条目即可叠加对比",
+            ax.text(.5, .5, "在左侧按住 Ctrl 选中多个条目即可叠加对比",
                     ha="center", va="center", color=p["text_faint"],
                     transform=ax.transAxes, fontsize=p['fs_caption'])
             ax.set_xticks([])
@@ -1372,7 +1372,7 @@ class OverviewCanvas(BaseCanvas):
         cuts = np.array([r["cutoff_khz"] for r in rows])
         levels = [r.get("level", "warn") for r in rows]
         bins = np.arange(0, max(48, cuts.max() + 2), 2.0)
-        self._ax_style(self.axh, "真实截止 kHz", "文件数")
+        self._ax_style(self.axh, "真实截止 kHz", "文件数")
         self.axh.set_title("真实带宽分布", color=p["text_dim"], fontsize=p['fs_micro'], pad=8)
         for lv in ("ok", "warn", "bad"):
             sel = cuts[[i for i, lvl in enumerate(levels) if lvl == lv]]

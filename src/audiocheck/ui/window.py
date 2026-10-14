@@ -144,7 +144,7 @@ class SettingsDialog(QDialog):
         rows = [
             ("cd_full", "44.1k 满带宽 ≥", 1.0, 22.0), ("ltd", "带限 / 有损分界", 10.0, 21.0),
             ("lossy", "有损 / 强有损分界", 8.0, 19.0), ("full_48", "48k 真带宽 ≥", 21.0, 24.0),
-            ("up_44", "48k 疑似升频 ≥", 20.0, 23.5), ("hi_ok", "伪 Hi-Res 上限 ≤", 20.0, 28.0),
+            ("up_44", "48k 疑似升频 ≥", 20.0, 23.5), ("hi_ok", "伪 Hi-Res 上限 ≤", 20.0, 28.0),
             ("min_drop_db", "判定为截止的最小跌幅", 3.0, 60.0),
             ("brick_db", "砖墙判定陡度 >", 10.0, 120.0), ("clip_pct", "削波告警 >", 0.0, 1.0),
             ("loud_war_lufs", "响度战门槛 >", -20.0, 0.0), ("lra_flat", "动态压平门槛 <", 0.0, 12.0),
@@ -966,7 +966,7 @@ class MainWindow(FramelessWindow):
     #: 是不是编码器切的（砖墙陡度）、响度战多严重（集成响度）、
     #: 动态还剩多少（**动态范围**）。
     #: 按**标签前缀**匹配："真峰值"那一项的标签随算法分支变
-    #: （"真峰值 ITU-RITU-R" / "真峰值 ITU-RBS.1770"），所以不能用全等。
+    #: （"真峰值 ITU-RITU-R" / "真峰值 ITU-RBS.1770"），所以不能用全等。
     CARD_KEYS = ("砖墙陡度", "集成响度", "真峰值", "动态范围")
     #: 默认网格的列数。4 个关键数 → 4 列一行，正好"一行读数"。
     CARD_COLS = 4
@@ -997,10 +997,10 @@ class MainWindow(FramelessWindow):
             ("砖墙陡度", ("%.0f dB/oct" % r["brickwall_db_per_oct"])
              if r.get("brickwall_db_per_oct") else "—"),
             ("峰值 / RMS", "%.2f / %.2f" % (r.get("peak_dbfs") or 0, r.get("rms_dbfs") or 0)),
-            ("真峰值 ITU-RITU-R", ("%+.2f dBTP" % tp) if tp is not None else "—"),
+            ("真峰值 ITU-RITU-R", ("%+.2f dBTP" % tp) if tp is not None else "—"),
             ("集成响度", fmt_num(r.get("lufs"), " LUFS", 1)),
-            ("动态范围 DRDR", fmt_num(r.get("dr_db"), " dB", 1)),
-            ("响度范围 LRALRA", fmt_num(r.get("lra"), " LU", 1)),
+            ("动态范围 DRDR", fmt_num(r.get("dr_db"), " dB", 1)),
+            ("响度范围 LRALRA", fmt_num(r.get("lra"), " LU", 1)),
             ("PLR", fmt_num(r.get("plr"), " dB", 1)),
             ("削波", fmt_num(r.get("clip_pct"), "%", 3)),
             ("相位相关", fmt_num(r.get("corr"), "", 2)),
@@ -1058,30 +1058,30 @@ class MainWindow(FramelessWindow):
             ("采样率 / 位深", "%.0f Hz ｜ %s" % (r["sr"], r["bits"])),
             ("时长 / 体积 / 码率", "%d:%02d ｜ %.1f MB ｜ 约 %s kbps"
              % (r["seconds"] // 60, r["seconds"] % 60, r["size_mb"], g("kbps") or "—")),
-            ("编码器串 vendor", (r.get("meta") or {}).get("vendor") or "—"),
+            ("编码器串 vendor", (r.get("meta") or {}).get("vendor") or "—"),
             ("", ""),
             ("真实截止", human_khz(g("cutoff_hz"))),
             ("占奈奎斯特", ratio_pct(g("cutoff_ratio"))),
             ("砖墙陡度", fmt_num(g("brickwall_db_per_oct"), " dB/oct", 1)),
             ("频谱重心", human_khz(g("centroid_hz"))),
-            ("85% 滚降", human_khz(g("rolloff85_hz"))),
-            ("95% 滚降", human_khz(g("rolloff95_hz"))),
+            ("85% 滚降", human_khz(g("rolloff85_hz"))),
+            ("95% 滚降", human_khz(g("rolloff95_hz"))),
             ("谱平坦度", fmt_num(g("flatness"), "", 5)),
             ("噪声底", fmt_num(g("noise_floor_db"), " dB", 1)),
             ("", ""),
             ("峰值 / RMS", "%.2f / %.2f dBFS" % (g("peak_dbfs") or 0, g("rms_dbfs") or 0)),
-            ("真峰值 BS.1770", fmt_num(g("true_peak_dbfs"), " dBTP", 2)),
-            ("集成响度 R128", fmt_num(g("lufs"), " LUFS", 1)),
-            ("响度范围 LRA", fmt_num(g("lra"), " LU", 1)),
+            ("真峰值 BS.1770", fmt_num(g("true_peak_dbfs"), " dBTP", 2)),
+            ("集成响度 R128", fmt_num(g("lufs"), " LUFS", 1)),
+            ("响度范围 LRA", fmt_num(g("lra"), " LU", 1)),
             ("短时最大 / 最小", "%s / %s LUFS" % (fmt_num(g("st_max")), fmt_num(g("st_min")))),
             ("PLR", fmt_num(g("plr"), " dB", 1)),
-            ("动态范围 DR", fmt_num(g("dr_db"), " dB", 1)),
+            ("动态范围 DR", fmt_num(g("dr_db"), " dB", 1)),
             ("波峰因数", fmt_num(g("crest_db"), " dB", 1)),
             ("削波样本", fmt_num(g("clip_pct"), " %", 4)),
             ("直流偏移", fmt_num(g("dc_max_dbfs"), " dBFS", 1)),
             ("", ""),
             ("相位相关", fmt_num(g("corr"), "", 3)),
-            ("声道宽度 M/S", fmt_num(g("width_db"), " dB", 1)),
+            ("声道宽度 M/S", fmt_num(g("width_db"), " dB", 1)),
             ("单声道兼容", g("mono_compat") or "—"),
             ("L/R 电平差", fmt_num(g("lr_level_diff_db"), " dB", 2)),
         ]
@@ -1182,7 +1182,7 @@ class MainWindow(FramelessWindow):
             return
         p, _ = QFileDialog.getSaveFileName(
             self, "导出", "audiocheck_report",
-            "HTML 报告 (*.html);;JSON (*.json);;CSV (*.csv);;当前视图 PNG (*.png)")
+            "HTML 报告 (*.html);;JSON (*.json);;CSV (*.csv);;当前视图 PNG (*.png)")
         if not p:
             return
         try:
