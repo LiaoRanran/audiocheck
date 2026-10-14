@@ -586,7 +586,7 @@ QWidget:focus {{ border-color:{border_focus}; }}
 QPushButton:focus, QToolButton:focus, QComboBox:focus, QLineEdit:focus,
 QSpinBox:focus, QCheckBox:focus, QListWidget:focus, QTableWidget:focus,
 QTabBar:focus {{ border:1px solid {border_focus}; }}
-QWidget {{ background:{bg_veil}; color:{text}; font-size:{body}px; {font_css} }}
+QWidget {{ background:transparent; color:{text}; font-size:{body}px; {font_css} }}
 QMainWindow, QDialog {{ background:{bg}; }}
 QToolTip {{ background:{surface_raised}; color:{text}; border:1px solid {border_hi};
             border-top:1px solid {top_light};
@@ -752,7 +752,7 @@ QCheckBox::indicator:disabled {{ border-color:{border}; background:{surface}; }}
 /* 表格**不设整体等宽**：等宽是给数字列的（那几列由委托显式指定字体），
    而这张表里有中文文件名、有整页中文的元数据表——整体等宽等于把中文
    全部推给"逐字形回退"，落到哪个字体不可控，部分机器上直接是方框。 */
-QTableWidget {{ background:{surface}; alternate-background-color:{surface_hi};
+QTableWidget {{ background:{surface_veil}; alternate-background-color:{surface_hi_veil};
     gridline-color:transparent; border:1px solid {border}; border-radius:{r_xl}px;
     selection-background-color:{selection}; selection-color:{text};
     font-size:{body_sm}px; }}
