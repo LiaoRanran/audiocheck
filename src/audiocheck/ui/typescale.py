@@ -85,6 +85,15 @@ def ratios(width: int = 1440) -> dict:
     return out
 
 
+def scaled_type(base, width: int = 1440):
+    """把 `theme.Type` 实例按分辨率档缩放成**新的** Type（B14 字排版·分辨率接线）。
+
+    只缩放 `BASE` 里登记的角色（= Type 的全部字段），其余字段（若有）原样带过。
+    """
+    from dataclasses import replace
+    return replace(base, **{r: fs(r, width) for r in BASE})
+
+
 if __name__ == "__main__":                      # 自检：三档梯度 + 比例不变
     print("%-12s %s" % ("档位", "  ".join("%-8s" % r for r in BASE)))
     for w in (1440, 2560, 3840):

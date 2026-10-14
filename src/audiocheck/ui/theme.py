@@ -546,6 +546,18 @@ LIGHT_P = Palette(name="light", **_palette.build(BUILTIN_SEED, "light", BUILTIN_
 
 DARK = Theme("dark", DARK_P)
 LIGHT = Theme("light", LIGHT_P)
+
+
+def theme_for_width(base: Theme, width: int) -> Theme:
+    """按屏幕**逻辑宽**把字阶缩放到分辨率档（B14 字排版·分辨率接线）。
+
+    用逻辑宽（`primaryScreen().size()` 已是逻辑像素）⇒ 不叠加 DPR 缩放，
+    避开"tier × DPR 双重缩放"（B14 §13 登记的风险）。
+    """
+    from dataclasses import replace
+
+    from . import typescale
+    return replace(base, type=typescale.scaled_type(base.type, width))
 THEMES = {"dark": DARK, "light": LIGHT}
 
 LEVEL_CN = {"ok": "合格", "warn": "有疑", "bad": "不达标"}

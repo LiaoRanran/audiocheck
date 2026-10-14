@@ -197,7 +197,7 @@ class MainWindow(FramelessWindow):
             app.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
         super().__init__(title="audiocheck", subtitle="音源质量检测")
 
-        self.theme: T.Theme = T.DARK          # 默认档；亮色默认要走 _restore/config 路径（B14 待定）
+        self.theme: T.Theme = T.theme_for_width(T.DARK, self._screen_w())  # B14 字排版：按屏幕宽缩字阶
         # 由种子色生成的主题（`ui/palette.py`）。None = 用内置 DARK/LIGHT。
         self.seed: str | None = None
         self.seed_mode: str | None = None
@@ -506,7 +506,15 @@ class MainWindow(FramelessWindow):
 
     # ============================================================ 主题
 
+    def _screen_w(self) -> int:
+        """主屏**逻辑宽**（B14 字排版·分辨率接线）。无 app 时退回 HD 基准 1440。"""
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance()
+        scr = app.primaryScreen() if app is not None else None
+        return scr.size().width() if scr is not None else 1440
+
     def apply_theme(self, t: T.Theme):
+        t = T.theme_for_width(t, self._screen_w())    # B14 字排版：所有设主题的点都在这里缩字阶
         self.theme = t
         from PySide6.QtWidgets import QApplication
         app = QApplication.instance()
