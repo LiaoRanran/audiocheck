@@ -446,8 +446,9 @@ class SeedDialog(QDialog):
                 b = QPushButton(name)
                 b.setFixedHeight(32)        # 4 的倍数：`tests/test_ui_grid.py` 会查
                 b.setCursor(Qt.PointingHandCursor)
-                b.setStyleSheet("background:%s;color:%s;border:0;border-radius:6px"
-                                % (hexv, "#0d0f13" if _luma(hexv) > 0.45 else "#ffffff"))
+                b.setStyleSheet("background:%s;color:%s;border:0;border-radius:%dpx"
+                                % (hexv, "#0d0f13" if _luma(hexv) > 0.45 else "#ffffff",
+                                   self._t.radius.md))
                 b.clicked.connect(lambda _=False, h=hexv: (self.ed.setText(h), self._preview()))
                 g.addWidget(b, i // 4, i % 4)
             v.addLayout(g)
@@ -525,14 +526,15 @@ class SeedDialog(QDialog):
             return
         for role, cell in zip(self.SWATCHES, self.cells):
             bg = pal["surface"] if role in ("text", "border") else pal["bg"]
-            cell.setStyleSheet("background:%s;color:%s;border-radius:5px"
+            cell.setStyleSheet("background:%s;color:%s;border-radius:%dpx"
                                % (pal[role] if role != "border" else pal["surface_hi"],
-                                  pal["text"] if role != "text" else bg))
+                                  pal["text"] if role != "text" else bg,
+                                  self._t.radius.instrument))
         d = pal["deco"]
         self.cell_deco.setStyleSheet(
             "background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 %s, stop:.5 %s,"
-            " stop:1 %s); border-radius:5px; color:%s"
-            % (d[0], d[2], d[4], pal["text"]))
+            " stop:1 %s); border-radius:%dpx; color:%s"
+            % (d[0], d[2], d[4], self._t.radius.instrument, pal["text"]))
         # 只看**文字类**判据（要求 ≥4.5 的那些）：装饰性描边那条要求只有 1.0，
         # 混进"最弱一环"会让人以为配色不达标——报告口径要跟结论一致。
         text_findings = [f for f in audit(pal) if f.required >= 4.5]

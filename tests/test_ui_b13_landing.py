@@ -108,12 +108,10 @@ class TestRadiusTokens(unittest.TestCase):
     **先登记在案**（阶段 2 收敛；登记而不是删判据——删了就没有防回归了）。
     """
 
-    #: 已登记的裸圆角（值, 位置说明, 阶段 2 处置）
-    REGISTERED = {
-        2: "BrandBar 三段色条（B9.2 留）→ 并入 Radius 仪器档旁的小档",
-        3: "VerdictBand/ProgressBar（B9.1 的细带）→ 并入细带档",
-        5: "ScrollBar 滑块（B6 留）→ **正好是 GR 仪器档 5px**，直接用它",
-    }
+    #: **B14 §3B 之后：零裸半径**。B13 那版是登记制（2/3/5 各有处置说明），
+    #: 本轮把它们全收进 `Radius`（nano=2 / tiny=3 / instrument=5）。
+    #: 登记表清空 = 判据变严：再出现任何一个裸数字即失败。
+    REGISTERED: dict = {}
 
     def test_every_naked_radius_is_registered(self):
         """⚠ **扫的是 QSS 模板源，不是生成结果**。

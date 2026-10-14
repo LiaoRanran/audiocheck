@@ -57,7 +57,24 @@ class Space:
 
 @dataclass(frozen=True)
 class Radius:
+    """圆角档位。**全部圆角必须来自这里**（B14 §3B：模板源无裸半径）。
+
+    三档小半径是 B14 §3B 补的，各自有出处（GR 语法账 `GR-圆角`）：
+
+    * `nano = 2`：装饰性小色条（品牌三色条）——它是"线段"不是"面板"，
+      圆角只是让端点不割手；
+    * `tiny = 3`：**细带/进度条**（判定带、QProgressBar）——4px 的 `sm`
+      在 4px 高的条子上会吃掉整条高度；
+    * `instrument = 5`：**GR 仪器档**（`gr-main-components.js:1432 arc1=5`）——
+      滚动条滑块、密排控件。GR 靠它拿到"近乎方角"的仪器感；我们原来
+      散落 5px 手写，现在收成令牌。
+
+    `sm/md/lg/xl` 保持原值（1440 上调好的，不重调）。
+    """
+    nano: int = 2
+    tiny: int = 3
     sm: int = 4
+    instrument: int = 5
     md: int = 6
     lg: int = 8
     xl: int = 12
@@ -574,9 +591,9 @@ QToolTip {{ background:{surface_raised}; color:{text}; border:1px solid {border_
    在一屏灰里被认出来。三个色值全部来自令牌，没有新增色号。
    **刻意不是渐变**：渐变彩条已在本轮退场（用户判决"合成波陈词滥调"），
    改成三个平色段——仍然是"这一组是并列的几档"，但不带合成波那味。 */
-#BrandBar {{ background:{deco0}; border-radius:2px; }}
-#BrandBarSeg1 {{ background:{deco2}; border-radius:2px; }}
-#BrandBarSeg2 {{ background:{deco4}; border-radius:2px; }}
+#BrandBar {{ background:{deco0}; border-radius:{r_nano}px; }}
+#BrandBarSeg1 {{ background:{deco2}; border-radius:{r_nano}px; }}
+#BrandBarSeg2 {{ background:{deco4}; border-radius:{r_nano}px; }}
 #NavItem {{ background:transparent; border:0; border-radius:{r_lg}px;
             padding:{sm}px {md}px; color:{text_dim}; text-align:left; font-size:{body}px; }}
 #NavItem:hover {{ background:{hover}; color:{text}; }}
@@ -622,7 +639,7 @@ QFrame#VerdictBand[level="ok"] {{ background:{ok_band}; }}
 QFrame#VerdictBand[level="warn"] {{ background:{warn_band}; }}
 QFrame#VerdictBand[level="bad"] {{ background:{bad_band}; }}
 /* 判词前的方点（小样的「● 不达标」）：6px 见方，同判定色。 */
-QFrame#VerdictDot {{ border:0; border-radius:3px; }}
+QFrame#VerdictDot {{ border:0; border-radius:{r_tiny}px; }}
 QFrame#VerdictDot[level="ok"] {{ background:{ok_band}; }}
 QFrame#VerdictDot[level="warn"] {{ background:{warn_band}; }}
 QFrame#VerdictDot[level="bad"] {{ background:{bad_band}; }}
@@ -725,14 +742,14 @@ QTabBar::tab:disabled {{ color:{text_disabled}; }}
 
 /* ===== 滚动条（细、圆角、悬停才明显） ===== */
 QScrollBar:vertical {{ background:transparent; width:10px; margin:0; }}
-QScrollBar::handle:vertical {{ background:{border_hi}; border-radius:5px; min-height:36px;
+QScrollBar::handle:vertical {{ background:{border_hi}; border-radius:{r_instrument}px; min-height:36px;
     margin:2px; }}
 QScrollBar::handle:vertical:hover {{ background:{text_faint}; }}
 /* 按住滑块拖动时要与"只是悬停"区分开：滚动条是**拖拽类**控件，
    悬停=准备好，按下=正在拖。少了 :pressed，拖动过程中手感和悬停一样。 */
 QScrollBar::handle:vertical:pressed {{ background:{text_dim}; }}
 QScrollBar:horizontal {{ background:transparent; height:10px; }}
-QScrollBar::handle:horizontal {{ background:{border_hi}; border-radius:5px; min-width:36px;
+QScrollBar::handle:horizontal {{ background:{border_hi}; border-radius:{r_instrument}px; min-width:36px;
     margin:2px; }}
 QScrollBar::handle:horizontal:hover {{ background:{text_faint}; }}
 QScrollBar::handle:horizontal:pressed {{ background:{text_dim}; }}
@@ -743,12 +760,12 @@ QScrollBar::add-page, QScrollBar::sub-page {{ background:transparent; }}
 QStatusBar {{ background:{surface}; border-top:1px solid {border};
               color:{text_dim}; font-size:{caption}px; }}
 QStatusBar::item {{ border:0; }}
-QProgressBar {{ background:{surface_hi}; border:0; border-radius:3px; height:4px;
+QProgressBar {{ background:{surface_hi}; border:0; border-radius:{r_tiny}px; height:4px;
                 color:transparent; }}
 /* 进度条**用单色**：原来主色→次级强调色的横向渐变，在本轮"渐变彩条退场"
    （用户判决"合成波陈词滥调"）下撤掉。它看起来仍在动——靠的是 chunk 本身
    在前进，不靠颜色流动。 */
-QProgressBar::chunk {{ background:{primary}; border-radius:3px; }}
+QProgressBar::chunk {{ background:{primary}; border-radius:{r_tiny}px; }}
 
 /* ===== 菜单 / 命令面板 ===== */
 QMenu {{ background:{surface_raised}; border:1px solid {border_hi};
@@ -826,6 +843,8 @@ QSplitter::handle:hover {{ background:{primary_soft}; }}
         r_sm=t.radius.sm, r_md=t.radius.md, r_lg=t.radius.lg, r_xl=t.radius.xl,
         # 卡片圆角减 1（描边宽度）：色条要贴住卡片的圆角内侧
         r=max(0, t.radius.xl - 1),
+        r_nano=t.radius.nano, r_tiny=t.radius.tiny,
+        r_instrument=t.radius.instrument,
         )
 
 
