@@ -248,14 +248,19 @@ class TestRenderUnchanged(unittest.TestCase):
         self.assertRegex(code, r"vmax=0\b")
 
     def test_no_default_matplotlib_colormaps_left(self):
+        """曲线**不许**用 matplotlib 默认色图（那批是"AI 味"的来源）。
+        ⚠ 例外：**频谱图**用 `inferno`（B14：密度图的科学标准，感知均匀、明度单调；
+        用户点名"专业可视化强一点的颜色"）——所以 `inferno` 放行。"""
         code = _code(CHARTS)
-        for bad in ('"magma"', '"viridis"', '"plasma"', '"inferno"', '"jet"'):
+        for bad in ('"magma"', '"viridis"', '"plasma"', '"jet"'):
             self.assertNotIn(bad, code, "还在用 matplotlib 默认色图 %s" % bad)
 
     def test_imshow_uses_the_project_colormap(self):
+        """频谱图用 `spectro_cmap()`（B14：专业科学色图 inferno）；
+        曲线仍用 `rd_cmap()`（品牌色）。**两者分工**：密度场=科学色图，线/点=品牌色。"""
         code = _code(CHARTS)
-        self.assertEqual(len(re.findall(r"\bcmap=rd_cmap\(\)", code)), 1,
-                         "频谱图的色图不是 rd_cmap()")
+        self.assertEqual(len(re.findall(r"\bcmap=spectro_cmap\(\)", code)), 1,
+                         "频谱图的色图不是 spectro_cmap()")
         self.assertIn("cmap = rd_cmap()", code, "瀑布图的色图不是 rd_cmap()")
 
 

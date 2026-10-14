@@ -140,6 +140,24 @@ def rd_cmap():
     return _RD_CACHE
 
 
+_SPECTRO_CACHE = None
+
+
+def spectro_cmap():
+    """**频谱图**色图（B14：专业可视化色图，替掉粉白 D）。
+
+    `inferno` 是密度 / 时频图的**科学标准**色图：感知均匀、明度单调，
+    峰值（亮黄白）与噪底（暗紫黑）一眼分得开——这正是频谱图要的"强"。
+    **曲线仍用 D 玫瑰钻石**（品牌色，曲线要认得出是"我们的"图）；
+    两者分工：**数据点/线 = 品牌色，密度场 = 科学色图**。
+    """
+    global _SPECTRO_CACHE
+    if _SPECTRO_CACHE is None:
+        import matplotlib
+        _SPECTRO_CACHE = matplotlib.colormaps["inferno"]
+    return _SPECTRO_CACHE
+
+
 def rd_color(t: float) -> str:
     """色轨上 t 处的颜色（给曲线与标记用）——与色图**同源**，不是两套配色。"""
     L, c, h = _rd_lch_at(t)
@@ -798,7 +816,7 @@ class SpectrogramCanvas(BaseCanvas):
         # 代价只在"频域采样密度"上（360 行 ≈ 每 1/24 倍频程一行，够读）。
         mesh = ax.imshow(db, aspect="auto", origin="lower",
                          extent=(t[0], t[-1], math.log10(20.0), math.log10(f[-1])),
-                         cmap=rd_cmap(), vmin=-SPECTRO_DB_RANGE, vmax=0.0, interpolation="nearest",
+                         cmap=spectro_cmap(), vmin=-SPECTRO_DB_RANGE, vmax=0.0, interpolation="nearest",
                          zorder=1)
         ax.set_ylim(math.log10(20.0), math.log10(f[-1]))
         ax.grid(False)
