@@ -68,13 +68,22 @@ class TestHighChromaQuota(unittest.TestCase):
 
         超了就是"改锚点"而不是"照锚点做"（勘误 §5.6 第 1 条）。
         """
+        # ⚠ 这条判据在 B9.1 拆分之后必须**分开写**：B7 时它管的是"那块底"，
+        # 而拆分后两个角色对彩度的要求正好相反——
+        #   tint（面）要**低**彩（否则面抢戏），band（线）要**高**彩（否则判定没重量）。
+        # 第一版拆完仍用同一个上界卡两者，于是 B9.2 把 band 提到 0.145 之后它红了——
+        # 而那次提升是**为了修一个真问题**（亮色 warn 只有 0.103 不到判据）。
         for mode in ("dark", "light"):
             pal = P.build(T.BUILTIN_SEED, mode, "calm")
-            for k in ("success_tint", "warning_tint", "danger_tint",
-                  "success_band", "warning_band", "danger_band"):
+            for k in ("success_tint", "warning_tint", "danger_tint"):
+                self.assertLessEqual(_c(pal[k]), 0.06,
+                                     "%s/%s 淡底太彩（面不该抢戏）" % (mode, k))
+            for k in ("success_band", "warning_band", "danger_band"):
                 v = _c(pal[k])
-                self.assertLessEqual(v, 0.14,
-                                     "%s/%s 彩度 %.3f 超过锚点 P50" % (mode, k, v))
+                self.assertLessEqual(v, 0.15,
+                                     "%s/%s 判定带彩度 %.3f 超出可用色域" % (mode, k, v))
+                self.assertGreaterEqual(v, 0.114,
+                                        "%s/%s 判定带彩度 %.3f 低于登记下限" % (mode, k, v))
 
     def test_split_also_lifted_the_dark_warning_gamut_limit(self):
         """B9.1 的拆分**顺带解掉了暗色 warning 的色域限制**（实测结论）。

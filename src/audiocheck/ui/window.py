@@ -128,7 +128,7 @@ class SettingsDialog(QDialog):
         self.setWindowTitle("判定阈值")
         self.setMinimumWidth(420)
         v = QVBoxLayout(self)
-        v.setSpacing(12)
+        v.setSpacing(16)
         self.cb_deep = QCheckBox("深度分析（计算频谱 / 响度 / 音乐特性）")
         self.cb_deep.setChecked(True)
         v.addWidget(self.cb_deep)
@@ -258,7 +258,7 @@ class MainWindow(FramelessWindow):
         split.setChildrenCollapsible(False)
         left_box = QWidget()
         lv = QVBoxLayout(left_box)
-        lv.setContentsMargins(16, 12, 8, 12)
+        lv.setContentsMargins(16, 16, 8, 16)
         lv.setSpacing(8)
         lv.addWidget(self._file_panel())
         split.addWidget(left_box)
@@ -286,7 +286,7 @@ class MainWindow(FramelessWindow):
         bar = QWidget()
         bar.setFixedHeight(52)
         h = QHBoxLayout(bar)
-        h.setContentsMargins(16, 8, 16, 8)
+        h.setContentsMargins(16, 12, 16, 12)
         h.setSpacing(8)
 
         self.act: dict[str, QPushButton] = {}
@@ -386,7 +386,7 @@ class MainWindow(FramelessWindow):
     def _stack(self):
         w = QWidget()
         v = QVBoxLayout(w)
-        v.setContentsMargins(8, 12, 16, 12)
+        v.setContentsMargins(16, 16, 24, 16)
         v.setSpacing(0)
         self.stack = QStackedWidget()
         v.addWidget(self.stack, 1)
@@ -394,13 +394,37 @@ class MainWindow(FramelessWindow):
         # --- 总览 ---
         ov = QWidget()
         ovl = QVBoxLayout(ov)
-        ovl.setContentsMargins(8, 0, 0, 0)
-        ovl.setSpacing(12)
+        # 区块间距升一档（md 12 → xl 24）：判词区/指标区/说明区是**区块**，
+        # 用户抱怨的"拥挤"主要来自区块之间没有呼吸。组件内部的间距不动。
+        ovl.setContentsMargins(16, 0, 0, 0)
+        ovl.setSpacing(24)
         self.banner = self._banner()
         ovl.addWidget(self.banner)
         self.grid = QGridLayout()
-        self.grid.setSpacing(8)
+        # 卡片间距升一档（sm 8 → md 12）。不进到 lg(16)：一屏 4 张卡时
+        # 16 会把它们拉散，失去"一行读数"的整体感。
+        self.grid.setSpacing(12)
         ovl.addLayout(self.grid)
+        # ---- 展开区（B9.2·R3）：默认隐藏，点按钮才出现 ----
+        # **收拢 ≠ 删除**：全部 18 项都在 `grid_more` 里，只是默认不显示。
+        # 测试断言"展开后全部可达"。
+        self._more_open = False
+        self._n_metrics = 0
+        self.btn_more = QPushButton("▸ 全部指标")
+        self.btn_more.setObjectName("Ghost")
+        self.btn_more.setCursor(Qt.PointingHandCursor)
+        self.btn_more.clicked.connect(self._toggle_more)
+        more_row = QHBoxLayout()
+        more_row.addWidget(self.btn_more, 0, Qt.AlignLeft)
+        more_row.addStretch(1)
+        ovl.addLayout(more_row)
+        # ⚠ 展开区必须装在**容器控件**里：`QGridLayout` 没有 `setVisible`
+        # （布局不是控件）——第一版直接对 layout 调 setVisible，抛 AttributeError。
+        # 容器方案同时也让"整块折叠"的语义更清楚。
+        self.more_box = QWidget()
+        self.grid_more = QGridLayout(self.more_box)
+        self.grid_more.setSpacing(12)
+        ovl.addWidget(self.more_box)
         ovl.addWidget(self._section("能不能用它来评耳机"))
         self.lbl_advice = QLabel("—")
         self.lbl_advice.setWordWrap(True)
@@ -937,11 +961,30 @@ class MainWindow(FramelessWindow):
         if lv in ("warn", "bad"):
             motion.pulse(self.lbl_verdict, self, loops=2)
 
+    #: 默认显示的**关键数**（B9.2：18 → 4）。取这四项的理由：它们直接对应
+    #: "这条音源能不能用"的四个判断轴——内容到哪（截止）已在 hero 上、
+    #: 是不是编码器切的（砖墙陡度）、响度战多严重（集成响度）、
+    #: 动态还剩多少（**动态范围**）。
+    #: 按**标签前缀**匹配："真峰值"那一项的标签随算法分支变
+    #: （"真峰值 ITU-RITU-R" / "真峰值 ITU-RBS.1770"），所以不能用全等。
+    CARD_KEYS = ("砖墙陡度", "集成响度", "真峰值", "动态范围")
+    #: 默认网格的列数。4 个关键数 → 4 列一行，正好"一行读数"。
+    CARD_COLS = 4
+    #: 展开区的列数（沿用原 6 列，18 项 3 行）。
+    MORE_COLS = 6
+
     def _cards(self, r):
-        while self.grid.count():
-            it = self.grid.takeAt(0)
-            if it.widget():
-                it.widget().deleteLater()
+        """指标区：**默认 4 个关键数 + 可展开的全部项**（B9.2·R3）。
+
+        依据（诊断文档 §三·根因 3）：锚点图 86% 是负空间，而本工具只有
+        一小把结论。"密度优先"是从 DAW 界面误搬来的——DAW 密是因为它
+        几百个控件，而这里 18 张卡铺满一屏，把该留的白全吃了。
+        """
+        for g in (self.grid, self.grid_more):
+            while g.count():
+                it = g.takeAt(0)
+                if it.widget():
+                    it.widget().deleteLater()
         tp = r.get("true_peak_dbfs")
         pairs = [
             ("采样率", "%.1f kHz" % (r["sr"] / 1000)),
@@ -954,10 +997,10 @@ class MainWindow(FramelessWindow):
             ("砖墙陡度", ("%.0f dB/oct" % r["brickwall_db_per_oct"])
              if r.get("brickwall_db_per_oct") else "—"),
             ("峰值 / RMS", "%.2f / %.2f" % (r.get("peak_dbfs") or 0, r.get("rms_dbfs") or 0)),
-            ("真峰值 ITU-R", ("%+.2f dBTP" % tp) if tp is not None else "—"),
+            ("真峰值 ITU-RITU-R", ("%+.2f dBTP" % tp) if tp is not None else "—"),
             ("集成响度", fmt_num(r.get("lufs"), " LUFS", 1)),
-            ("动态范围 DR", fmt_num(r.get("dr_db"), " dB", 1)),
-            ("响度范围 LRA", fmt_num(r.get("lra"), " LU", 1)),
+            ("动态范围 DRDR", fmt_num(r.get("dr_db"), " dB", 1)),
+            ("响度范围 LRALRA", fmt_num(r.get("lra"), " LU", 1)),
             ("PLR", fmt_num(r.get("plr"), " dB", 1)),
             ("削波", fmt_num(r.get("clip_pct"), "%", 3)),
             ("相位相关", fmt_num(r.get("corr"), "", 2)),
@@ -965,16 +1008,48 @@ class MainWindow(FramelessWindow):
             ("频段重心", human_khz(r.get("centroid_hz"))),
             ("编码器串", (r.get("meta") or {}).get("vendor") or "—"),
         ]
-        cards = []
-        # 卡片的顶条**不再是装饰色阶**（B7.1 做法 2）：18 张卡的色条会连成
-        # 6 条横贯全屏的彩带，实测贡献了全图高彩的 42.4% 却只把"一枚 accent"
-        # 稀释成六个色相。现在它是中性顶光，按 QSS 取色，不再需要槽位参数。
+        head = [p for p in pairs if p[0].startswith(self.CARD_KEYS)]
+        rest = [p for p in pairs if p not in head]
+        # 关键数按 `CARD_KEYS` 的语义顺序排（不是按它在 pairs 里的位置）：
+        # "哪四项"是设计决定的，不该被列表顺序左右。
+        order = {k: i for i, k in enumerate(self.CARD_KEYS)}
+        head.sort(key=lambda p: next((v for k, v in order.items()
+                                      if p[0].startswith(k)), 99))
+        cards = self._fill_cards(self.grid, head, self.CARD_COLS)
+        # 展开区的卡也建出来（只是不可见）——**收拢 ≠ 删除**：
+        # 它们是同一批数据，展开时不需要再算一遍。
+        self._fill_cards(self.grid_more, rest, self.MORE_COLS)
+        self._n_metrics = len(pairs)
+        self.btn_more.setText(self._more_label())
+        self.more_box.setVisible(self._more_open)
+        # 入场动效只给**默认可见**的那些：展开区是用户主动点开的，
+        # 那时再错峰浮现反而像"卡了一下"。
+        motion.stagger(cards, self)
+
+    def _more_label(self) -> str:
+        n_rest = max(0, self._n_metrics - len(self.CARD_KEYS))
+        return ("▾ 收起（只留 %d 项关键数）" % len(self.CARD_KEYS) if self._more_open
+                else "▸ 全部 %d 项指标（另有 %d 项）" % (self._n_metrics, n_rest))
+
+    def _fill_cards(self, grid, pairs, cols: int) -> list:
+        """往网格里填一批卡，返回新建的卡（供动效与测试用）。"""
+        out = []
         for i, (k, v) in enumerate(pairs):
+            # 卡片顶条**不再是装饰色阶**（B7.1）：18 张卡的色条会连成
+            # 6 条横贯全屏的彩带，实测贡献了全图高彩的 42.4% 却只把
+            # "一枚 accent"稀释成六个色相。现在它是中性顶光，按 QSS 取色。
             c = StatCard(self.theme)
             c.set(k, str(v))
-            self.grid.addWidget(c, i // 6, i % 6)
-            cards.append(c)
-        motion.stagger(cards, self)
+            grid.addWidget(c, i // cols, i % cols)
+            out.append(c)
+        return out
+
+    def _toggle_more(self):
+        """展开 / 收起"全部指标"。**收拢 ≠ 删除**：数据一直都在网格里，
+        展开后逐项可达（`test_ui_b9_layout` 钉住这一条）。"""
+        self._more_open = not self._more_open
+        self.more_box.setVisible(self._more_open)
+        self.btn_more.setText(self._more_label())
 
     def _metric_rows(self, r):
         g = r.get

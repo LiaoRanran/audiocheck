@@ -741,9 +741,11 @@ class VerdictPanel(QFrame):
         body = QWidget()
         m = theme.space
         hb = QHBoxLayout(body)
-        # 留白回来（R3）：外边距取 `xl`（B7 用的是 `lg`），比原来宽一档。
-        hb.setContentsMargins(m.xl, m.lg, m.xl, m.lg)
-        hb.setSpacing(m.xl)
+        # 留白回来（R3）：外边距在 B9.1 的基础上**再升一档**
+        # （`xl,lg` → `xxl,xl`）。判词区是顶部整幅大块，四周松一档是
+        # "极度舒适"最直接的来源；仍守 4 的倍数。
+        hb.setContentsMargins(m.xxl, m.xl, m.xxl, m.xl)
+        hb.setSpacing(m.xxl)
         left = QVBoxLayout()
         left.setSpacing(m.sm)
         row1 = QHBoxLayout()
@@ -784,8 +786,17 @@ class VerdictPanel(QFrame):
         self.lbl_ratio.setObjectName("Caption")
         right.addWidget(self.lbl_ratio)
         right.addStretch(1)
-        hb.addLayout(right, 0)
         right.setAlignment(Qt.AlignTop)
+        # ⚠ **列宽约束必须设在"列"这个容器上，不是设在内层 layout 上。**
+        # B9.1 写的是 `hb.addLayout(right, 0)`——一个 stretch=0 的**子布局**
+        # 没有宽度语义，Qt 按它的 sizeHint 分配，而 hero 的 sizeHint 是在
+        # `apply_theme` 设置 40px 字体**之前**算的，于是右列被左列挤窄、
+        # `kHz` 单位被右边缘裁掉（B9.1 遗留，实测截图可见）。
+        # 换成有确定宽度的容器之后，右列宽度与字体无关。
+        hero_col = QWidget()
+        hero_col.setFixedWidth(self.HERO_W)
+        hero_col.setLayout(right)
+        hb.addWidget(hero_col, 0)
         self._hero_box = body
         v.addWidget(body, 1)
         self._right = right
