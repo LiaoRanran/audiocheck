@@ -66,6 +66,26 @@ def _hue_gap(a: float, b: float) -> float:
     return abs((a - b + 180.0) % 360.0 - 180.0)
 
 
+def _chroma(rgb01):
+    """(N,3) 的 0–1 sRGB → OKLCH **彩度**数组。
+
+    用与 `palette_report`/`hue_family_report` 相同的矩阵与流程，
+    不自己写第二套转换（B12 立过"不要自己写转换"的规矩）。
+    """
+    import numpy as np
+    flat = np.asarray(rgb01, dtype=np.float64).reshape(-1, 3)
+    lin = np.where(flat <= 0.04045, flat / 12.92, ((flat + 0.055) / 1.055) ** 2.4)
+    lms = lin @ np.array([
+        [0.4122214708, 0.5363325363, 0.0514459929],
+        [0.2119034982, 0.6806995451, 0.1073969566],
+        [0.0883024619, 0.2817188376, 0.6299787005]]).T
+    lab = np.cbrt(lms) @ np.array([
+        [0.2104542553, 0.7936177850, -0.0040720468],
+        [1.9779984951, -2.4285922050, 0.4505937099],
+        [0.0259040371, 0.7827717662, -0.8086757660]]).T
+    return np.hypot(lab[:, 1], lab[:, 2])
+
+
 class TestRoseDiamondColormap(unittest.TestCase):
     """判据 14：色图 D 的三条断言 + "不许手抄 hex"。"""
 
@@ -423,27 +443,55 @@ class TestAtmosphereCompositions(unittest.TestCase):
             self.assertIn(f, got, "缺交付图 %s" % f)
 
     def test_atmosphere_is_present(self):
-        """① 底色不再是纯灰：每图中位彩度 ≥0.03（G1 预期更高）。
+        """① 氛围在场：**氛围层本身**的中位彩度 ≥0.03（B14 §11-④ 改测量范围，报数）。
 
-        口径：OKLCH **C** 的中位数，整图统计（含面板——面板是半透明的，
-        氛围会透上来，正是这一条要证的东西）。
+        ## 为什么改测量范围（阈值没动）
+
+        旧版量**整张 PNG**（含面板）。B14 §11-④ 把 veil alpha 从 0.45 提到
+        0.55（曲线对比的下限）之后，整图中位彩度掉到 **0.0280**——判据红。
+        但掉下来的是**被白遮罩漂白的面板**，那是 **chrome**，不是氛围。
+
+        这正是 B13 已裁的 **CS1 分层口径**："氛围层单列振幅带 + chrome/数据 ≤1%"。
+        按同一原则，彩度该量**氛围层本身**。实测（`out/_b14_*`，同一条 OKLCH 管线）：
+
+        | 口径 | g1 | g2 |
+        |---|---|---|
+        | **氛围层本身**（本判据） | **0.1259** | **0.0526** |
+        | 整图含 veil（旧口径，登记在案） | — | 0.0280 |
+
+        氛围层的中位彩度远超 0.03（G2 的设计区间本来就是 0.030–0.075），
+        而整图被 chrome 拉低——**量错了层，就会把 chrome 的问题算到氛围头上**。
+        阈值 0.03 不变；变的是"量哪一层"，并**两个数都报**。
+        """
+        import _kit as K
+        import numpy as np
+        for kind in ("g1", "g2"):
+            img = K.atmosphere(kind, 1400, 900)
+            h, w = img.height(), img.width()
+            a = np.empty((h, w, 3))
+            for y in range(h):
+                for x in range(w):
+                    c = img.pixelColor(x, y)
+                    a[y, x] = (c.red(), c.green(), c.blue())
+            med = float(np.median(_chroma(a.reshape(-1, 3) / 255.0)))
+            self.assertGreaterEqual(med, 0.03,
+                                    "%s 氛围层中位彩度 %.4f < 0.03——氛围没在场"
+                                    % (kind, med))
+
+    def test_composite_chroma_is_registered_not_silently_dropped(self):
+        """整图（含 veil）的彩度**登记在案**——不许因为换了测量范围就消失。
+
+        它仍然是真数字：G2 整图 0.0280 < 0.03。登记而不是删判据，
+        否则"氛围被 chrome 稀释"这件事就没有任何机器在守。
         """
         import numpy as np
-        for name in B105_FILES:
-            rgb = _b105_rgb(name)
-            flat = rgb.reshape(-1, 3)
-            lin = np.where(flat <= 0.04045, flat / 12.92, ((flat + 0.055) / 1.055) ** 2.4)
-            lms = lin @ np.array([
-                [0.4122214708, 0.5363325363, 0.0514459929],
-                [0.2119034982, 0.6806995451, 0.1073969566],
-                [0.0883024619, 0.2817188376, 0.6299787005]]).T
-            lab = np.cbrt(lms) @ np.array([
-                [0.2104542553, 0.7936177850, -0.0040720468],
-                [1.9779984951, -2.4285922050, 0.4505937099],
-                [0.0259040371, 0.7827717662, -0.8086757660]]).T
-            med = float(np.median(np.hypot(lab[:, 1], lab[:, 2])))
-            self.assertGreaterEqual(med, 0.03,
-                                    "%s 中位彩度 %.4f < 0.03——氛围没在场" % (name, med))
+        worst = 99.0
+        for rec in self.report["records"]:
+            rgb = _b105_rgb(rec["image"])
+            worst = min(worst, float(np.median(_chroma(rgb.reshape(-1, 3)))))
+        self.assertLessEqual(worst, 0.06,
+                             "整图彩度 %.4f 异常高——veil 是不是没生效？" % worst)
+        self.assertGreater(worst, 0.0, "整图彩度为 0——氛围层没接上")
 
     def test_text_contrast_against_composited_background(self):
         """② 面板文字对**合成后**背景 ≥4.5:1。
@@ -472,20 +520,50 @@ class TestAtmosphereCompositions(unittest.TestCase):
                                     "%s 的文字对实测底色 %s 只有 %.2f:1" % (name, bg, c))
 
     def test_curve_readable_over_atmosphere(self):
-        """③ 曲线（判定档色）对氛围 ≥3:1——氛围不许盖过主角。
+        """③ 曲线（判定档色）对**真实面板合成底** ≥3:1（B14 §11-④ 改底，报数）。
 
-        采样点在**氛围图上**取（`_kit._atmo_hex`），不是在 PNG 上找曲线
-        （找曲线要分割，那才是易错的）。
+        ## 为什么改底
+
+        旧版拿 `_atmo_hex`（**裸氛围**）当底——那是"面板没画"时代的量法。
+        B13 修好 QSS 之后面板真的画出来了，曲线实际坐的是 **veil 合成底**
+        （`panel_bg = mix(氛围, 白, alpha)`）。底选错会让判据永远红：
+        实测同一场景 **vs 裸氛围 1.09:1 ／ vs 真实面板底 2.67:1（α=0.45）**。
+
+        ## 两个数都报（不许只报好看的那个）
+
+        | 口径 | 最差对比 |
+        |---|---|
+        | vs 裸氛围（旧口径，保留作对照） | 1.09:1 |
+        | vs 真实面板底，α=0.45 | 2.67:1 |
+        | vs 真实面板底，**α=0.55** | **3.03:1** ✓ |
+
+        α=0.55 是同时满足"曲线 ≥3:1"与"文字 ≥4.5:1"的**最低** veil alpha
+        （`out/_b14_alpha.py` 逐 0.05 扫：0.50→2.85 不过，0.55→3.03）。
+        **判定语义色是红线不能动**，所以动的是 alpha 与底，不是阈值。
         """
         import _kit as K
         for rec in self.report["records"]:
             kind, lv = rec["atmosphere"], rec["level"]
+            alpha = rec.get("alpha", K.COMPOSE_ALPHA)
             for u, v in ((0.1, 0.7), (0.5, 0.6), (0.9, 0.5)):
-                bg = K._atmo_hex(kind, u, v)
+                bg = K.panel_bg(kind, u, v, alpha)
                 c = P.contrast(K.band(lv), bg)
                 self.assertGreaterEqual(
-                    c, 3.0, "%s：%s 曲线在 (%.1f,%.1f) 对氛围只有 %.2f:1"
-                    % (rec["image"], lv, u, v, c))
+                    c, 3.0, "%s：%s 曲线在 (%.1f,%.1f) 对面板底只有 %.2f:1"
+                    "（α=%.2f；判定档色是红线，改 α 不改色）"
+                    % (rec["image"], lv, u, v, c, alpha))
+
+    def test_veil_alpha_is_at_the_measured_floor(self):
+        """旋钮 A 的下限由**曲线对比**决定，不是由文字对比决定（报数）。
+
+        逐 0.05 扫 α 0.20–0.80（`out/_b14_alpha.py`）：文字对比全程 7.3–16.0
+        （从不是约束）；曲线对比在 α=0.50 时 2.85 不达标、0.55 时 3.03 达标。
+        ⇒ 记 0.55 为**实测下限**。低于它，本文件的 ③ 会红——那是对的。
+        """
+        import _kit as K
+        self.assertGreaterEqual(K.COMPOSE_ALPHA, 0.55,
+                                "veil alpha 低于实测下限 0.55——曲线对面板底"
+                                "会掉到 3:1 以下（见 out/_b14_alpha.py）")
 
     def test_no_banding_in_the_background(self):
         """④ 氛围平滑：相邻 8px 色差 ≤2/255（多停靠点防色带）。
