@@ -412,6 +412,39 @@ DB_RANGE_CHOICES = (60.0, 90.0, 120.0)
 #: 纵轴刻度（Hz）
 TICKS_HZ = (20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000)
 
+#: **相位场**的发散色图九点 LCH 表（ρ 从 −1 到 +1）。
+#:
+#: 发散色图（diverging）**不该按顺序色图的判据测**——它的中点是"零点"，
+#: 明度天然非单调（两端深、中间浅）。它的判据是另外两条：
+#:   ① **两臂各自单调**：|ρ| 增大必须单调变深/变艳（否则"有多反常"读不出来）；
+#:   ② **中点可辨**：ρ≈0 必须是一眼认出的中性色（不是某一臂的浅色）。
+#: 这里沿用项目色相：负臂走**玫瑰/品红**（= accent 族，本项目里"要注意"的颜色），
+#: 正臂走**冷青蓝**（与玫瑰是冷暖对立，CVD 下靠明度也分得开）。
+PHASE_LCH = (
+    (0.00, 0.32, 0.150, 12.0),      # ρ=-1 完全反相：深玫瑰（最需要被看见的）
+    (0.14, 0.42, 0.120, 10.0),
+    (0.28, 0.58, 0.085, 8.0),
+    (0.42, 0.78, 0.040, 350.0),
+    (0.50, 0.90, 0.006, 330.0),     # ρ=0 不相关：近白中性（零点）
+    (0.58, 0.78, 0.035, 230.0),
+    (0.72, 0.60, 0.075, 225.0),
+    (0.86, 0.44, 0.105, 220.0),
+    (1.00, 0.33, 0.130, 218.0),     # ρ=+1 完全同相：深青蓝
+)
+
+_PHASE_CACHE = None
+
+
+def phase_cmap():
+    """相位场色图：由 `PHASE_LCH` 经**项目的** `oklch_to_srgb` 生成（不手抄 hex）。"""
+    global _PHASE_CACHE
+    if _PHASE_CACHE is None:
+        from matplotlib.colors import LinearSegmentedColormap
+        cols = [P.oklch_to_srgb((L, c, h)) for _t, L, c, h in PHASE_LCH]
+        _PHASE_CACHE = LinearSegmentedColormap.from_list("phase", cols, N=256)
+        _PHASE_CACHE.audiocheck_source = PHASE_LCH
+    return _PHASE_CACHE
+
 #: 3D 瀑布图**每条谱线的频点数**（对数等距）。300 ≈ 每 1/12 倍频程一点。
 WATERFALL_POINTS = 300
 
@@ -513,12 +546,16 @@ def _hz_label(v: float) -> str:
     return ("%gk" % (v / 1000)) if v >= 1000 else "%g" % v
 
 
-def _resample_rows(db, f, fl):
-    """把 (n_f, n_t) 的 dB 矩阵按**对数频轴**重采样成 (len(fl), n_t)。
+def _resample_rows(db, f, fl, signed: bool = False):
+    """把 (n_f, n_t) 的矩阵按**对数频轴**重采样成 (len(fl), n_t)。
 
     **峰值保持，不做线性插值**（B14 精度）：线性插值会把**窄峰/深谷**平均掉，
     而砖墙截止、陷波这类"一条细线"正是本工具要看的东西（插值后它变淡、甚至消失）。
-    改成每行取相邻两 bin 的**较大者**：峰不丢；上采样时退化为最近邻，不制造假分辨率。
+    改成每行取带内 bin 的**保持量**：峰不丢；上采样时退化为最近邻，不制造假分辨率。
+
+    `signed=True`：矩阵是**有符号**的（如相位场的 ρ ∈ [−1,1]），保持量改为
+    **|值| 最大者**。若仍取 `max`，整张图会偏向 +1（"看着都是同相"），
+    把要查的反相区抹平——这正是 `_peak_hold_abs` 存在的理由，两边口径必须一致。
     """
     f = np.asarray(f, dtype=float)
     n = len(fl)
@@ -527,7 +564,11 @@ def _resample_rows(db, f, fl):
     lo = 0
     for i in range(n):
         hi = max(lo + 1, int(edges[i]))
-        out[i] = db[lo:hi].max(axis=0)          # 带内峰值保持
+        blk = db[lo:hi]
+        if signed:
+            out[i] = blk[np.argmax(np.abs(blk), axis=0), np.arange(blk.shape[1])]
+        else:
+            out[i] = blk.max(axis=0)          # 带内峰值保持
         lo = hi
     return out
 
@@ -1148,6 +1189,155 @@ class SpectrogramCanvas(BaseCanvas):
         # B14：把**当前窗**写进色条标签——否则"看着比那张暗"分不清是内容差异
         # 还是窗不同（这正是我们不肯做自适应窗的理由：量纲必须说得出来）。
         cb.set_label("dB（峰值下 %.0f）" % self.db_range,
+                     color=p["text_faint"], fontsize=p['fs_tick'])
+
+
+# --------------------------------------------------------------- 立体声相位场
+class StereoCanvas(BaseCanvas):
+    """**立体声相位场**（自研；常规工具没有这一张）。
+
+    ρ ∈ [−1,1] = L/R 在每个时频格的相关系数。频谱图丢相位、常规做法还先把
+    立体声压成单声道，所以"反相"这一类缺陷在别处**根本看不见**；
+    这张图把它变成可读的色块：**深玫瑰 = 完全反相**，近白 = 不相关，深青蓝 = 同相。
+
+    与频谱图的区别只有三处：色图（发散 vs 顺序）、量程（固定 ±1 vs dB 窗）、
+    读数的量纲（ρ vs dB）。其余（对数频轴、峰值保持重采样、色条复用、
+    游标读数）**共用同一套实现**——同一类图不该有两套代码。
+    """
+
+    def __init__(self):
+        super().__init__(6.2, 3.6)
+        self.ax = self.fig.add_subplot(111)
+        self.r = None
+        self.data = None
+        self._msg = "选择条目后自动生成"
+        self._cbar = None
+        self._rs_key = None
+        self._rs_cache = None
+        self._cursor = None
+        self._xhair = None
+        self.mpl_connect("motion_notify_event", self._on_hover)
+
+    def _has_data(self):
+        return self.data is not None
+
+    def set_data(self, r=None, data=None, msg=None):
+        same = (r is self.r and data is self.data
+                and (msg is None or msg == self._msg))
+        self.r, self.data = r, data
+        if msg:
+            self._msg = msg
+        if not (same and not self._stale):
+            self.redraw_if_visible()
+
+    def _on_hover(self, ev):
+        """读数 = 时间 / 频率 / **相关系数 ρ**。不知道就说不知道。"""
+        p = self.p
+        if (p is None or not self.data or self._rs_cache is None
+                or ev.inaxes is not self.ax or ev.xdata is None or ev.ydata is None):
+            if self._cursor is not None:
+                self._cursor.set_visible(False)
+                self.draw_idle()
+            CURSOR.clear(self)
+            return
+        t, f, _rho = self.data
+        fq = 10.0 ** float(ev.ydata)
+        rows = np.geomspace(20.0, f[-1], self._rs_cache.shape[0])
+        j = int(np.clip(np.searchsorted(rows, fq), 0, len(rows) - 1))
+        k = int(np.clip(np.searchsorted(t, float(ev.xdata)), 0, len(t) - 1))
+        rv = float(self._rs_cache[j, k])
+        txt = "%.2fs  %.0f Hz  ρ %+.2f" % (float(ev.xdata), fq, rv)
+        if self._cursor is None:
+            self._cursor = self.ax.text(
+                0.015, 0.03, txt, transform=self.ax.transAxes, color=p["text"],
+                fontsize=p['fs_tick'], va="bottom", ha="left", zorder=5,
+                bbox=dict(boxstyle="round,pad=0.28", fc=p["surface"],
+                          ec=p["border_hi"], lw=.6))
+        else:
+            self._cursor.set_text(txt)
+        self._cursor.set_visible(True)
+        self.draw_idle()
+        CURSOR.emit(fq, self)
+
+    def set_crosshair(self, hz: float) -> None:
+        p = self.p
+        if p is None or not self.data or self._rs_cache is None:
+            return
+        _t, f, _rho = self.data
+        if not (20.0 <= float(hz) < f[-1]):
+            return
+        y = math.log10(float(hz))
+        if self._xhair is None:
+            self._xhair = self.ax.axhline(y, color=p["accent"], lw=REF_LINE_W,
+                                          ls=(0, (4, 3)), alpha=.9, zorder=4)
+        else:
+            self._xhair.set_ydata([y, y])
+            self._xhair.set_visible(True)
+        self.draw_idle()
+
+    def clear_crosshair(self) -> None:
+        if self._xhair is not None:
+            self._xhair.set_visible(False)
+            self.draw_idle()
+
+    def redraw(self):
+        self._stale = False
+        p, ax = self.p, self.ax
+        if p is None:
+            return
+        self.fig.set_facecolor(p["surface"])
+        ax.clear()
+        self._ax_style(ax, "时间\u00a0s", "频率\u00a0Hz")
+        if not self.data:
+            if self._cbar is not None:
+                self._cbar.ax.set_visible(False)
+            ax.text(.5, .5, self._msg, ha="center", va="center", color=p["text_faint"],
+                    transform=ax.transAxes, fontsize=p['fs_caption'])
+            ax.set_xticks([])
+            ax.set_yticks([])
+            self.draw()
+            return
+        t, f, rho = self.data
+        key = (id(rho), RESAMPLE_ROWS, len(t))
+        if self._rs_key != key:
+            self._rs_cache = _resample_rows(
+                rho, f, np.geomspace(20.0, f[-1], RESAMPLE_ROWS), signed=True)
+            self._rs_key = key
+        mesh = ax.imshow(self._rs_cache, aspect="auto", origin="lower",
+                         extent=(t[0], t[-1], math.log10(20.0), math.log10(f[-1])),
+                         cmap=phase_cmap(), vmin=-1.0, vmax=1.0,
+                         interpolation="nearest", zorder=1)
+        ax.set_ylim(math.log10(20.0), math.log10(f[-1]))
+        ax.grid(False)
+        for lev in (100, 1000, 10000):
+            if lev < f[-1]:
+                ax.axhline(math.log10(lev), color=p["grid"], lw=.6, alpha=.55, zorder=2)
+        ax.set_yticks([math.log10(v) for v in TICKS_HZ if v < f[-1]])
+        ax.set_yticklabels([_hz_label(v) for v in TICKS_HZ if v < f[-1]])
+        minor = [math.log10(v * m) for v in (10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000)
+                 for m in (2, 3, 4, 5, 6, 7, 8, 9)
+                 if 20.0 <= v * m < f[-1]]
+        ax.set_yticks(minor, minor=True)
+        ax.tick_params(axis="y", which="minor", length=2, color=p["text_faint"])
+        # 披露分辨率（与频谱图同口径）——相位场同样吃 STFT 的窗长
+        if len(f) > 1:
+            ax.text(0.995, 0.02, "Δf ≈ %.3g Hz" % float(f[1] - f[0]), transform=ax.transAxes,
+                    color=p["text_faint"], fontsize=p['fs_tick'], ha="right", va="bottom",
+                    zorder=3)
+        self._colorbar(mesh, p)
+        self.draw()
+
+    def _colorbar(self, mesh, p):
+        """色条（与频谱图同一套"建一次只换 mappable"的做法，见那边的长注释）。"""
+        if self._cbar is None:
+            self._cbar = self.fig.colorbar(mesh, ax=self.ax, pad=.015, fraction=.045)
+        else:
+            self._cbar.ax.set_visible(True)
+            self._cbar.update_normal(mesh)
+        cb = self._cbar
+        cb.ax.tick_params(colors=p["text_faint"], labelsize=p['fs_tick'])
+        cb.outline.set_edgecolor(p["border"])
+        cb.set_label("L/R 相关 ρ（−1 反相 ← → +1 同相）",
                      color=p["text_faint"], fontsize=p['fs_tick'])
 
 

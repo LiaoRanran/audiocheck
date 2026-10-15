@@ -43,6 +43,7 @@ from ..core.analyzers.metadata import tag_rows as meta_rows
 from ..core.engine import analyze as analyze_file
 from ..core.engine import collect_files
 from ..core.views import spectrogram as view_spectrogram
+from ..core.views import stereo_field as view_stereo
 from ..core.views import waterfall as view_waterfall
 from . import motion
 from . import theme as T
@@ -54,6 +55,7 @@ from .charts import (
     OverviewCanvas,
     SpectrogramCanvas,
     SpectrumCanvas,
+    StereoCanvas,
     VerdictDelegate,
     WaterfallCanvas,
 )
@@ -123,7 +125,8 @@ class ViewWorker(QThread):
 
     def run(self):
         try:
-            fn = view_spectrogram if self.kind == "spec" else view_waterfall
+            fn = {"spec": view_spectrogram, "wfall": view_waterfall,
+                  "phase": view_stereo}[self.kind]
             t, f, S = fn(self.path, nperseg=self.nperseg)
             self.ready.emit(self.path, self.kind, self.nperseg, t, f, S)
         except Exception:                                          # noqa: BLE001
@@ -192,7 +195,7 @@ class MainWindow(FramelessWindow):
     # compare(cv_cmp), batch(cv_ovw), meta(两个 KVTable)。
     # 曾把 meta/compare/batch 三者顺序写错，症状是侧边栏点「元数据」显示的是
     # 对比画布、而真正的元数据页永远到不了（tests/test_ui_views.py 钉住此映射）。
-    VIEW_KEYS = ["overview", "spectrum", "spectro", "waterfall", "bands",
+    VIEW_KEYS = ["overview", "spectrum", "spectro", "waterfall", "phase", "bands",
                  "compare", "batch", "meta"]
 
     def __init__(self):
@@ -254,7 +257,7 @@ class MainWindow(FramelessWindow):
         self.sidebar.add_section("分析")
         for key, label, ico in (("overview", "总览", "chart"), ("spectrum", "频谱曲线", "wave"),
                                 ("spectro", "频谱图", "grid"), ("waterfall", "瀑布图", "layers"),
-                                ("bands", "频段能量", "chart")):
+                                ("phase", "相位场", "layers"), ("bands", "频段能量", "chart")):
             self.sidebar.add_item(key, label, ico)
         self.sidebar.add_section("信息")
         for key, label, ico in (("meta", "元数据", "doc"), ("batch", "批次概览", "chart")):
@@ -404,7 +407,7 @@ class MainWindow(FramelessWindow):
         if np is None:
             return
         # 只清**视图**缓存（kind in spec/wfall）：判定曲线与其它视图的缓存不动。
-        for k in [k for k in self._cache if k[1] in ("spec", "wfall")]:
+        for k in [k for k in self._cache if k[1] in ("spec", "wfall", "phase")]:
             self._cache.pop(k, None)
         self._reload_current_view()
 
@@ -545,10 +548,11 @@ class MainWindow(FramelessWindow):
         self.cv_spec = SpectrumCanvas()
         self.cv_spectro = SpectrogramCanvas()
         self.cv_wfall = WaterfallCanvas()
+        self.cv_phase = StereoCanvas()
         self.cv_band = BandCanvas()
         self.cv_cmp = CompareCanvas()
         self.cv_ovw = OverviewCanvas()
-        for cv in (self.cv_spec, self.cv_spectro, self.cv_wfall, self.cv_band,
+        for cv in (self.cv_spec, self.cv_spectro, self.cv_wfall, self.cv_phase, self.cv_band,
                    self.cv_cmp, self.cv_ovw):
             self.stack.addWidget(cv)
 
@@ -622,8 +626,8 @@ class MainWindow(FramelessWindow):
         self.sidebar.apply_theme(t)
         self.delegate.apply_theme(T.plot_palette(t.p, t), t)   # 委托仍按旧字典键取值
         pp = T.plot_palette(t.p, t)
-        for cv in (self.cv_spec, self.cv_spectro, self.cv_wfall, self.cv_band,
-                   self.cv_cmp, self.cv_ovw):
+        for cv in (self.cv_spec, self.cv_spectro, self.cv_wfall, self.cv_phase,
+                   self.cv_band, self.cv_cmp, self.cv_ovw):
             cv.apply_theme(pp)
         # B9.1：判定胶囊（Badge）不再出现在判定区——小样的形态是
         # **方点 + 疏排判词**（`● 不达标`），不是一个填充胶囊。
@@ -1039,7 +1043,8 @@ class MainWindow(FramelessWindow):
         i = self.stack.currentIndex()
         if not 0 <= i < len(self.VIEW_KEYS) or self._last_sig is None:
             return
-        kind = {"spectro": "spec", "waterfall": "wfall"}.get(self.VIEW_KEYS[i])
+        kind = {"spectro": "spec", "waterfall": "wfall",
+                "phase": "phase"}.get(self.VIEW_KEYS[i])
         p = self._last_sig[0]
         j = self._idx.get(p)
         if kind and j is not None and self.items[j]["result"]:
@@ -1211,7 +1216,8 @@ class MainWindow(FramelessWindow):
         self.tb_metrics.set_rows(self._metric_rows(r))
 
     def _load_view(self, path, kind):
-        cv = self.cv_spectro if kind == "spec" else self.cv_wfall
+        cv = {"spec": self.cv_spectro, "wfall": self.cv_wfall,
+              "phase": self.cv_phase}[kind]
         np_ = self.cb_view_fft.currentData()
         np_ = views.DEFAULT_VIEW_NPERSEG if np_ is None else int(np_)
         key = (path, kind, np_)
@@ -1260,7 +1266,8 @@ class MainWindow(FramelessWindow):
         self._evict_cache()
         mine = [i for i in self.table.selectedItems() if i.column() == 0]
         if len(mine) == 1 and mine[0].data(Qt.UserRole) == path:
-            cv = self.cv_spectro if kind == "spec" else self.cv_wfall
+            cv = {"spec": self.cv_spectro, "wfall": self.cv_wfall,
+              "phase": self.cv_phase}[kind]
             i = self._idx.get(path)
             cv.set_data(self.items[i]["result"] if i is not None else None, (t, f, S))
             # 数据是异步来的（一秒上下），让它淡入而不是"啪"地出现——

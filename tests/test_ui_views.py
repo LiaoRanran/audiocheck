@@ -40,6 +40,7 @@ class TestViewKeysMatchStack(unittest.TestCase):
             OverviewCanvas,
             SpectrogramCanvas,
             SpectrumCanvas,
+            StereoCanvas,
             WaterfallCanvas,
         )
         expect = {
@@ -47,6 +48,7 @@ class TestViewKeysMatchStack(unittest.TestCase):
             "spectrum": SpectrumCanvas,
             "spectro": SpectrogramCanvas,
             "waterfall": WaterfallCanvas,
+            "phase": StereoCanvas,       # B14 自研：立体声相位场
             "bands": BandCanvas,
             "compare": CompareCanvas,
             "batch": OverviewCanvas,
@@ -183,6 +185,79 @@ class TestSpectrumPowerMergeNotMean(unittest.TestCase):
         empty = float(S[(f >= 4980) & (f <= 5020), :].max())
         self.assertGreater(tone - empty, 40.0,
                            "频谱图把反相内容抵消了（测量版静默降级）")
+
+
+class TestStereoField(unittest.TestCase):
+    """B14 自研件：**立体声相位场**（ρ = L/R 时频相关系数）。
+
+    这张图是本项目该有、常规工具没有的：频谱图丢相位、常规做法还把立体声
+    压成单声道，所以"反相"这一类缺陷在别处**根本看不见**。
+
+    判据用**物理已知**的三支信号，ρ 的期望值是定值：
+      同相 L=R        → ρ = **+1**（正常单声道内容）
+      反相 L=−R       → ρ = **−1**（要查的缺陷）
+      正交 L⊥R        → ρ ≈ **0**（真立体声/不相关）
+    三条同时过，才说明这张图画的是相位，不是能量。
+    """
+
+    FS = 44100
+    TONE = 1000.0
+
+    @classmethod
+    def setUpClass(cls):
+        import tempfile
+
+        import soundfile as sf
+
+        from audiocheck.core import views
+        cls.tmp = tempfile.mkdtemp(prefix="audiocheck_phase_")
+        cls.views = views
+        n = int(cls.FS * 2.0)
+        t = np.arange(n) / cls.FS
+        a = (0.25 * np.sin(2 * np.pi * cls.TONE * t)).astype("float32")
+        b = (0.25 * np.sin(2 * np.pi * 3000.0 * t)).astype("float32")
+
+        def write(name, arr):
+            p = os.path.join(cls.tmp, name)
+            sf.write(p, arr, cls.FS)
+            return p
+
+        cls.p_phase = write("ph.wav", np.stack([a, a], axis=1))     # ρ=+1
+        cls.p_anti = write("an.wav", np.stack([a, -a], axis=1))     # ρ=−1
+        cls.p_orth = write("or.wav", np.stack([a, b], axis=1))      # ρ≈0
+        cls.p_mono = write("mo.wav", a[:, None])                    # 单声道
+
+    def _rho_at(self, path, hz, band=40.0):
+        t, f, rho = self.views.stereo_field(path)
+        self.assertIsNotNone(rho, "stereo_field 对立体声返回了空")
+        m = (f >= hz - band) & (f <= hz + band)
+        return float(np.abs(rho[m, :]).max() * np.sign(rho[m, :].mean()))
+
+    def test_inphase_is_plus_one(self):
+        self.assertGreater(self._rho_at(self.p_phase, self.TONE), 0.9,
+                           "同相内容的 ρ 不是 +1——相位场画错了")
+
+    def test_antiphase_is_minus_one(self):
+        self.assertLess(self._rho_at(self.p_anti, self.TONE), -0.9,
+                        "反相内容的 ρ 不是 −1——这张图的核心用途就是把它画出来")
+
+    def test_orthogonal_is_near_zero(self):
+        """L=1kHz、R=3kHz：在 1kHz 格上两声道不相关 ⇒ ρ≈0。"""
+        r = self._rho_at(self.p_orth, self.TONE)
+        self.assertLess(abs(r), 0.2, "正交内容的 ρ 不是 0（%.2f）" % r)
+
+    def test_mono_has_no_phase_field(self):
+        """单声道**没有**"立体声相位"这回事：必须返回空，不许拿 ρ≡+1 冒充。"""
+        t, f, rho = self.views.stereo_field(self.p_mono)
+        self.assertIsNone(rho, "单声道文件返回了相位场——那等于编造'完美同相立体声'")
+
+    def test_peak_hold_is_signed_aware(self):
+        """抽稀必须按 **|ρ| 最大**，不是按 max（否则整张图偏向 +1）。"""
+        rho = np.array([[-0.95, 0.10], [-0.20, 0.05]], dtype="float32")
+        t = np.array([0.0, 1.0])
+        out, _tt = self.views._peak_hold_abs(rho, t, 1)
+        self.assertLess(float(out.min()), -0.9,
+                        "反相格被 max 抽稀吃掉了——图上会显示成同相")
 
 
 if __name__ == "__main__":
