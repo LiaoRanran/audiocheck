@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from ...config import BANDS
+from ...config import BANDS, Thresholds
 from ..dsp import spectral_features
 from ..registry import Analyzer, register
 
@@ -45,8 +45,16 @@ def smooth_power(f: np.ndarray, db: np.ndarray, fraction: float = 6.0) -> np.nda
     return 10 * np.log10(ps + 1e-20)
 
 
-def detect_cutoff(f: np.ndarray, db: np.ndarray, min_drop_db: float = 15.0,
-                  min_hz: float = 20.0, need: int = 3, min_stop_db: float = 20.0):
+#: 本模块函数默认值的**唯一出处** = `config.Thresholds`。
+#: 原先四个默认值写死在签名里、与 config 各存一份（C0-3 的"双真值源"）。
+#: 直接调用（测试、脚本）走这里的默认；**分析器调用点必须显式传 `ctx.thresholds`
+#: 的四项**，否则用户改设置不会生效（见 config 里那两行 ⚠ 注释）。
+_DEFAULTS = Thresholds()
+
+
+def detect_cutoff(f: np.ndarray, db: np.ndarray, min_drop_db: float = _DEFAULTS.min_drop_db,
+                  min_hz: float = _DEFAULTS.cutoff_min_hz, need: int = _DEFAULTS.cutoff_need,
+                  min_stop_db: float = _DEFAULTS.min_stop_db):
     """真实高频截止点与砖墙陡度。
 
     返回 (cutoff_hz, slope_db_per_oct)。slope 为**正值**：截止点往上一个倍频程掉了多少 dB。
@@ -158,7 +166,14 @@ class SpectrumAnalyzer(Analyzer):
         f, db = ctx.spectrum()
         if f is None:
             return {}
-        cut, slope = detect_cutoff(f, db, min_drop_db=ctx.thresholds.min_drop_db)
+        # C0-3：**四项全部显式传**。只传 min_drop_db 的话，另外三项永远取
+        # 函数默认值 ⇒ 用户在设置里改 min_stop_db 不会生效（静默 no-op）。
+        cut, slope = detect_cutoff(
+            f, db,
+            min_drop_db=ctx.thresholds.min_drop_db,
+            min_hz=ctx.thresholds.cutoff_min_hz,
+            need=ctx.thresholds.cutoff_need,
+            min_stop_db=ctx.thresholds.min_stop_db)
         out = {
             "cutoff_hz": round(cut, 1) if cut else None,
             "cutoff_khz": round(cut / 1000, 2) if cut else None,

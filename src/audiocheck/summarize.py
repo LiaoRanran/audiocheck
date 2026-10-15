@@ -45,13 +45,21 @@ def build(rows: list[dict]) -> str:
     lv = defaultdict(int)
     for r in rows:
         lv[r.get("level")] += 1
+    # C0-4：**"未判定"必须自己占一行**。原先只打印 ok/warn/bad 三行，
+    # 而浅模式（无判定）或判定器异常的行会落进 `lv[None]` 且**不被打印**——
+    # 汇总于是显示"合格 0 ｜ 有疑 0 ｜ 不达标 0"，读起来等于"全都没问题"。
+    # 这正是本项目最忌讳的失败方式：查不到与没问题长得一样。
+    undecided = sum(v for k, v in lv.items() if k not in ("ok", "warn", "bad"))
 
     out = ["# 曲库特性汇总", "",
            "数据源：`audiocheck` 全量扫描（%d 个文件）。" % len(rows),
            "口径：真实截止 = 内容层实测；DR = 近似 TT-DR；频段 = 线性功率占比。", "",
            "## 总览", "", "| 结论 | 数量 |", "| --- | --- |",
            "| 合格 | %d |" % lv["ok"], "| 有疑 | %d |" % lv["warn"],
-           "| 不达标 | %d |" % lv["bad"], ""]
+           "| 不达标 | %d |" % lv["bad"]]
+    if undecided:
+        out.append("| **未判定** | %d |" % undecided)
+    out.append("")
 
     out += ["## 各专辑：真实带宽 + 音乐性格", "",
             "| 专辑 | 文件数 | 容器 | 真实截止(中位) | DR(均值) | 响度 LUFS | 频段(超低/低/中低/中/中高/高/空气 %) | 性格 |",
@@ -60,7 +68,9 @@ def build(rows: list[dict]) -> str:
         name = os.path.basename(d) or d
         cuts = sorted(r["cutoff_khz"] for r in rs if r.get("cutoff_khz"))
         med = cuts[len(cuts) // 2] if cuts else None
-        rates = sorted({r["sr"] for r in rs})
+        # `r["sr"]` 是硬取键：少一个字段就让**整份汇总崩**（C0 顺手加固）。
+        # 用 .get 并滤掉 None——与同段里其它字段（cutoff/dr/lufs）的写法一致。
+        rates = sorted({r.get("sr") for r in rs if r.get("sr")})
         drs = [r["dr_db"] for r in rs if r.get("dr_db") is not None]
         lufs = [r["lufs"] for r in rs if r.get("lufs") is not None]
         acc = defaultdict(list)

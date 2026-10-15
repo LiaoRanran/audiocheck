@@ -22,12 +22,26 @@ from ..registry import Analyzer, register
 #: 等级序：越大越差。用于「取最差」聚合。
 _RANK = {"ok": 0, "warn": 1, "bad": 2}
 
+#: 未知等级按**最差**处理。
+#:
+#: ⚠ C0-4：原实现是 `_RANK.get(lv, 0)` —— 未知等级**静默取 0**，也就是"最好"。
+#: 后果：将来任何一处写错等级名（或新增等级忘了登记），聚合结果会**悄悄偏向 ok**，
+#: 而症状是"明明有问题却判合格"，最难发现的那一类。
+#:
+#: 为什么不改成"显式抛异常"：`_worst` 在聚合路径上，抛异常会被引擎吞成
+#: "分析器告警"，最终表现是**整段判定消失**（用户看到空白，不是警告）——
+#: 那比"判成最差"更糟。按最差处理的症状是可见的（没问题却判 bad），会被抓出来。
+_RANK_UNKNOWN = 99
+
 
 def _worst(*levels: str) -> str:
-    best = "ok"
+    best, best_rank = "ok", 0
     for lv in levels:
-        if lv and _RANK.get(lv, 0) > _RANK.get(best, 0):
-            best = lv
+        if not lv:
+            continue
+        r = _RANK.get(lv, _RANK_UNKNOWN)
+        if r > best_rank:
+            best, best_rank = lv, r
     return best
 
 
@@ -51,13 +65,14 @@ def axis_bandwidth(fs: int, cutoff_hz: float | None, brickwall_db_per_oct: float
     if brickwall_db_per_oct is None:
         conf = None
     else:
-        conf = max(0.0, min(1.0, (brickwall_db_per_oct - 8.0) / 16.0))
+        conf = max(0.0, min(1.0,
+                   (brickwall_db_per_oct - th.conf_slope_lo) / th.conf_slope_span))
 
-    if fs <= 45000:
+    if fs <= th.fs_44_container:
         if k >= th.cd_full:
             return "ok", "CD 级满带宽", conf
         if k >= th.ltd:
-            hard = brickwall_db_per_oct is not None and brickwall_db_per_oct >= 24.0
+            hard = brickwall_db_per_oct is not None and brickwall_db_per_oct >= th.brick_db
             if hard:
                 return "warn", ("轻微带限（截止 %.1fkHz，砖墙 %.0fdB/oct 陡峭）"
                                 "——上游低通，≈320kbps 有损或母带即如此" % (k, brickwall_db_per_oct)), conf
@@ -68,7 +83,7 @@ def axis_bandwidth(fs: int, cutoff_hz: float | None, brickwall_db_per_oct: float
             return "bad", "有损溯源（≈192–256kbps 转码）", conf
         return "bad", "强有损溯源（≤128kbps）", conf
 
-    if fs <= 50000:
+    if fs <= th.fs_48_container:
         if k >= th.full_48:
             return "ok", "真 48kHz 带宽", conf
         if k >= th.up_44:
@@ -104,10 +119,17 @@ def axis_bitdepth(r: dict, th) -> tuple[str, str]:
             eff, cl = int(r["bit_effective"]), int(claimed)
         except (TypeError, ValueError):
             return "ok", ""
-        if cl - eff >= 4:
+        if cl - eff >= th.bit_gap_warn:
             return "warn", ("有效位深 %d bit（容器标 %d）——低位无内容，"
                             "实际动态余量按 %d bit 算" % (eff, cl, eff))
         return "ok", ""
+    # C0-4：`bit_effective` 缺失时必须**区分"不适用"与"查不到"**。
+    # 分析器的 `bit_verdict` 早就把两者分开写了，这里只是原先没读它：
+    #   * "不适用（浮点或 32bit 整数）" ⇒ 位深概念本就不适用，ok 是对的；
+    #   * "无法统计" ⇒ 分析器真的没测出来。**返回 ok 就等于"查不到与没问题长得一样"**
+    #     ——那是本项目最忌讳的失败方式（`AGENTS.md` §3.6）。用 warn 表达"有疑"。
+    if "无法统计" in str(r.get("bit_verdict") or ""):
+        return "warn", "位深无法统计——查不到 ≠ 没问题，容器标称未获核对"
     return "ok", ""
 
 
@@ -127,7 +149,7 @@ def axis_level(r: dict, th) -> tuple[str, str]:
     clip = r.get("clip_pct") or 0.0
     tp = r.get("true_peak_dbfs")
     msgs, lv = [], "ok"
-    if clip > 0.5:
+    if clip > th.clip_severe_pct:
         lv = "bad"
         msgs.append("削波严重 %.3f%%（母带级损坏）" % clip)
     elif clip > th.clip_pct:
@@ -146,7 +168,7 @@ def axis_dynamics(r: dict, th) -> tuple[str, str]:
     if lra is not None and lra < th.lra_flat:
         lv = "warn"
         msgs.append("LRA %.1f LU（动态压平）" % lra)
-    if dr is not None and dr < 6:
+    if dr is not None and dr < th.dr_low_db:
         lv = _worst(lv, "warn")
         msgs.append("DR %.1f dB 偏低" % dr)
     if r.get("lufs") is not None and r["lufs"] > th.loud_war_lufs:
@@ -166,7 +188,7 @@ def axis_channels(r: dict, th) -> tuple[str, str]:
 
 
 # ============================================================ 交叉核对
-def cross_checks(r: dict, fs: int, cutoff_hz: float | None) -> list[str]:
+def cross_checks(r: dict, fs: int, cutoff_hz: float | None, th) -> list[str]:
     """跨分析器的一致性核对 —— 单看任一分析器都发现不了的矛盾。
 
     这些是"文件自称"与"文件实际"对不上的地方，也是伪 Hi-Res 的主要形态。
@@ -181,13 +203,13 @@ def cross_checks(r: dict, fs: int, cutoff_hz: float | None) -> list[str]:
                    % (claimed, r.get("bit_origin")))
 
     # 2) 高采样率容器 + 内容止于 44.1k 系
-    if fs > 88200 and 0 < k <= 22.5:
+    if fs > th.upsample_fs and 0 < k <= th.upsample_content_khz:
         out.append("采样率造假：容器 %.1fkHz 但内容止于 %.1fkHz —— "
                    "像是从 44.1k 系升频而来" % (fs / 1000, k))
 
     # 3) 有损溯源 + 砖墙平缓 = 证据不足，不能下"转码"的硬结论
     bw = r.get("brickwall_db_per_oct")
-    if cutoff_hz and k < 20.0 and bw is not None and bw < 15.0:
+    if cutoff_hz and k < th.cutoff_low_khz and bw is not None and bw < th.brick_flat_db_per_oct:
         out.append("截止点偏低（%.1fkHz）但滚降平缓（%.0fdB/oct）——"
                    "证据不足以断定有损转码，也可能是母带/录音链的频响" % (k, bw))
 
@@ -208,9 +230,9 @@ def advice(r: dict, th) -> str:
     """输出「能不能用它来评耳机」——本工具区别于市面产品的地方。"""
     out = []
     cut = (r.get("cutoff_hz") or 0) / 1000.0
-    if cut >= 20:
+    if cut >= th.advice_hf_ok_khz:
         out.append("高频内容充足（到 %.1fkHz）→ 可用于评估耳机的高频延伸/空气感。" % cut)
-    elif cut >= 16:
+    elif cut >= th.advice_hf_limited_khz:
         out.append("内容止于 %.1fkHz → 评估耳机「高频延伸」不可靠：信息在源头就没了。" % cut)
     elif cut > 0:
         out.append("内容止于 %.1fkHz → 只够评估中频/齿音区，不足以判断高频。" % cut)
@@ -218,9 +240,9 @@ def advice(r: dict, th) -> str:
     b = r.get("bands_pct") or {}
     if b:
         low = b.get("sub", 0) + b.get("bass", 0)
-        if low > 60:
+        if low > th.advice_low_pct:
             out.append("低频能量占 %.0f%% → 适合试低频下潜 / 控制力。" % low)
-        if b.get("upper_mid", 0) > 15:
+        if b.get("upper_mid", 0) > th.advice_upper_mid_pct:
             out.append("中高频占比偏高 → 适合试齿音 / 刺耳度。")
 
     tp = r.get("true_peak_dbfs")
@@ -231,9 +253,9 @@ def advice(r: dict, th) -> str:
                    % r["lufs"])
     if r.get("lra") is not None and r["lra"] < th.lra_flat:
         out.append("LRA 仅 %.1f LU（动态被压平）→ 不适合用来判断耳机的动态/微动态表现。" % r["lra"])
-    if r.get("dr_db") is not None and r["dr_db"] < 6:
+    if r.get("dr_db") is not None and r["dr_db"] < th.dr_low_db:
         out.append("DR %.1fdB 偏低 → 做音量匹配盲听时容易把「更响」误判为「更好」。" % r["dr_db"])
-    if (r.get("clip_pct") or 0) > 0.01:
+    if (r.get("clip_pct") or 0) > th.clip_advice_pct:
         out.append("存在削波 → 大动态段落本身有失真，别算到耳机头上。")
     if r.get("width_db") is not None and r["width_db"] < th.width_narrow_db:
         out.append("声道宽度 %.1f dB（近乎单声道）→ 不适合用它评声场宽度。" % r["width_db"])
@@ -289,7 +311,7 @@ class VerdictAnalyzer(Analyzer):
         # 带宽本身没问题、却因保真轴的其它项降级时，说清原因
         if bw_lv == "ok" and level != "ok":
             head = "（带宽无问题，但因其它维度降级）" + head
-        if conf is not None and conf < 0.5 and cutoff_hz_lossy(r):
+        if conf is not None and conf < th.conf_low and cutoff_hz_lossy(r, th):
             head += "｜⚠ 低频段证据不足，结论偏保守"
 
         out = {
@@ -302,14 +324,14 @@ class VerdictAnalyzer(Analyzer):
                              for name, lv, t, d in axes},
             "bandwidth_confidence": conf,
         }
-        cc = cross_checks(r, ctx.fs, r.get("cutoff_hz"))
+        cc = cross_checks(r, ctx.fs, r.get("cutoff_hz"), th)
         if cc:
             out["cross_checks"] = cc
         out["advice"] = advice({**r, **out}, th)
         return out
 
 
-def cutoff_hz_lossy(r: dict) -> bool:
-    """截止点是"有损级"的（<20kHz）吗——用于决定要不要提示证据不足。"""
+def cutoff_hz_lossy(r: dict, th) -> bool:
+    """截止点是"有损级"的（低于 `cutoff_low_khz`）吗——用于决定要不要提示证据不足。"""
     c = r.get("cutoff_hz")
-    return bool(c) and c < 20000
+    return bool(c) and c < th.cutoff_low_khz * 1000.0

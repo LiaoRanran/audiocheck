@@ -202,8 +202,15 @@ def main(argv=None) -> int:
     ok = sum(1 for r in rows if r.get("level") == "ok")
     warn = sum(1 for r in rows if r.get("level") == "warn")
     bad = [r for r in rows if r.get("level") == "bad"]
+    # C0-4：**未判定要单独报**。原先它既不计入 ok/warn/bad，也不出现在汇总里
+    # ⇒ 浅模式（--shallow）跑完显示"合格 0 ｜ 有疑 0 ｜ 不达标 0"，
+    # 读起来像"全部没问题"。查不到必须与没问题可区分。
+    undecided = n - ok - warn - len(bad)
     print("=" * 68)
-    print("汇总：%d 个文件 ｜ 合格 %d ｜ 有疑 %d ｜ 不达标 %d" % (n, ok, warn, len(bad)))
+    line = "汇总：%d 个文件 ｜ 合格 %d ｜ 有疑 %d ｜ 不达标 %d" % (n, ok, warn, len(bad))
+    if undecided:
+        line += " ｜ **未判定 %d**（浅模式或判定器未跑）" % undecided
+    print(line)
     if bad:
         print("\n不达标清单（标签可能虚高）：")
         for r in bad:

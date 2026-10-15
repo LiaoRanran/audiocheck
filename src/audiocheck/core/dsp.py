@@ -160,7 +160,7 @@ def loudness(path: str, fs: int, channels: int, total: int, chunk: int = 1 << 20
 
 
 def spectral_features(f: np.ndarray, db: np.ndarray) -> dict:
-    """频谱重心 / 滚降点 / 谱平坦度 / 噪声底。"""
+    """频谱重心 / 滚降点 / 谱平坦度 / **谱低端百分位**（C0-5：它不是噪声底）。"""
     if f is None:
         return {}
     p = np.maximum(10 ** (db / 10.0), 0)

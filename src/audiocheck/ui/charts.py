@@ -931,11 +931,14 @@ class SpectrumCanvas(BaseCanvas):
         # 两者都落在 1.5–2px 带内且保持层级。
         ax.semilogx(f, db, lw=1.5, color=p["accent"], alpha=.95, zorder=3)
 
-        # ---- 噪底：动态范围的下边界（有测量值才画，没测就不画）----
+        # ---- 谱低端百分位：动态范围的下边界（有测量值才画，没测就不画）----
+        # C0-5 正名：这不是"噪底"（噪底要按静音段测），是**频谱第 5 百分位**。
+        # 图上文案跟着改——界面不许出现与 `theory.md §9` 口径不符的名字。
         nf = self.r.get("noise_floor_db")
         if nf and lo < nf < top:
             ax.axhline(nf, color=p["text_faint"], lw=.8, ls=":", zorder=2)
-            ax.text(22, nf + (top - lo) * .012, "噪底 %.0f dB" % nf,
+            ax.text(22, nf + (top - lo) * .012,
+                    "谱低端 5%% %.0f dB" % nf,
                     color=p["text_faint"], fontsize=p['fs_tick'], va="bottom")
 
         cut = self.r.get("cutoff_hz")

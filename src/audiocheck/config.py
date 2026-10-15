@@ -11,7 +11,15 @@ from dataclasses import asdict, dataclass, fields
 
 @dataclass
 class Thresholds:
-    """判定阈值。单位与含义见 README §三。"""
+    """判定阈值。单位与含义见 README §三。
+
+    ## C0 判据层卫生（2026-10-15）
+
+    原先 `verdict.py` 里散着 12 处硬编码数字，与这里的阈值**两套并存**。
+    本轮把它们**收编到本表**——**值一律不变**（收编不是调参）。新增字段的注释
+    必须写清**语义与用途**，因为"同一个量在不同语境下有不同门限"是这一层的常态
+    （典型：削波有告警/严重/建议三条线，不许合并成一个）。
+    """
 
     # --- 带宽判定（kHz）---
     cd_full: float = 21.5        # 44.1k 容器：≥ 此值算满带宽
@@ -21,16 +29,73 @@ class Thresholds:
     up_44: float = 21.0          # 48k 容器：≥ 此值疑似 44.1k 升频
     hi_ok: float = 24.5          # >48k 容器：≤ 此值算伪 Hi-Res
     hi_ratio: float = 0.85       # >48k 容器：≥ 奈奎斯特此比例算真 Hi-Res
+    #: **容器分界**（Hz）——判定"这个容器属于哪一档"的边界。
+    #: ⚠ C0：审查报告的"12 处魔数"清单**漏了这两条**（它们在 `verdict.py` 里
+    #: 以 `fs <= 45000` / `fs <= 50000` 的字面量形式存在）。补收编时一并发现。
+    fs_44_container: int = 45000   # ≤ 此值视为 44.1k 档容器
+    fs_48_container: int = 50000   # ≤ 此值视为 48k 档容器（之上算高采样率）
+    #: 位深差告警门限（bit）：容器标称比有效位深高出这么多 ⇒ 低位无内容。
+    bit_gap_warn: int = 4
 
     # --- 频谱分析 ---
     min_drop_db: float = 15.0    # 截止点之上 1/3 倍频程内至少掉这么多 dB，才算"截止"而非自然滚降
-    brick_db: float = 40.0       # 截止点之上一个倍频程掉落超过此值判为砖墙
+    min_stop_db: float = 20.0    # 截止点之上必须落到"本底"以下多少 dB 才算真截止（C0-3：原在 spectrum.py 默认参数里）
+    #: ⚠ 以下两项是**算法参数**（不是判定阈值），但同样必须只有一个出处：
+    #: 原先它们只写在 `spectrum.py::detect_cutoff` 的函数签名里，与 config 各存一份
+    #: （"双真值源"）。更要紧的是：调用点只传了 `min_drop_db`，**其余三项永远取
+    #: 函数默认值** ⇒ 用户在设置里改它们同样"设了没反应"（与 `brick_db` 同型 bug）。
+    #: C0-3 已让调用点把四项全部显式传下去。
+    cutoff_min_hz: float = 20.0  # 截止点检测的起始频率（Hz）
+    cutoff_need: int = 3         # 连续多少步满足"下降"才认定截止
+    #: **砖墙陡度门限**（dB/oct）。≥ 此值判为"硬砖墙"——用来区分
+    #: 「上游低通（有损转码的特征）」与「母带/录音链的自然滚降」。
+    #: ⚠ C0-2：此字段原名 `brick_db=40.0`，**在设置对话框里可调但没有任何代码读它**
+    #: （用户设了它什么也不会发生——比死代码更糟）。而 `verdict.py` 真正用的是硬编码 24.0。
+    #: 本轮统一：**取真口径 24.0**，并让 verdict 读这里。40→24 是口径变更，
+    #: 但因为 40 从未被读，**行为零变化**（CHANGELOG 有记）。
+    brick_db: float = 24.0
+    #: 滚降"平缓"门限（dB/oct）：低于此值 + 截止点偏低 ⇒ 证据不足以断定有损转码。
+    brick_flat_db_per_oct: float = 15.0
+    #: 截止点"偏低"门限（kHz）：低于此值才谈得上"上游被限带"。
+    cutoff_low_khz: float = 20.0
 
-    # --- 电平告警 ---
-    clip_pct: float = 0.005      # 削波样本占比告警线（%）
+    # --- 电平告警（削波有**三条线**，语义不同，不许合并）---
+    #: 告警线（%）：超过就提示"存在削波"。
+    clip_pct: float = 0.005
+    #: 严重线（%）：超过判 `bad`——"母带级损坏"。
+    clip_severe_pct: float = 0.5
+    #: 建议文案线（%）：只影响"别把这点失真算到耳机头上"这句提示。
+    clip_advice_pct: float = 0.01
     loud_war_lufs: float = -9.0  # 集成响度高于此值标记"响度战"
     lra_flat: float = 3.0        # LRA 低于此值标记"动态压平"
+    #: DR 偏低门限（dB）。⚠ 同一判据原先在 `verdict.py` 里写了两遍（判定轴 + 建议），
+    #: 收编为一处，避免将来只改一处造成"判定说偏低、建议不说"。
+    dr_low_db: float = 6.0
     width_narrow_db: float = -18.0   # 声道宽度低于此值提示近乎单声道
+
+    # --- 跨轴核对：假 Hi-Res / 升频 ---
+    #: 高采样率容器的判定起点（Hz）：容器采样率 > 此值才谈得上"疑似升频"。
+    upsample_fs: int = 88200
+    #: 内容止于此值（kHz）且容器是高采样率 ⇒ 疑似从 44.1k 系升频。
+    upsample_content_khz: float = 22.5
+
+    # --- 建议（可用性文案）门限 ---
+    #: 高频内容 ≥ 此值（kHz）⇒ 提示"可用于评估耳机高频延伸"。
+    advice_hf_ok_khz: float = 20.0
+    #: 高频内容 ≥ 此值（kHz）但 < 上一条 ⇒ 提示"评估高频延伸不可靠"。
+    advice_hf_limited_khz: float = 16.0
+    #: 低频（sub+bass）能量占比 ≥ 此值（%）⇒ 提示"适合试低频下潜"。
+    advice_low_pct: float = 60.0
+    #: 中高频占比 ≥ 此值（%）⇒ 提示"适合试齿音/刺耳度"。
+    advice_upper_mid_pct: float = 15.0
+
+    # --- 证据强度（conf）---
+    #: 证据强度低于此值 + 截止点偏低 ⇒ 追加"结论偏保守"提示。
+    conf_low: float = 0.5
+    #: conf 的映射端点（dB/oct）：≤ 此值视为自然滚降 ⇒ conf=0。
+    conf_slope_lo: float = 8.0
+    #: conf 的映射跨度（dB/oct）：`conf = clip((slope - lo) / span, 0, 1)`。
+    conf_slope_span: float = 16.0
 
     def to_dict(self) -> dict:
         return asdict(self)

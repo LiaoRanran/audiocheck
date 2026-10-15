@@ -21,6 +21,10 @@ from audiocheck.core.analyzers.verdict import (
     cross_checks,
 )
 
+#: 判定函数的阈值参数（C0 收编后它们都要求显式传 `th`）。
+#: **用默认 Thresholds**：这些用例验的是"规则本身"，不是"某组调过的阈值"。
+_TH = Thresholds()
+
 TH = Thresholds()
 
 
@@ -178,32 +182,32 @@ def test_channels_wide_is_ok():
 # ============================================================ 交叉核对
 def test_cross_check_detects_bit_depth_fraud():
     r = {"bits": "PCM_24", "bit_padded": True, "bit_origin": 16}
-    cc = cross_checks(r, 96000, 19000.0)
+    cc = cross_checks(r, 96000, 19000.0, _TH)
     assert any("位深造假" in x for x in cc)
 
 
 def test_cross_check_detects_sample_rate_upsampling():
     """高采样率容器 + 内容止于 44.1k 系 → 采样率造假。"""
-    cc = cross_checks({}, 96000, 21000.0)
+    cc = cross_checks({}, 96000, 21000.0, _TH)
     assert any("采样率造假" in x for x in cc)
 
 
 def test_cross_check_warns_when_evidence_is_weak():
     """截止点低但滚降平缓 → 明确说"证据不足"，不硬下转码结论。"""
-    cc = cross_checks({"brickwall_db_per_oct": 5.0}, 44100, 17000.0)
+    cc = cross_checks({"brickwall_db_per_oct": 5.0}, 44100, 17000.0, _TH)
     assert any("证据不足" in x for x in cc)
 
 
 def test_cross_check_detects_vendor_mismatch():
     r = {"format": "FLAC", "meta": {"vendor": "LAME 3.100"}}
-    cc = cross_checks(r, 44100, 21000.0)
+    cc = cross_checks(r, 44100, 21000.0, _TH)
     assert any("编码器串可疑" in x for x in cc)
 
 
 def test_cross_checks_clean_file_returns_nothing():
     r = {"format": "FLAC", "meta": {"vendor": "reference libFLAC 1.3.1"},
          "brickwall_db_per_oct": 30.0}
-    assert cross_checks(r, 44100, 21500.0) == []
+    assert cross_checks(r, 44100, 21500.0, _TH) == []
 
 
 # ============================================================ 建议
@@ -232,3 +236,52 @@ def test_verdict_declares_real_dependencies():
     from audiocheck.core.analyzers.verdict import VerdictAnalyzer
     for dep in ("basic", "spectrum", "loudness", "stereo", "codec", "bitdepth"):
         assert dep in VerdictAnalyzer.requires, "verdict 应声明依赖 %s" % dep
+
+
+# ==================================================== C0-4 三处静默降级（已修）
+class TestSilentDegradationsAreFixed:
+    """C0-4：**"查不到"不许与"没问题"长得一样**。
+
+    这三条都是"修好了但很容易改回去"的形态——它们不报错、不崩，只是悄悄
+    把"我不知道"说成"没问题"。所以每条都要有判据钉住。
+    """
+
+    def test_bitdepth_unmeasurable_is_not_ok(self):
+        """位深**无法统计**必须报"有疑"，不能报 ok。
+
+        分析器的 `bit_verdict` 早就区分了"不适用"与"无法统计"，判定层原先没读它。
+        """
+        lv, txt = axis_bitdepth({"bit_verdict": "无法统计"}, _TH)
+        assert lv == "warn", "位深无法统计被判成了 %s——查不到与没问题又同形了" % lv
+        assert "查不到" in txt
+
+    def test_bitdepth_not_applicable_stays_ok(self):
+        """**不适用**（浮点/32bit 整数）仍判 ok——别把"不适用"也当"查不到"。
+
+        这条是上一条的反向保护：修"查不到"时最容易顺手把所有 None 都判 warn，
+        那会让浮点文件平白降级。
+        """
+        lv, txt = axis_bitdepth({"bit_verdict": "不适用（浮点或 32bit 整数）"}, _TH)
+        assert lv == "ok" and txt == ""
+
+    def test_worst_treats_unknown_level_as_worst(self):
+        """未知等级按**最差**处理。
+
+        原实现 `_RANK.get(lv, 0)` 让未知等级静默取 0（=最好），
+        于是"等级名写错"或"新增等级忘了登记"会让判定**悄悄偏向 ok**。
+        """
+        from audiocheck.core.analyzers.verdict import _worst
+        assert _worst("ok", "typo_level") == "typo_level"
+        assert _worst("ok", "warn", "typo_level") == "typo_level"
+        # 正常等级不受影响
+        assert _worst("ok", "warn") == "warn"
+        assert _worst("bad", "ok") == "bad"
+        assert _worst("ok", "") == "ok"        # 空串仍被跳过（不是"未知"）
+
+    def test_summary_reports_undecided(self):
+        """汇总必须**单列"未判定"**——否则浅模式跑完显示"全 0"，读起来像全都没问题。"""
+        from audiocheck import summarize
+        rows = [{"file": "a.wav", "path": "/x/a.wav", "level": "ok", "sr": 44100},
+                {"file": "b.wav", "path": "/x/b.wav", "sr": 44100}]   # 没有 level = 未判定
+        md = summarize.build(rows)
+        assert "未判定" in md, "汇总没有单列未判定：\n%s" % md

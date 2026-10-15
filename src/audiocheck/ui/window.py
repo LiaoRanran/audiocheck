@@ -1206,7 +1206,8 @@ class MainWindow(FramelessWindow):
             ("85% 滚降", human_khz(g("rolloff85_hz"))),
             ("95% 滚降", human_khz(g("rolloff95_hz"))),
             ("谱平坦度", fmt_num(g("flatness"), "", 5)),
-            ("噪声底", fmt_num(g("noise_floor_db"), " dB", 1)),
+            # C0-5：不叫"噪声底"——它是频谱第 5 百分位（噪声底要按静音段测）。
+            ("谱低端百分位", fmt_num(g("noise_floor_db"), " dB", 1)),
             ("", ""),
             ("峰值 / RMS", "%.2f / %.2f dBFS" % (g("peak_dbfs") or 0, g("rms_dbfs") or 0)),
             ("真峰值 BS.1770", fmt_num(g("true_peak_dbfs"), " dBTP", 2)),

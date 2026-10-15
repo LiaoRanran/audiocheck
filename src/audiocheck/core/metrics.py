@@ -58,7 +58,11 @@ BUILTIN: dict[str, Metric] = {
         Metric("rolloff85_hz", "85% 滚降", " Hz", 1, group="频谱"),
         Metric("rolloff95_hz", "95% 滚降", " Hz", 1, group="频谱"),
         Metric("flatness", "谱平坦度", "", 5, group="频谱"),
-        Metric("noise_floor_db", "噪声底", " dB", 1, group="频谱"),
+        # C0-5 正名：这个数**不是**噪声底，它是**频谱的第 5 百分位**（`dsp.py`）。
+        # 叫"噪声底"会让用户以为它来自静音段的测量——那需要一个"静音段"判据，
+        # 属 C1 的新阈值，本轮不做。先按实际含义命名。
+        # ⚠ 数据键仍叫 `noise_floor_db`（JSON 兼容），但**界面标签不许再写"噪声底"**。
+        Metric("noise_floor_db", "谱低端百分位", " dB", 1, group="频谱"),
         Metric("corr", "相位相关", "", 3, group="立体声", primary=True),
         Metric("width_db", "声道宽度", " dB", 1, group="立体声", primary=True),
         Metric("mono_compat", "单声道兼容", group="立体声"),
