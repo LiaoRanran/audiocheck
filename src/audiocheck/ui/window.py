@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..config import BAND_CN, BANDS, Thresholds
+from ..config import BAND_CN, BANDS, Thresholds, provenance, provenance_suffix
 from ..core import views
 from ..core.analyzers.metadata import brief as meta_brief
 from ..core.analyzers.metadata import tag_rows as meta_rows
@@ -161,7 +161,16 @@ class SettingsDialog(QDialog):
             ("loud_war_lufs", "响度战门槛 >", -20.0, 0.0), ("lra_flat", "动态压平门槛 <", 0.0, 12.0),
         ]
         for i, (k, lab, lo, hi) in enumerate(rows):
-            g.addWidget(QLabel(lab), i, 0)
+            # C2：没有出处的阈值**在用户调它的地方**就要说清。
+            # 用 tooltip 而不是标签文字：标签上再挂一串"（工程估计，无出处）"会把
+            # 这一列撑得读不下去；而"你正在调的这个数没有外部依据"这件事，
+            # 必须在**手放上去的时候**能看到，不能只写在文档里。
+            cat, src = provenance(k)
+            lab_w = QLabel(lab)
+            # 两行用 chr(10) 拼：源码里直接写转义会被工具链吃掉（实测踩过两次）
+            tip = provenance_suffix(k).strip("（）") if cat in ("工程估计", "二手", "未登记") else ""
+            lab_w.setToolTip(("【" + tip + "】" if tip else "") + "依据：" + src)
+            g.addWidget(lab_w, i, 0)
             sp = QSpinBox()
             sp.setRange(int(lo * 1000), int(hi * 1000))
             sp.setSingleStep(50)

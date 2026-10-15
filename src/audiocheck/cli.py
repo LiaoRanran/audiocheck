@@ -7,7 +7,7 @@ import os
 import sys
 
 from . import __version__
-from .config import Thresholds
+from .config import Thresholds, provenance_summary
 from .core.engine import analyze, collect_files, list_analyzers
 from .core.pipeline import ResultCache, analyze_many
 
@@ -216,9 +216,23 @@ def main(argv=None) -> int:
         for r in bad:
             print("  [X] %-44s %s" % (r["file"][:44], r.get("verdict")))
 
+    # ---- C2：阈值出处**降级措辞** ----
+    # 没有出处的阈值不许被当成有依据的判据。这里把"本轮判定用了多少个工程估计"
+    # 直接印进汇总——**看得见才谈得上诚实**（规矩见 docs/thresholds.md）。
+    _pv = provenance_summary()
+    _est = len(_pv["engineering_estimates"])
+    print("阈值出处：%d 个字段 ｜ 标准/一手文档 %d ｜ 工程估计（无出处）%d"
+          % (_pv["total_fields"],
+             _pv["counts"].get("标准", 0) + _pv["counts"].get("一手文档", 0), _est))
+    if _est:
+        print("  标'工程估计'的阈值是本项目的取值、不是外部标准；"
+              "完整账目见 docs/thresholds.md")
+
     if args.json:
+        # 导出的 JSON **自带出处**：拿到这份结果的人要知道哪些数字有依据
         with open(args.json, "w", encoding="utf-8") as f:
-            json.dump(rows, f, ensure_ascii=False, indent=1)
+            json.dump({"threshold_provenance": _pv, "results": rows},
+                      f, ensure_ascii=False, indent=1)
         print("\n结果已写入 %s" % args.json)
     if args.csv:
         _csv(rows, args.csv)
