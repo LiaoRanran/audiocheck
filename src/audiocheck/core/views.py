@@ -35,14 +35,19 @@ def _stft_power(x2d: np.ndarray, fs: int, nperseg: int, hop: int):
     """逐声道功率谱 → 按**功率**合并，返回 (f, t, S_power)。
 
     ⚠ 合并必须在**功率域**（`S` 非负）：均值域会抵消反相内容（见模块 docstring §1）。
+    ⚠ 合并用**求和**（总功率），与 `core/context.py::spectrum` 同一约定——
+    旧版这里是 `np.mean(powers)`（按声道数平均），两条路径口径不一致：
+    1 声道文件与"第 2 声道静音"的 2 声道文件会差 3.01 dB。
+    求和后两者电平相同（静音声道功率为 0），且物理上也对：两只音箱 = 2 份能量。
+    对显式峰值归一化的频谱图（`S - nanmax(S)`）**恒等**——全局缩放被约掉。
     """
     f = t = None
-    powers = []
+    tot = None
     for ch in range(x2d.shape[1]):
         f, t, S = signal.spectrogram(x2d[:, ch], fs=fs, nperseg=nperseg,
                                      noverlap=max(0, nperseg - hop), window="hann")
-        powers.append(S)
-    return f, t, np.mean(powers, axis=0)
+        tot = S if tot is None else tot + S
+    return f, t, tot
 
 
 def _peak_hold(S: np.ndarray, t: np.ndarray, max_cols: int):

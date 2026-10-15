@@ -11,6 +11,8 @@ import os
 import sys
 import unittest
 
+import numpy as np  # noqa: E402
+
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -97,6 +99,90 @@ class TestViewKeysMatchStack(unittest.TestCase):
         self.assertEqual(w._empty_idx, w.stack.count() - 1)
         self.assertLessEqual(len(W.MainWindow.VIEW_KEYS), w._empty_idx,
                              "VIEW_KEYS 不能占掉空状态那一页")
+
+
+class TestSpectrumPowerMergeNotMean(unittest.TestCase):
+    """B14：**判定用的谱**必须逐声道功率合并，不能 `x.mean(axis=1)` 压单声道。
+
+    `mean` 会把 L/R **反相**的内容抵消掉，且**不报错**——而"反相"本身就是
+    要查的录音缺陷。这条谱（`AnalysisContext.spectrum`）喂的是**结论**
+    （截止频率 / 频谱倾斜 / 假 Hi-Res 盲检测），视图层 `views.py` 同型 bug
+    已修但只管出图。两者都必须钉住。
+
+    判据用四支**物理已知值**的信号，从四个方向夹死语义：
+      反相 L=-R → 能量全在相位差里，均值下会消失、功率合并下**必须保留**；
+      同相 L=+R → 与反相**电平必须完全相同**（总功率与相位无关）；
+      双声道 vs 单声道 → 两只音箱 = 2 份能量，电平必须恰 **+3.01 dB**；
+      静音右声道 → 功率为 0，电平必须与**真单声道文件**逐位相同。
+    """
+
+    FS = 44100
+    TONE = 1000.0
+
+    @classmethod
+    def setUpClass(cls):
+        import tempfile
+
+        import numpy as np
+        import soundfile as sf
+
+        from audiocheck.core.context import AnalysisContext
+
+        cls.tmp = tempfile.mkdtemp(prefix="audiocheck_antiphase_")
+        t = np.arange(int(cls.FS * 2.0)) / cls.FS
+        tone = (0.25 * np.sin(2 * np.pi * cls.TONE * t)).astype("float32")
+
+        def write(name, arr):
+            p = os.path.join(cls.tmp, name)
+            sf.write(p, arr, cls.FS)
+            return p
+
+        cls.p_anti = write("anti.wav", np.stack([tone, -tone], axis=1))
+        cls.p_phase = write("phase.wav", np.stack([tone, tone], axis=1))
+        cls.p_mono2 = write("mono2.wav", np.stack([tone, np.zeros_like(tone)], axis=1))
+        cls.p_mono1 = write("mono1.wav", tone[:, None])
+        cls.Ctx = AnalysisContext
+
+    def _level(self, path, lo=None, hi=None):
+        """返回谱在 [lo, hi] 频带内的峰值电平（默认是 1 kHz 音所在的窄带）。"""
+        lo = lo if lo is not None else self.TONE - 25
+        hi = hi if hi is not None else self.TONE + 25
+        f, db = self.Ctx(path).spectrum()
+        self.assertIsNotNone(db, "spectrum() 返回空——三分位取样全被跳过")
+        return float(db[(f >= lo) & (f <= hi)].max())
+
+    def test_antiphase_content_survives(self):
+        """反相内容必须在谱里活着（旧 `mean` 下它被抵消成静音）。"""
+        self.assertGreater(self._level(self.p_anti) - self._level(self.p_anti, 4980, 5020),
+                           40.0, "反相声道的 1 kHz 音消失了——又被均值抵消")
+
+    def test_phase_relation_does_not_change_level(self):
+        """同相与反相的**总电平必须相同**（总功率与相位无关）。"""
+        self.assertAlmostEqual(self._level(self.p_anti), self._level(self.p_phase),
+                               delta=0.01,
+                               msg="反相 %.2f dB ≠ 同相 %.2f dB——合并域错了"
+                                   % (self._level(self.p_anti), self._level(self.p_phase)))
+
+    def test_stereo_is_exactly_plus_3db_over_mono(self):
+        """两只音箱 = 2 份能量 ⇒ 双声道恰 +3.01 dB（物理定值，不是"约"）。"""
+        got = self._level(self.p_anti) - self._level(self.p_mono1)
+        self.assertAlmostEqual(got, 10 * np.log10(2.0), delta=0.05,
+                               msg="双声道增益 %.3f dB ≠ +3.01 dB" % got)
+
+    def test_silent_channel_adds_no_energy(self):
+        """静音声道功率为 0：电平必须与真单声道文件相同（不许被算成能量）。"""
+        self.assertAlmostEqual(self._level(self.p_mono2), self._level(self.p_mono1),
+                               delta=0.01,
+                               msg="右声道静音的 2 声道文件与真单声道电平不一致")
+
+    def test_views_spectrogram_keeps_antiphase(self):
+        """出图层（spectrogram/waterfall）同一语义：反相内容不许被抵消。"""
+        from audiocheck.core import views
+        t, f, S = views.spectrogram(self.p_anti)
+        tone = float(S[(f >= self.TONE - 25) & (f <= self.TONE + 25), :].max())
+        empty = float(S[(f >= 4980) & (f <= 5020), :].max())
+        self.assertGreater(tone - empty, 40.0,
+                           "频谱图把反相内容抵消了（测量版静默降级）")
 
 
 if __name__ == "__main__":

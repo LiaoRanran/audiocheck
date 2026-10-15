@@ -52,23 +52,34 @@ class AnalysisContext:
 
     # ---------------- 共享计算 ----------------
     def spectrum(self, seg_seconds: float = 20.0, nperseg: int = 16384):
-        """三分位取样做 Welch 平均，返回 (freq, dB)。结果缓存。"""
+        """三分位取样做 Welch 平均，返回 (freq, dB)。结果缓存。
+
+        B14 精度：**逐声道功率合并，不是单声道均值**。`x.mean(axis=1)` 会把
+        L/R **反相**的内容抵消掉——而那是真实存在的录音缺陷，且这条谱是喂给
+        **判定**的（截止频率、频谱倾斜、假 Hi-Res 盲检测都读它）。同型 bug 在
+        `views.py`（频谱图/瀑布图）已修，但那条只管出图；**这条管结论，更要紧**。
+        """
         if self._spec is not None:
             return self._spec
         acc = None
+        f = None
         for frac in (0.25, 0.5, 0.75):
             start = int(self.frames * frac)
             n = int(min(seg_seconds * self.fs, self.frames - start))
             if n < nperseg * 2:
                 continue
             x, _ = sf.read(self.path, start=start, frames=n, dtype="float32", always_2d=True)
-            m = x.mean(axis=1)
-            m = m - m.mean()
-            if not np.any(np.abs(m) > 1e-7):
+            tot = None
+            for ch in range(x.shape[1]):
+                c = x[:, ch] - x[:, ch].mean()   # 去直流（在功率合并之前，逐声道）
+                if not np.any(np.abs(c) > 1e-7):
+                    continue                     # 该声道纯静音：功率为 0，不参与合并
+                f, p = signal.welch(c, fs=self.fs, nperseg=nperseg,
+                                    noverlap=nperseg // 2, window="hann")
+                tot = p if tot is None else tot + p
+            if tot is None:
                 continue
-            f, p = signal.welch(m, fs=self.fs, nperseg=nperseg,
-                                noverlap=nperseg // 2, window="hann")
-            acc = p if acc is None else acc + p
+            acc = tot if acc is None else acc + tot
         if acc is None:
             self._spec = (None, None)
         else:
