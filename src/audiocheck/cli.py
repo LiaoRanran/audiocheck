@@ -74,6 +74,23 @@ def show(r: dict, quiet: bool = False) -> None:
             print("            %-14s %s" % (k, str(v)[:70]))
     if r.get("verdict"):
         print("      判定  %s" % r["verdict"])
+    # C4.1 成因层：每条候选一行——"疑似"限定词 + 强度 + 证据（反证/无法区分附后）。
+    # 现象与成因**分开写**（C4.4：不许把成因糊进判定行，也不许压成一个结论）。
+    for c in r.get("causes") or []:
+        line = ("成因  疑似%s（强度 %.2f，%s）：%s"
+                % (c["key"], c.get("strength") or 0.0, c.get("prov") or "工程估计",
+                   "；".join(c.get("evidence") or [])))
+        if c.get("counter"):
+            line += " ｜ 反证/存疑：" + "；".join(c["counter"])
+        if c.get("ambiguous"):
+            line += " ｜ 与「%s」无法区分（并列候选）" % "／".join(c.get("ambiguous_with") or [])
+        print("      %s" % line)
+    # C4.3 时间定位：问题段（与整轨结论并列，不是替代）
+    _probs = r.get("timeline_problems") or []
+    for _p in _probs[:6]:
+        print("      时段  %s" % _p["text"])
+    if len(_probs) > 6:
+        print("      时段  ……另有 %d 段异常" % (len(_probs) - 6))
     if r.get("advice"):
         print("      建议  %s" % r["advice"])
     for e in r.get("errors") or []:
@@ -227,6 +244,11 @@ def main(argv=None) -> int:
     if _est:
         print("  标'工程估计'的阈值是本项目的取值、不是外部标准；"
               "完整账目见 docs/thresholds.md")
+
+    # ---- C4.5 效力边界：这一轮**不能**告诉用户什么（每次运行印一次）----
+    # "未知"必须出现在用户可见处——否则"没测"会被读成"没问题"。
+    from .core.analyzers.causes import boundaries as _bounds
+    print("效力边界（本工具不能告诉你的）：%s" % "；".join(_bounds()))
 
     if args.json:
         # 导出的 JSON **自带出处**：拿到这份结果的人要知道哪些数字有依据

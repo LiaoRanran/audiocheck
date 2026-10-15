@@ -191,9 +191,16 @@ FIELD_MAP: dict[str, tuple | None] = {
     "advice_upper_mid_pct": ("upper_mid_pct", ">", "%", "建议：中高频偏高"),
     "conf_low": ("conf", "<", "比例", "证据强度低"),
     "conf_slope_lo": ("brickwall_db_per_oct", "<=", "dB/oct", "自然滚降端点"),
+    # C4 成因候选门限（**全部工程估计**，只作候选证据；见 verdict.causes）
+    "vinyl_rumble_pct": ("low_pct", ">=", "%", "黑胶候选：低频隆隆"),
+    "broadcast_low_cut_pct": ("low_pct", "<=", "%", "广播候选：低频缺失"),
+    "noise_like_flatness": ("flatness", ">=", "比例", "类噪守卫：占比证据的前提"),
+    "fake_stereo_corr": ("corr", ">=", "比例", "假立体声候选：声道相关"),
+    "fake_stereo_width_db": ("width_db", "<=", "dB", "假立体声候选：侧向能量"),
     # 算法参数：不定义判定，只影响"能不能检出"
     "min_drop_db": None, "min_stop_db": None, "cutoff_min_hz": None, "cutoff_need": None,
     "conf_slope_span": None,
+    "seg_seconds": None, "seg_overlap": None, "seg_min_count": None,
 }
 
 
@@ -226,6 +233,9 @@ def _observe(r: dict) -> dict:
         "low_pct": (b.get("sub", 0) + b.get("bass", 0)) if b else None,
         "upper_mid_pct": b.get("upper_mid") if b else None,
         "conf": conf,
+        # C4 成因候选的观测量（黑胶隆隆 / 广播低切 / 类噪守卫 / 假立体声）
+        "flatness": r.get("flatness"),
+        "corr": r.get("corr"),
     }
 
 

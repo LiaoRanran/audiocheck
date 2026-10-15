@@ -1,6 +1,6 @@
 """判定与建议 —— 必须最后跑，因为它读取前面所有分析器的结论。
 
-## 判定哲学（两条）
+## 判定哲学（三条）
 
 **一、同一个截止点在不同容器里含义完全不同。**
 44.1k 容器的 19.6kHz 是"轻微带限"，48k 容器的 21.4kHz 却是"疑似升频"。
@@ -13,11 +13,19 @@
 早期版本把这两件事混成"一个等级 + 若干标签"，导致**判定被单轴垄断**：
 带宽达标就给 ok，哪怕这文件削波严重、动态压平、还是单声道。
 那对"能不能用它评器材"这个产品核心问题等于没答。
+
+**三、C4 起分三层输出，不许压平**（用户 2026-10-13："判决颗粒度一定要根据
+现实音源复杂情况极致真实丰富"）：
+  * 现象层 `phenomena` / `verdict_axes`：测量值 + 等级（本模块）；
+  * 成因层 `causes`：现象 → 候选集（`causes.py`，order=89）；
+  * 用途层 `usability`：成因 + 现象 → 每格"可用/受限/不可用/不可判" + 依据。
+时间定位 `timeline` 另见 `timeline.py`；三层的效力边界 `boundaries`。
 """
 from __future__ import annotations
 
 from ...config import LEVEL_CN
 from ..registry import Analyzer, register
+from .causes import USES, usability_matrix
 
 #: 等级序：越大越差。用于「取最差」聚合。
 _RANK = {"ok": 0, "warn": 1, "bad": 2}
@@ -43,6 +51,17 @@ def _worst(*levels: str) -> str:
         if r > best_rank:
             best, best_rank = lv, r
     return best
+
+
+def _soft_band_text(k: float, slope: float | None, strong: bool) -> str:
+    """C4.6：**砖墙证据不足**时，带限类判定的降级文案。
+
+    "疑似带限"而不是"有损溯源"——后者是对**成因**的硬断言，需要陡砖墙
+    作证据。这就是"证据不足不硬判"在等级上的落地（causes 层再给结构化候选）。
+    """
+    return ("疑似%s（截止 %.1fkHz，滚降平缓 %.0fdB/oct）——砖墙证据不足："
+            "无法断定有损转码，也可能是母带/录音链的频响（工程估计，无出处）"
+            % ("强带限" if strong else "带限", k, slope or 0.0))
 
 
 # ============================================================ 轴一：带宽保真
@@ -80,7 +99,13 @@ def axis_bandwidth(fs: int, cutoff_hz: float | None, brickwall_db_per_oct: float
                             "——可能只是母带本身的频响，不一定是转码"
                             % (k, brickwall_db_per_oct or 0)), conf
         if k >= th.lossy:
+            # C4.6：砖墙证据不足（conf 低）⇒ **不得判 bad，只能 warn**。
+            # "有损溯源"是对成因的硬断言；滚降平缓时它同样可能是母带频响。
+            if conf is not None and conf < th.conf_low:
+                return "warn", _soft_band_text(k, brickwall_db_per_oct, strong=False), conf
             return "bad", "有损溯源（≈192–256kbps 转码）", conf
+        if conf is not None and conf < th.conf_low:
+            return "warn", _soft_band_text(k, brickwall_db_per_oct, strong=True), conf
         return "bad", "强有损溯源（≤128kbps）", conf
 
     if fs <= th.fs_48_container:
@@ -91,7 +116,13 @@ def axis_bandwidth(fs: int, cutoff_hz: float | None, brickwall_db_per_oct: float
         if k >= th.ltd:
             return "warn", "带宽偏窄（%.1fkHz）——48k 容器里有损/带限" % k, conf
         if k >= th.lossy:
+            # C4.6：砖墙证据不足（conf 低）⇒ **不得判 bad，只能 warn**。
+            # "有损溯源"是对成因的硬断言；滚降平缓时它同样可能是母带频响。
+            if conf is not None and conf < th.conf_low:
+                return "warn", _soft_band_text(k, brickwall_db_per_oct, strong=False), conf
             return "bad", "有损溯源（≈192–256kbps 转码）", conf
+        if conf is not None and conf < th.conf_low:
+            return "warn", _soft_band_text(k, brickwall_db_per_oct, strong=True), conf
         return "bad", "强有损溯源（≤128kbps）", conf
 
     if k <= th.hi_ok:
@@ -225,41 +256,30 @@ def cross_checks(r: dict, fs: int, cutoff_hz: float | None, th) -> list[str]:
     return out
 
 
-# ============================================================ 建议（可用性）
+# ============================================================ 建议（由用途矩阵渲染）
+#: advice **不单独判**——只把 usability_matrix 的格子渲染成句子。
+#: 好处：建议与矩阵永远是同一套口径（不会"矩阵说受限、建议说可用"，
+#: 那正是老实现两处各写一遍 DR 门限差点造成的事故）。
+#: `--only verdict` 时 causes/usability 没跑：就地算一份（不报错、不空转）。
+#: 这几格在"可用"时也渲染（老口径里的正提示：满带宽/低频突出/齿音素材）。
+_ADVICE_POSITIVE = ("频响延伸/空气感", "低频下潜/控制力", "齿音/刺耳度")
+#: 静态格/重复格不进 advice（结像与瞬态在 boundaries，音色分布在 CLI 平衡行）
+_ADVICE_SKIP = ("结像", "瞬态", "音色平衡", "整体可信度")
+
+
 def advice(r: dict, th) -> str:
-    """输出「能不能用它来评耳机」——本工具区别于市面产品的地方。"""
-    out = []
-    cut = (r.get("cutoff_hz") or 0) / 1000.0
-    if cut >= th.advice_hf_ok_khz:
-        out.append("高频内容充足（到 %.1fkHz）→ 可用于评估耳机的高频延伸/空气感。" % cut)
-    elif cut >= th.advice_hf_limited_khz:
-        out.append("内容止于 %.1fkHz → 评估耳机「高频延伸」不可靠：信息在源头就没了。" % cut)
-    elif cut > 0:
-        out.append("内容止于 %.1fkHz → 只够评估中频/齿音区，不足以判断高频。" % cut)
-
-    b = r.get("bands_pct") or {}
-    if b:
-        low = b.get("sub", 0) + b.get("bass", 0)
-        if low > th.advice_low_pct:
-            out.append("低频能量占 %.0f%% → 适合试低频下潜 / 控制力。" % low)
-        if b.get("upper_mid", 0) > th.advice_upper_mid_pct:
-            out.append("中高频占比偏高 → 适合试齿音 / 刺耳度。")
-
-    tp = r.get("true_peak_dbfs")
-    if tp is not None and tp > 0:
-        out.append("真峰值 %+.2f dBTP（超满刻度）→ DAC 重建时可能削顶，别把这点失真算到耳机头上。" % tp)
-    if r.get("lufs") is not None and r["lufs"] > th.loud_war_lufs:
-        out.append("集成响度 %.1f LUFS（响度战极重）→ 对比时必须先按响度对齐，否则「更响」会被误判成「更好」。"
-                   % r["lufs"])
-    if r.get("lra") is not None and r["lra"] < th.lra_flat:
-        out.append("LRA 仅 %.1f LU（动态被压平）→ 不适合用来判断耳机的动态/微动态表现。" % r["lra"])
-    if r.get("dr_db") is not None and r["dr_db"] < th.dr_low_db:
-        out.append("DR %.1fdB 偏低 → 做音量匹配盲听时容易把「更响」误判为「更好」。" % r["dr_db"])
-    if (r.get("clip_pct") or 0) > th.clip_advice_pct:
-        out.append("存在削波 → 大动态段落本身有失真，别算到耳机头上。")
-    if r.get("width_db") is not None and r["width_db"] < th.width_narrow_db:
-        out.append("声道宽度 %.1f dB（近乎单声道）→ 不适合用它评声场宽度。" % r["width_db"])
-    return " ".join(out)
+    """「能不能用它来评耳机」——由用途矩阵渲染（C4.2 替代原 7 条粗糙规则）。"""
+    u = r.get("usability") or usability_matrix(r, r.get("causes") or [], th)
+    parts = []
+    for name in USES:
+        if name in _ADVICE_SKIP:
+            continue
+        c = u.get(name)
+        if not c or not c.get("reason"):
+            continue
+        if c["level"] != "可用" or name in _ADVICE_POSITIVE:
+            parts.append(c["reason"])
+    return " ".join(parts)
 
 
 @register
@@ -304,15 +324,25 @@ class VerdictAnalyzer(Analyzer):
         level = _worst(*(lv for _, lv, _, drives in axes if drives))
 
         # ---- 文案：带宽是主结论，其余各轴只在其"非 ok"时追加 ----
+        # C4.4：分隔符从"｜"改"；"——"｜"把多个现象糊成一行正是本轮要消灭的
+        # 形态（成因另起 `causes` 层，用途另起 `usability` 层，都不是一行能装的）。
         head = bw_text
         others = [t for _, lv, t, _ in axes[1:] if t and lv != "ok"]
         if others:
-            head += "｜" + "｜".join(others)
+            head += "；" + "；".join(others)
         # 带宽本身没问题、却因保真轴的其它项降级时，说清原因
         if bw_lv == "ok" and level != "ok":
             head = "（带宽无问题，但因其它维度降级）" + head
-        if conf is not None and conf < th.conf_low and cutoff_hz_lossy(r, th):
-            head += "｜⚠ 低频段证据不足，结论偏保守"
+        # ⚠ C4.6 起这里**不再**追加"证据不足"第二条提示：砖墙不足时
+        # axis_bandwidth 已就地降级为 warn 并把理由写进文案。同一件事说两遍
+        # 正是 C4.4 要消灭的"糊"。（原提示与 cutoff_hz_lossy 一并删除。）
+
+        # C4.4 现象层的**列表形态**（`verdict_axes` 是 dict，给 UI 按轴取；
+        # `phenomena` 给按序渲染/机器消费，各带测量值）。
+        vals = {"带宽": r.get("cutoff_khz"), "位深": r.get("bit_effective"),
+                "电平": r.get("clip_pct"), "动态": r.get("lra"), "声道": r.get("width_db")}
+        phenomena = [{"axis": name, "value": vals.get(name), "level": lv, "text": t,
+                      "drives_level": d} for name, lv, t, d in axes]
 
         out = {
             "verdict": head,
@@ -322,6 +352,7 @@ class VerdictAnalyzer(Analyzer):
             # drives_level 一并给出，避免调用方误以为所有轴都能降级。
             "verdict_axes": {name: {"level": lv, "text": t, "drives_level": d}
                              for name, lv, t, d in axes},
+            "phenomena": phenomena,              # C4.4：同一份现象层的列表形态
             "bandwidth_confidence": conf,
         }
         cc = cross_checks(r, ctx.fs, r.get("cutoff_hz"), th)
@@ -329,9 +360,3 @@ class VerdictAnalyzer(Analyzer):
             out["cross_checks"] = cc
         out["advice"] = advice({**r, **out}, th)
         return out
-
-
-def cutoff_hz_lossy(r: dict, th) -> bool:
-    """截止点是"有损级"的（低于 `cutoff_low_khz`）吗——用于决定要不要提示证据不足。"""
-    c = r.get("cutoff_hz")
-    return bool(c) and c < th.cutoff_low_khz * 1000.0

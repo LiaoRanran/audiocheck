@@ -97,6 +97,25 @@ class Thresholds:
     #: conf 的映射跨度（dB/oct）：`conf = clip((slope - lo) / span, 0, 1)`。
     conf_slope_span: float = 16.0
 
+    # --- C4 成因候选（**全部工程估计，无外部出处**；只作候选证据，不作判据级结论）---
+    #: sub+bass 占比 ≥ 此值 ⇒ 记"低频隆隆"证据（黑胶转录候选）。
+    vinyl_rumble_pct: float = 25.0
+    #: **类噪内容守卫**：谱平坦度 ≥ 此值 ⇒ 内容是噪声状频谱。此时"低频隆隆/
+    #: 低频缺失"类**占比证据名不副实**（白噪本身没有音乐式的低音结构），
+    #: 一律不作为候选证据。实测：Welch 谱上白噪 flatness ≈ 0.99、音乐 < 0.1。
+    #: ⚠ 守卫只用于占比类证据；截止/砖墙类证据（有损/升频/滚降形态）对
+    #: 噪声状内容同样成立，不守卫（砖墙白噪正是有损判定的标准测试素材）。
+    noise_like_flatness: float = 0.5
+    #: sub+bass 占比 ≤ 此值 ⇒ 记"低频缺失"证据（广播/电台版候选）。
+    broadcast_low_cut_pct: float = 5.0
+    #: 声道相关 ≥ 此值 **且** 宽度 ≤ 下一条 ⇒ 假立体声（单声道上混）候选。
+    fake_stereo_corr: float = 0.98
+    fake_stereo_width_db: float = -30.0
+    # --- C4 时间定位（**算法参数**，不是判定阈值；见 analyzers/timeline.py）---
+    seg_seconds: float = 10.0      # 分段窗长（秒）
+    seg_overlap: float = 0.5       # 分段重叠比例
+    seg_min_count: int = 4         # 少于这么多段不下分段结论（小样本不许硬判）
+
     def to_dict(self) -> dict:
         return asdict(self)
 
@@ -272,6 +291,26 @@ PROVENANCE: dict[str, tuple[str, str]] = {
     "conf_low": ("工程估计", "conf < 0.5 作为'证据不足'的门限；**无外部出处**"),
     "conf_slope_lo": ("工程估计", "conf 映射的下端点（8 dB/oct = 自然滚降）；**无外部出处**"),
     "conf_slope_span": ("工程估计", "conf 映射的跨度；**无外部出处**"),
+
+    # --- C4 成因候选（C4.1）：门限全是**工程估计**，只作候选证据、不作判据级结论。
+    # 出处状态与 `verdict.cause_candidates` 的 _CAUSE_PROV 表一致；用户可见处
+    # 一律带"疑似（工程估计）"限定词（C 块提示词 out-of-scope 第 13 条）。
+    "vinyl_rumble_pct": ("工程估计",
+                         "黑胶隆隆声（sub+bass 能量异常）判据；**未取到同行评审来源** ⇒ 只作候选证据"),
+    "noise_like_flatness": ("工程估计",
+                            "类噪内容守卫：谱平坦度门限。白噪 Welch 谱实测 ≈0.99、音乐 <0.1，"
+                            "0.5 落在两者间的宽隙里；**门限取值无外部出处**"),
+    "broadcast_low_cut_pct": ("工程估计",
+                              "广播/电台版低频缺失判据（sub+bass 占比下限）；**无外部出处**"),
+    "fake_stereo_corr": ("工程估计",
+                         "假立体声（单声道上混）的声道相关门限；**无外部出处**"),
+    "fake_stereo_width_db": ("工程估计",
+                             "假立体声的侧向能量（M/S 宽度）门限；**无外部出处**"),
+
+    # --- C4 时间定位（算法参数，不出结论）---
+    "seg_seconds": ("工程估计", "时间定位分段窗长（算法参数，不影响判定）；**无外部出处**"),
+    "seg_overlap": ("工程估计", "分段重叠比例（算法参数）；**无外部出处**"),
+    "seg_min_count": ("工程估计", "最少分段数：少于它不下分段结论（防止小样本硬判）；**无外部出处**"),
 }
 
 #: 出处类别的**可信度降级措辞**（C2：用户可见处必须带）。
