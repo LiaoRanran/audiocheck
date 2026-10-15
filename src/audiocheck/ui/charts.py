@@ -3,6 +3,7 @@
 
 约定：每个画布都实现 apply_theme(p) —— 换主题时只需重画，不用重建控件。
 """
+import io
 import math
 
 import matplotlib
@@ -13,8 +14,15 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg  # noqa: E402
 from matplotlib.figure import Figure  # noqa: E402
 from matplotlib.gridspec import GridSpec  # noqa: E402
 from PySide6.QtCore import QRectF, Qt, QTimer  # noqa: E402
-from PySide6.QtGui import QColor, QFont, QPainter, QPen  # noqa: E402
-from PySide6.QtWidgets import QStyle, QStyledItemDelegate  # noqa: E402
+from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap  # noqa: E402
+from PySide6.QtWidgets import (  # noqa: E402
+    QApplication,
+    QLabel,
+    QStyle,
+    QStyledItemDelegate,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ..config import BAND_CN, BANDS  # noqa: E402
 from . import palette as P  # noqa: E402
@@ -192,6 +200,40 @@ CUTOFF_FADE_ALPHA = 0.08
 PANEL_RIM_H = 1
 
 
+class FullscreenView(QWidget):
+    """B14 E.2-6：**无损全屏查看**。
+
+    关键在"无损"：这里放的不是把画布 `grab()` 出来的位图放大（那会糊），
+    而是按**屏幕像素所需的 DPI 重新渲染**的位图（`Figure.savefig(dpi=...)`），
+    所以放大到全屏时是**重算**出来的矢量光栅，不是插值。Esc / 双击 / 点击退出。
+    """
+
+    def __init__(self, pixmap: QPixmap):
+        super().__init__(None, Qt.WindowType.Window)
+        self.setWindowTitle("全屏查看 · Esc 退出")
+        self.setWindowState(Qt.WindowState.WindowFullScreen)
+        self.setStyleSheet("background:#000000;")
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        lab = QLabel(self)
+        lab.setPixmap(pixmap)
+        lab.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(lab)
+
+    def keyPressEvent(self, ev):
+        if ev.key() in (Qt.Key.Key_Escape, Qt.Key.Key_Q, Qt.Key.Key_F):
+            self.close()
+            return
+        super().keyPressEvent(ev)
+
+    def mouseDoubleClickEvent(self, ev):
+        self.close()
+
+    def mousePressEvent(self, ev):
+        self.close()
+
+
 class BaseCanvas(FigureCanvasQTAgg):
     def paintEvent(self, ev):
         """在 Qt 层补一条上缘亮边（特效第 2 招：Rim light）。
@@ -224,7 +266,49 @@ class BaseCanvas(FigureCanvasQTAgg):
         self.fig = Figure(figsize=(w, h), dpi=dpi, layout="constrained")
         super().__init__(self.fig)
         self.setStyleSheet("background:transparent;")
+        # B14 E.2-6 宽敞：constrained layout 的默认留白偏紧（轴标题贴边）。
+        # w_pad/h_pad 是**字体高度的倍数**（不是像素）；0.6/0.5 让轴标题与画布边
+        # 之间有呼吸，同时不压缩数据墨占比。
+        try:
+            self.fig.set_constrained_layout_pads(w_pad=0.6, h_pad=0.5,
+                                                 wspace=0.04, hspace=0.04)
+        except (AttributeError, ValueError):
+            pass
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)   # 收 F 键（全屏）
+        self._fs = None
         self.p = None
+
+    # ---- B14 E.2-6 全屏无损放大 ----
+    def fullscreen_pixmap(self, dpi: int) -> QPixmap:
+        """按目标 DPI **重新渲染**（`Figure.savefig`），不是放大位图 ⇒ 无损。"""
+        buf = io.BytesIO()
+        self.fig.savefig(buf, format="png", dpi=dpi,
+                         facecolor=self.fig.get_facecolor())
+        buf.seek(0)
+        pm = QPixmap()
+        pm.loadFromData(buf.read(), "PNG")
+        return pm
+
+    def open_fullscreen(self):
+        """铺满屏幕显示当前图。DPI 取"铺满屏幕所需的下界"⇒ 渲染像素 ≥ 屏幕像素。"""
+        app = QApplication.instance()
+        scr = app.primaryScreen() if app else None
+        if scr is None or not self._has_data():
+            return
+        geo = scr.geometry()
+        fw, fh = self.fig.get_size_inches()
+        dpi = max(100, int(min(geo.width() / max(fw, 1e-6),
+                               geo.height() / max(fh, 1e-6))))
+        self._fs = FullscreenView(self.fullscreen_pixmap(dpi))
+        self._fs.show()
+        self._fs.raise_()
+        self._fs.activateWindow()
+
+    def keyPressEvent(self, ev):
+        if ev.key() == Qt.Key.Key_F:
+            self.open_fullscreen()
+            return
+        super().keyPressEvent(ev)
 
     def _has_data(self) -> bool:
         """当前画布是否已有可画的内容。子类按自己的数据字段覆写。
@@ -1132,7 +1216,7 @@ class WaterfallCanvas(BaseCanvas):
         dt = float(t[1] - t[0]) if len(t) > 1 else 0.0
         ax.text2D(.015, .90, "Δf ≈ %.3g Hz   Δt ≈ %.3g s" % (df, dt), transform=ax.transAxes,
                   color=p["text_faint"], fontsize=p['fs_tick'])
-        ax.text2D(.86, .95, "拖拽旋转 · 双击复位", transform=ax.transAxes, color=p["text_faint"], fontsize=p['fs_tick'])
+        ax.text2D(.86, .95, "拖拽旋转 · 双击复位 · F 全屏", transform=ax.transAxes, color=p["text_faint"], fontsize=p['fs_tick'])
         self.draw()
 
 
