@@ -277,6 +277,14 @@ class BaseCanvas(FigureCanvasQTAgg):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)   # 收 F 键（全屏）
         self._fs = None
         self.p = None
+        CURSOR.subscribe(self)      # B14 补强⑤：默认不画（子类按需覆写）
+
+    # ---- B14 补强⑤：跨画布频率游标（默认空操作）----
+    def set_crosshair(self, hz: float) -> None:
+        """别处的画布指到了某个频率。默认忽略——只有有频率轴的图才覆写。"""
+
+    def clear_crosshair(self) -> None:
+        """别处的鼠标离开了。"""
 
     # ---- B14 E.2-6 全屏无损放大 ----
     def fullscreen_pixmap(self, dpi: int) -> QPixmap:
@@ -410,6 +418,95 @@ WATERFALL_POINTS = 300
 #: 3D 瀑布图的**时间切片数**（画多少片）。44 片在 1440 宽窗上片间距 <1px 的
 #: 视觉融合临界；再多只是白增多边形（实测每片 300 点，44 片 draw 仍 < 拖拽节流窗）。
 WATERFALL_SLICES = 44
+
+#: **参考线**线宽。比数据曲线（1.5–2px）细——Tufte 的规矩是数据墨必须
+#: 比参考墨重；把参考线加粗到 1.5 会反过来压住数据。
+#: ⚠ 特意做成**常量**而不是字面量：判据 `test_data_curves_are_thick_enough`
+#: 扫 `lw=<数字>` 的调用点，常量不会误触（注释会被扫描器去掉——那个坑本项目
+#: 踩过三次，所以"声明自己的类别"必须写成代码，不能写成注释）。
+REF_LINE_W = 1.0
+
+
+# --------------------------------------------------------------------- 跨画布游标
+class CursorBus:
+    """B14 补强⑤：**跨画布频率游标**（竞品的多窗联动）。
+
+    在一张图上指一个频率，另外几张同步画出参考线——看"这条 8 kHz 的峰
+    在瀑布里从什么时候开始冒"必须来回扫三张图，这道手续本该由机器做。
+
+    ## 为什么是"总线 + 各自实现"，不是"共享一条 Line2D"
+
+    三张图的频率轴**互不相同**（曲线是 x 对数、频谱图是 y 对数、瀑布是 3D x），
+    画一条线的语法都不一样；而且各自的刷新路径也不一样（曲线走 blit 快路、
+    频谱图走 draw_idle、瀑布要节流整帧重画）。所以总线只负责**传播频率**，
+    怎么画由每张图自己决定——`set_crosshair(hz)` 是画布的接口，默认空操作。
+
+    ## 性能边界（诚实记账）
+
+    瀑布图是 3D：一条线也要整帧重画（本机 257 ms/帧），所以它**节流到 40 ms**
+    才刷一次，跟拖拽同一个量级。2D 两张不节流（blit ~1 ms / draw_idle）。
+    没有"既全图联动又零成本"的方案——3D 联动就是贵，节流是唯一诚实解。
+
+    ## 订阅者的生命周期（**这是一条真 bug 的修复**）
+
+    第一版只往列表里 `append`，从不退订。后果：画布被 `deleteLater()` 之后
+    仍然挂在总线上，下一次 `emit` 去调它的方法就撞
+    `RuntimeError: Internal C++ object already deleted`——**而且只在"先建过、
+    又关掉过一批画布"之后才复现**（单跑新测试看不出来，跑全量才炸）。
+    生产里对应的场景是：关一个文件窗口 → 再开一个 → 一悬停就崩。
+
+    两道防线，缺一不可：
+      ① **自动退订**：订阅时挂 `destroyed` 信号，C++ 对象一销毁就把自己摘掉；
+      ② **有效性过滤**：`emit` 时跳过 `shiboken6.isValid` 为假的对象。
+         只做 ① 不够——`destroyed` 是队列投递，信号发出与处理之间仍有窗口期。
+    """
+
+    def __init__(self):
+        self._subs: list = []
+
+    def subscribe(self, canvas) -> None:
+        self._subs.append(canvas)
+        try:
+            # ① 自动退订。用 weakref 比较身份，避免闭包**强引用**住画布
+            #    （那会让 `destroyed` 永远不触发——把自己要监听的对象救活了）。
+            import weakref
+            ref = weakref.ref(canvas)
+
+            def _drop(*_a, _r=ref, _self=self):
+                dead = _r()
+                if dead is not None:
+                    _self._subs = [c for c in _self._subs if c is not dead]
+
+            canvas.destroyed.connect(_drop)
+        except (AttributeError, TypeError):
+            pass        # 非 QObject（单元测试里的假画布）：靠 ② 兜底
+
+    def _alive(self) -> list:
+        """只返回 C++ 对象仍然有效的订阅者，顺手清掉死引用。"""
+        try:
+            import shiboken6
+        except ImportError:                 # 理论上不会发生（PySide6 自带）
+            return list(self._subs)
+        out = [cv for cv in self._subs if shiboken6.isValid(cv)]
+        if len(out) != len(self._subs):
+            self._subs = out
+        return out
+
+    def emit(self, hz: float, source) -> None:
+        """把频率广播给**除来源以外**的画布。"""
+        for cv in self._alive():
+            if cv is not source:
+                cv.set_crosshair(hz)
+
+    def clear(self, source) -> None:
+        for cv in self._alive():
+            if cv is not source:
+                cv.clear_crosshair()
+
+
+#: 进程级唯一总线。**故意不用 Qt 信号**：画布之间没有父子关系，信号要
+#: 先找个共同 QObject 当中介，而那正是"为了机制而加一层"的例子。
+CURSOR = CursorBus()
 
 
 def _hz_label(v: float) -> str:
@@ -615,8 +712,10 @@ class SpectrumCanvas(BaseCanvas):
             self._pan_by(frac)
             return
         if ev.inaxes is not self.ax or not self._has_data():
+            CURSOR.clear(self)          # B14 补强⑤：离开了 ⇒ 别处参考线收起来
             return
         self._set_hover(ev.xdata)
+        CURSOR.emit(float(ev.xdata), self)     # B14 补强⑤：广播给频谱图/瀑布
 
     def set_data(self, r):
         if r is not self.r:
@@ -644,6 +743,20 @@ class SpectrumCanvas(BaseCanvas):
             # 只重建那 3 个悬停图元，再把它们**补画到静态快照上**。
             self._hover_layer()
             self._blit()
+
+    # ---- B14 补强⑤：被别的画布驱动（复用同一条 blit 快路）----
+    def set_crosshair(self, hz: float) -> None:
+        """**别处**指到了某个频率 ⇒ 把自己的悬停线移到那儿。
+
+        直接复用 `_set_hover`：那条线本来就在 blit 快路上（~1 ms），
+        联动因此不引入新的成本。没有数据 / 频率非法 ⇒ 不收（不许画错）。
+        """
+        if not self._has_data() or hz is None or hz <= 0:
+            return
+        self._set_hover(float(hz))
+
+    def clear_crosshair(self) -> None:
+        self._set_hover(None)
 
     def _blit(self):
         """把悬停层补画到静态快照上，而不是重画整张图。
@@ -863,6 +976,7 @@ class SpectrogramCanvas(BaseCanvas):
         self._rs_key = None
         self._rs_cache = None
         self._cursor = None                     # B14 E.2-3 游标读数（时间/频率/dB）
+        self._xhair = None                      # B14 补强⑤：**别处**指过来的频率参考线
         # B14：dB 显示窗按**画布实例**持有（可被用户切 60/90/120）。
         # 类属性做不到——同一次会话里两张图画同一个文件也共享不了各自的窗。
         self.db_range = SPECTRO_DB_RANGE
@@ -886,6 +1000,8 @@ class SpectrogramCanvas(BaseCanvas):
             if self._cursor is not None:
                 self._cursor.set_visible(False)
                 self.draw_idle()
+            # B14 补强⑤：鼠标离开了 ⇒ 别处的参考线也该收（否则会一直挂在那儿）
+            CURSOR.clear(self)
             return
         t, f, _S = self.data
         fq = 10.0 ** float(ev.ydata)
@@ -903,6 +1019,34 @@ class SpectrogramCanvas(BaseCanvas):
             self._cursor.set_text(txt)
         self._cursor.set_visible(True)
         self.draw_idle()
+        # B14 补强⑤：把自己指到的频率广播出去（曲线/瀑布同步画参考线）
+        CURSOR.emit(fq, self)
+
+    def set_crosshair(self, hz: float) -> None:
+        """B14 补强⑤：**别处**（曲线 / 瀑布）指到了某个频率。
+
+        频率轴是对数的，参考线画在 log10(hz) 上。数据没渲染 / 频率落在轴外
+        ⇒ 不画（"不知道就说不知道"——画到轴外会被裁掉，看着像没生效）。
+        """
+        p = self.p
+        if p is None or not self.data or self._rs_cache is None:
+            return
+        _t, f, _S = self.data
+        if not (20.0 <= float(hz) < f[-1]):
+            return
+        y = math.log10(float(hz))
+        if self._xhair is None:
+            self._xhair = self.ax.axhline(y, color=p["accent"], lw=1.0, ls=(0, (4, 3)),
+                                          alpha=.9, zorder=4)
+        else:
+            self._xhair.set_ydata([y, y])
+            self._xhair.set_visible(True)
+        self.draw_idle()
+
+    def clear_crosshair(self) -> None:
+        if self._xhair is not None:
+            self._xhair.set_visible(False)
+            self.draw_idle()
 
     def set_data(self, r=None, data=None, msg=None):
         # 同一份数据（对象身份相同）再喂一次不必重画：`_load_view` 命中缓存时
@@ -1093,8 +1237,30 @@ class WaterfallCanvas(BaseCanvas):
         self._drag_timer = QTimer(self)
         self._drag_timer.setSingleShot(True)
         self._drag_timer.setInterval(self.DRAG_THROTTLE_MS)
+        # B14 补强⑤：联动参考线的节流计时器。**与拖拽分开**——两者会同时发生
+        # （一边拖旋转一边被别处指频率），共用一个计时器会互相把对方的帧吞掉。
+        self._xhz = None
+        self._x_timer = QTimer(self)
+        self._x_timer.setSingleShot(True)
+        self._x_timer.setInterval(self.DRAG_THROTTLE_MS)
+        self._x_timer.timeout.connect(self.redraw)
         self.mpl_connect("button_press_event", self._on_press)
         self.mpl_connect("motion_notify_event", self._on_drag)
+
+    def set_crosshair(self, hz: float) -> None:
+        """B14 补强⑤：**别处**指到了某个频率。
+
+        3D 里画一条"频率墙"的底边。代价说明：3D 加一条线也要整帧重画
+        （257 ms/帧），所以**节流到 40 ms**——与拖拽同量级。2D 两张不节流。
+        """
+        self._xhz = float(hz)
+        if not self._x_timer.isActive():
+            self._x_timer.start()
+
+    def clear_crosshair(self) -> None:
+        if self._xhz is not None:
+            self._xhz = None
+            self.redraw()
 
     def set_db_range(self, n: float):
         """切换 dB 显示窗（幂等）。换了窗：切片底面与 z 轴量程都跟着变。"""
@@ -1252,6 +1418,14 @@ class WaterfallCanvas(BaseCanvas):
         ax.text2D(.015, .90, "Δf ≈ %.3g Hz   Δt ≈ %.3g s" % (df, dt), transform=ax.transAxes,
                   color=p["text_faint"], fontsize=p['fs_tick'])
         ax.text2D(.86, .95, "拖拽旋转 · 双击复位 · F 全屏", transform=ax.transAxes, color=p["text_faint"], fontsize=p['fs_tick'])
+        # B14 补强⑤：**别处**指过来的频率 → 画一面"频率墙"（底边 + 顶边）。
+        # 只画两条边不画面：满幅半透明面会把背后的数据压掉，而参考线的职责
+        # 是"指位置"，不是"遮内容"。
+        if self._xhz is not None and lf[0] <= math.log10(self._xhz) <= lf[-1]:
+            lx = math.log10(self._xhz)
+            for z in (-self.db_range, 0.0):
+                ax.plot([lx, lx], [0, n], [z, z], color=p["accent"], lw=REF_LINE_W,
+                        alpha=.55, zorder=6)
         self.draw()
 
 

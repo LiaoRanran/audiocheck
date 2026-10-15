@@ -41,7 +41,7 @@ if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
 import numpy as np  # noqa: E402
-from PySide6.QtCore import QEvent, QPointF, Qt  # noqa: E402
+from PySide6.QtCore import QDeadlineTimer, QEvent, QEventLoop, QPointF, Qt  # noqa: E402
 from PySide6.QtGui import QMouseEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
@@ -337,6 +337,135 @@ class TestWaterfallDragIsThrottled(unittest.TestCase):
             Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
             Qt.KeyboardModifier.NoModifier))
         self.assertEqual(len(self.calls), 2, "松手要补一帧最终画面")
+
+
+def pump(ms: int = 60) -> None:
+    """走事件循环（本文件自己的版本；必须派发 DeferredDelete）。"""
+    deadline = QDeadlineTimer(int(ms))
+    while not deadline.hasExpired():
+        APP.processEvents(QEventLoop.AllEvents, 5)
+    APP.sendPostedEvents(None, QEvent.DeferredDelete)
+
+
+class TestCursorBus(unittest.TestCase):
+    """B14 补强⑤：跨画布频率游标（三图联动）的三条性质。
+
+    联动看着是个小功能，但它的失败方式全是**静默**的：线画到轴外被裁掉
+    （像没生效）、来源画布自己收到自己的广播（可能自激）、3D 那张每个鼠标
+    移动都触发 257 ms 重绘（越用越卡）。三条各钉一个。
+    """
+
+    def setUp(self):
+        import numpy as np
+
+        from audiocheck.ui import theme as T
+        from audiocheck.ui.charts import SpectrogramCanvas
+        pp = T.plot_palette(T.DARK.p, T.DARK)
+        f = np.geomspace(20, 20000, 800)
+        ff = np.linspace(0, 22050, 400)
+        S = (np.random.default_rng(1).standard_normal((400, 200)) * 10 - 60).astype("float32")
+        # curve 的**真实形态是 list-of-lists**（`core/engine.py:73` 为 JSON 友好
+        # 特意转成那样）。第一版这里传了 ndarray，`_has_data()` 的
+        # `bool(self.r.get("curve"))` 当场抛 "truth value of an array is
+        # ambiguous"——**是测试数据不真实**，不是生产代码的错。
+        self.curve = [[round(float(a), 1), round(float(b), 2)]
+                      for a, b in zip(f, -40 - 10 * np.log10(f / 20))]
+        # ⚠ **每条用例自建自拆**：第一版把画布建在 setUpClass 里，而本文件前一个
+        # 测试类已经 `deleteLater()` 过同名对象，本类再摸就撞
+        # "Internal C++ object already deleted"。
+        self.sg = SpectrogramCanvas()
+        self.sg.apply_theme(pp)
+        self.sg.set_data(None, (np.linspace(0, 20, 200), ff, S))
+        self.sg.resize(700, 420)
+        self.sg.show()
+        pump()
+
+    def tearDown(self):
+        self.sg.close()
+        self.sg.deleteLater()
+        pump()
+
+    def test_source_does_not_receive_its_own_broadcast(self):
+        """来源画布不能收到自己的广播（否则会自激 / 双重刷新）。
+
+        频谱图没有 `_hover` 字段，所以这里验**它自己的参考线不被自己点亮**
+        ——`set_crosshair` 是"别处指过来"的入口，来源就是它自己时不该画。
+        """
+        self.sg.clear_crosshair()
+        from audiocheck.ui.charts import CURSOR
+        CURSOR.emit(1000.0, self.sg)
+        self.assertTrue(self.sg._xhair is None or not self.sg._xhair.get_visible(),
+                        "频谱图收到了自己的广播——来源画布被漏过了")
+
+    def test_out_of_range_frequency_draws_nothing(self):
+        """频率落在轴外 ⇒ **不画**（画到轴外会被裁掉，看着像没生效）。"""
+        self.sg.set_crosshair(0.0)          # 20 Hz 以下：轴外
+        self.assertTrue(self.sg._xhair is None or not self.sg._xhair.get_visible(),
+                        "轴外频率画了参考线——它会被裁掉，等于骗人")
+        self.sg.set_crosshair(-5.0)
+        self.assertTrue(self.sg._xhair is None or not self.sg._xhair.get_visible())
+        self.sg.clear_crosshair()
+
+    def test_waterfall_crosshair_is_throttled_not_instant(self):
+        """3D 联动必须节流（一次 257 ms），且最终会落到那一帧上。"""
+        import numpy as np
+
+        from audiocheck.ui import theme as T
+        from audiocheck.ui.charts import WaterfallCanvas
+        wf = WaterfallCanvas()
+        wf.apply_theme(self.pp if hasattr(self, "pp") else T.plot_palette(T.DARK.p, T.DARK))
+        ff = np.linspace(0, 22050, 400)
+        S = (np.random.default_rng(1).standard_normal((400, 44)) * 10 - 60).astype("float32")
+        wf.set_data(None, (np.linspace(0, 25, 44), ff, S))
+        wf.resize(700, 420)
+        wf.show()
+        pump()
+        try:
+            for i in range(6):              # 6 次连续广播 = 一次快速拖动
+                wf.set_crosshair(1000.0 + i)
+            self.assertTrue(wf._x_timer.isActive(),
+                            "3D 联动没有节流——每次广播都会触发整帧重画（257 ms）")
+            self.assertEqual(wf._xhz, 1005.0, "节流不能不更新状态：最终必须是最新频率")
+        finally:
+            wf._xhz = None
+            wf._x_timer.stop()
+            wf.close()
+            wf.deleteLater()
+            pump()
+
+    def test_dead_subscriber_is_dropped_not_crashed_on(self):
+        """**订阅者生命周期**：画布删掉之后，总线不许再去调它。
+
+        第一版总线只 append 不退订 ⇒ 关掉一批画布后再广播就撞
+        `Internal C++ object already deleted`。这条 bug 只在"先建过又关掉过"
+        之后复现（单跑新用例看不见，跑全量才炸），所以必须**显式**建-删-广播。
+        """
+        import numpy as np
+
+        from audiocheck.ui import theme as T
+        from audiocheck.ui.charts import CURSOR, SpectrogramCanvas
+        pp = T.plot_palette(T.DARK.p, T.DARK)
+        doomed = SpectrogramCanvas()
+        doomed.apply_theme(pp)
+        ff = np.linspace(0, 22050, 400)
+        doomed.set_data(None, (np.linspace(0, 20, 200), ff,
+                               (np.random.default_rng(2).standard_normal((400, 200))
+                                * 10 - 60).astype("float32")))
+        doomed.show()
+        pump()
+        self.assertIn(doomed, CURSOR._subs, "新画布没被登记进总线")
+        doomed.close()
+        doomed.deleteLater()
+        pump()                       # 派发 DeferredDelete，C++ 对象真的没了
+        # 关键：这里**不许**抛 RuntimeError
+        CURSOR.emit(1000.0, self.sg)
+        self.assertNotIn(doomed, CURSOR._alive(), "死掉的订阅者还留在总线上")
+
+    def test_clear_hides_the_line(self):
+        self.sg.set_crosshair(1000.0)
+        self.assertIsNotNone(self.sg._xhair)
+        self.sg.clear_crosshair()
+        self.assertFalse(self.sg._xhair.get_visible(), "clear 之后参考线还挂着")
 
 
 if __name__ == "__main__":
