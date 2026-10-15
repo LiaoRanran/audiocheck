@@ -118,19 +118,19 @@ class TestCacheHygiene(unittest.TestCase):
         self.w.items[0]["result"] = result("C:/a.wav")
         self.w.items[1]["result"] = result("C:/b.wav")
         self.w.refresh_table()
-        self.w._cache[("C:/a.wav", "spec")] = (None, None, None)
-        self.w._cache[("C:/b.wav", "spec")] = (None, None, None)
+        self.w._cache[("C:/a.wav", "spec", 4096)] = (None, None, None)
+        self.w._cache[("C:/b.wav", "spec", 4096)] = (None, None, None)
         self.w.table.setCurrentCell(row_of(self.w, "C:/a.wav"), 0)
         self.w._remove_selected()
-        self.assertNotIn(("C:/a.wav", "spec"), self.w._cache, "被删条目的缓存没清")
-        self.assertIn(("C:/b.wav", "spec"), self.w._cache)
+        self.assertNotIn(("C:/a.wav", "spec", 4096), self.w._cache, "被删条目的缓存没清")
+        self.assertIn(("C:/b.wav", "spec", 4096), self.w._cache)
 
     def test_view_ready_ignores_removed_paths(self):
         self.w.enqueue(["C:/a.wav"])
         import numpy as np
         t, f = np.array([0.0, 1.0]), np.array([100.0, 1000.0])
         S = np.zeros((2, 2), dtype="float32")
-        self.w._view_ready("C:/gone.wav", "spec", t, f, S)
+        self.w._view_ready("C:/gone.wav", "spec", 4096, t, f, S)
         self.assertEqual(self.w._cache, {}, "已不存在的路径被写进了缓存")
 
 

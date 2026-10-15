@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..config import BAND_CN, BANDS, Thresholds
+from ..core import views
 from ..core.analyzers.metadata import brief as meta_brief
 from ..core.analyzers.metadata import tag_rows as meta_rows
 from ..core.engine import analyze as analyze_file
@@ -47,6 +48,7 @@ from . import motion
 from . import theme as T
 from .atmosphere import AtmosphereHost
 from .charts import (
+    DB_RANGE_CHOICES,
     BandCanvas,
     CompareCanvas,
     OverviewCanvas,
@@ -106,21 +108,26 @@ class AnalyzeWorker(QThread):
 
 
 class ViewWorker(QThread):
-    """频谱图 / 瀑布图的数据生产者。kind = "spec" | "wfall"。"""
+    """频谱图 / 瀑布图的数据生产者。kind = "spec" | "wfall"。
 
-    ready = Signal(str, str, object, object, object)
+    B14：带 `nperseg`——视图精度可调（见 `core.views.VIEW_NPERSEG_CHOICES`）。
+    **它必须进缓存键**：同一路径先按 4096 算一次、再切成 8192，若键里没有
+    nperseg，第二次会直接命中旧缓存 ⇒ 图上"换了没反应"（静默失效）。
+    """
 
-    def __init__(self, path, kind="spec"):
+    ready = Signal(str, str, int, object, object, object)
+
+    def __init__(self, path, kind="spec", nperseg=views.DEFAULT_VIEW_NPERSEG):
         super().__init__()
-        self.path, self.kind = path, kind
+        self.path, self.kind, self.nperseg = path, kind, int(nperseg)
 
     def run(self):
         try:
             fn = view_spectrogram if self.kind == "spec" else view_waterfall
-            t, f, S = fn(self.path)
-            self.ready.emit(self.path, self.kind, t, f, S)
+            t, f, S = fn(self.path, nperseg=self.nperseg)
+            self.ready.emit(self.path, self.kind, self.nperseg, t, f, S)
         except Exception:                                          # noqa: BLE001
-            self.ready.emit(self.path, self.kind, None, None, None)
+            self.ready.emit(self.path, self.kind, self.nperseg, None, None, None)
 
 
 class SettingsDialog(QDialog):
@@ -210,8 +217,10 @@ class MainWindow(FramelessWindow):
         self.worker: AnalyzeWorker | None = None
         # 按 (路径, 视图) 索引在跑的线程：既能持有引用防 GC，也顺手当"去重表"
         # 用（快速来回点选时同一个 STFT 不该算两遍）。
-        self._view_workers: dict[tuple[str, str], ViewWorker] = {}
-        self._cache: dict[tuple[str, str], tuple] = {}
+        self._view_workers: dict[tuple[str, str, int], ViewWorker] = {}
+        # 键 = (path, kind, nperseg)。**第三项是 FFT 档**：视图精度可调后，
+        # 同一路径在不同档下是两份不同的数据，键里少了它就会串（B14）。
+        self._cache: dict[tuple[str, str, int], tuple] = {}
         self._last_sig: tuple | None = None
         # 表格刷新的合并节流（见 _schedule_refresh）
         self._refresh_timer = QTimer(self)
@@ -273,6 +282,7 @@ class MainWindow(FramelessWindow):
         split.setSizes([560, 900])
         split.setStretchFactor(1, 1)
         self.split = split
+        rv.addWidget(self._view_precision(), 0)
         rv.addWidget(split, 1)
         root.addWidget(right, 1)
 
@@ -334,6 +344,95 @@ class MainWindow(FramelessWindow):
         self.cb_filter.currentIndexChanged.connect(self.refresh_table)
         h.addWidget(self.cb_filter)
         return bar
+
+    def _view_precision(self):
+        """B14：**视图精度**控件条（补强"不可调"那一条）。
+
+        两个离散档，都只影响**出图**：
+          * `FFT 窗长` —— 2048 / 4096 / 8192（Δf 21.5 / 10.77 / 5.38 Hz）
+          * `dB 窗`   —— 60 / 90 / 120（峰值下 N dB）
+
+        ⚠ **判定用的曲线不在管辖内**：`context.spectrum()` 固定 16384-FFT，
+        不提供切换。改了它，截止频率/频谱倾斜/假 Hi-Res 的结论会跟着变，
+        而结论必须可复算。这句话**写在界面上**，不是只写在代码注释里——
+        用户有权知道哪个钮能动结论、哪个不能。
+
+        ⚠ 换档必须清视图缓存：缓存键含 nperseg，但**已经缓存的旧档**不请出去，
+        切回来会命中旧的（看着像"没生效"）。`_load_view` 只在新键未命中时才重算。
+        """
+        bar = QWidget()
+        bar.setObjectName("ViewPrecision")
+        h = QHBoxLayout(bar)
+        h.setContentsMargins(16, 8, 16, 8)
+        h.setSpacing(8)
+
+        lab = QLabel("视图精度")
+        lab.setObjectName("Caption")
+        h.addWidget(lab)
+
+        self.cb_view_fft = QComboBox()
+        for n in views.VIEW_NPERSEG_CHOICES:
+            # Δf 按 44.1k 报；真实值随文件采样率变，图上有披露（charts.py 的
+            # "Δf ≈" 标注从数据直算），所以这里只给量级、不冒充精确值。
+            self.cb_view_fft.addItem("FFT %d · Δf≈%.1f Hz" % (n, 44100.0 / n), n)
+        self.cb_view_fft.setCurrentIndex(
+            list(views.VIEW_NPERSEG_CHOICES).index(views.DEFAULT_VIEW_NPERSEG))
+        self.cb_view_fft.currentIndexChanged.connect(self._on_view_fft)
+        h.addWidget(self.cb_view_fft)
+
+        self.cb_view_db = QComboBox()
+        for d in DB_RANGE_CHOICES:
+            self.cb_view_db.addItem("窗 %.0f dB" % d, d)
+        self.cb_view_db.setCurrentIndex(
+            list(DB_RANGE_CHOICES).index(90.0))
+        self.cb_view_db.currentIndexChanged.connect(self._on_view_db)
+        h.addWidget(self.cb_view_db)
+
+        note = QLabel("只影响频谱图 / 瀑布图；改它会动结论")
+        note.setObjectName("Caption")
+        # 中英交界走 `T.mix()`（插 U+2009）——那正是这行要守的规矩，
+        # 别用"拆两个标签"绕过去：混排间隙是排版问题，不是文案问题。
+        note2 = QLabel(T.mix("判定曲线锁定", "16384-FFT"))
+        note2.setObjectName("Caption")
+        h.addWidget(note)
+        h.addWidget(note2)
+        h.addStretch(1)
+        return bar
+
+    def _on_view_fft(self, _i):
+        np = self.cb_view_fft.currentData()
+        if np is None:
+            return
+        # 只清**视图**缓存（kind in spec/wfall）：判定曲线与其它视图的缓存不动。
+        for k in [k for k in self._cache if k[1] in ("spec", "wfall")]:
+            self._cache.pop(k, None)
+        self._reload_current_view()
+
+    def _on_view_db(self, _i):
+        d = self.cb_view_db.currentData()
+        if d is None:
+            return
+        # dB 窗在**渲染层**（画布实例），不必重算数据：换窗是重新裁剪同一份 S。
+        for cv in (self.cv_spectro, self.cv_wfall):
+            cv.set_db_range(float(d))
+
+    def _current_path(self) -> str | None:
+        """当前选中的那**一个**文件路径（多选 / 无选 → None）。
+
+        多选时 `on_select` 会切到对比图，那里不属于"当前文件"，取 None 是对的。
+        """
+        mine = [i for i in self.table.selectedItems() if i.column() == 0]
+        return mine[0].data(Qt.UserRole) if len(mine) == 1 else None
+
+    def _reload_current_view(self):
+        """把当前选中的那一项重新出图（换 FFT 档后调用）。"""
+        key = self.stack.currentIndex()
+        ik = self.VIEW_KEYS.index
+        if key not in (ik("spectro"), ik("waterfall")):
+            return
+        path = self._current_path()
+        if path:
+            self._load_view(path, "spec" if key == ik("spectro") else "wfall")
 
     def _file_panel(self):
         w = QWidget()
@@ -1113,7 +1212,9 @@ class MainWindow(FramelessWindow):
 
     def _load_view(self, path, kind):
         cv = self.cv_spectro if kind == "spec" else self.cv_wfall
-        key = (path, kind)
+        np_ = self.cb_view_fft.currentData()
+        np_ = views.DEFAULT_VIEW_NPERSEG if np_ is None else int(np_)
+        key = (path, kind, np_)
         if key in self._cache:
             cv.set_data(self.items[self._idx[path]]["result"] if path in self._idx else None,
                         self._cache[key])
@@ -1123,7 +1224,7 @@ class MainWindow(FramelessWindow):
         cv.set_data(None, None, "生成中…")
         # 必须持有引用：QThread 被 GC 而线程仍在跑会让进程硬崩。用字典按 key 存，
         # 线程结束后自己摘掉——既不残留线程对象，也天然去重。
-        w = ViewWorker(path, kind)
+        w = ViewWorker(path, kind, np_)
         self._view_workers[key] = w
         w.ready.connect(self._view_ready)
         w.finished.connect(lambda k=key: self._view_workers.pop(k, None))
@@ -1147,7 +1248,7 @@ class MainWindow(FramelessWindow):
         while len(self._cache) > 1 and self._cache_bytes() > self.CACHE_MAX_BYTES:
             self._cache.pop(next(iter(self._cache)))
 
-    def _view_ready(self, path, kind, t, f, S):
+    def _view_ready(self, path, kind, nperseg, t, f, S):
         if S is None:
             return
         # 条目可能已经被删掉（或整个列表被清空）而 worker 还在跑：这时结果
@@ -1155,7 +1256,7 @@ class MainWindow(FramelessWindow):
         # 同名路径误命中。**先确认这个路径还在列表里**。
         if path not in self._idx:
             return
-        self._cache[(path, kind)] = (t, f, S)
+        self._cache[(path, kind, nperseg)] = (t, f, S)
         self._evict_cache()
         mine = [i for i in self.table.selectedItems() if i.column() == 0]
         if len(mine) == 1 and mine[0].data(Qt.UserRole) == path:

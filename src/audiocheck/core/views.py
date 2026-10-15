@@ -75,20 +75,51 @@ def _read(path: str, fs: int, total: int, nperseg: int, max_seconds: float | Non
     return x
 
 
-def spectrogram(path: str, nperseg: int = 4096, hop: int = 3072, max_cols: int = 900,
-                max_seconds: float | None = None):
-    """整曲 STFT，返回 (t, f, S_db)。列数超限时**峰值保持**抽稀。"""
+#: **视图** STFT 的可选窗长（`nperseg`）。B14：补强"不可调"这条（竞品 Spek 提供
+#: 1024/2048/4096/8192 四档）。只列三档，理由写清楚：
+#:   2048 → Δf 21.5 Hz  时间更细（瞬态/咔哒声的毛刺看得见）
+#:   4096 → Δf 10.77 Hz **默认**：经典权衡点（时间/频率各让一半）
+#:   8192 → Δf 5.38 Hz  频率更细（砖墙边缘、陷波的边缘更锐）
+#:
+#: ⚠ **这里只管出图**。`context.spectrum()`（喂判定的曲线，16384-FFT）**不给调**：
+#: 改了它，截止频率/频谱倾斜/假 Hi-Res 的结论就跟着变，而结论必须可复算。
+#: 一个是"看多少"，一个是"凭什么判"——后者必须锁死。
+VIEW_NPERSEG_CHOICES = (2048, 4096, 8192)
+
+#: 默认窗长 = 经典权衡点。
+DEFAULT_VIEW_NPERSEG = 4096
+
+
+def _hop_for(nperseg: int) -> int:
+    """75% 重叠（`hop = 3/4 · nperseg`）——时频分析的惯例重叠量。
+
+    **阴影随 nperseg 派生，不独立设**：否则调大窗长时重叠比例会悄悄变小
+    （比如仍用 3072 配 8192），时间平滑度跟着变，而用户以为自己只改了一件事。
+    """
+    return max(1, int(nperseg * 3 // 4))
+
+
+def spectrogram(path: str, nperseg: int = DEFAULT_VIEW_NPERSEG, hop: int | None = None,
+                max_cols: int = 900, max_seconds: float | None = None):
+    """整曲 STFT，返回 (t, f, S_db)。列数超限时**峰值保持**抽稀。
+
+    `nperseg` 见 `VIEW_NPERSEG_CHOICES`（只影响出图，不影响判定）。
+    """
     info = sf.info(path)
     fs, total = info.samplerate, info.frames
     x = _read(path, fs, total, nperseg, max_seconds)
-    f, t, S = _stft_power(x, fs, nperseg, hop)
+    f, t, S = _stft_power(x, fs, nperseg, hop or _hop_for(nperseg))
     S, t = _peak_hold(S, t, max_cols)
     return t, f, _to_db(S)
 
 
-def waterfall(path: str, n_slices: int = 44, nperseg: int = 4096,
+def waterfall(path: str, n_slices: int = 44, nperseg: int = DEFAULT_VIEW_NPERSEG,
               max_seconds: float | None = None):
-    """3D 瀑布图数据：沿时间取 n_slices 条谱线（整曲覆盖）。"""
+    """3D 瀑布图数据：沿时间取 n_slices 条谱线（整曲覆盖）。
+
+    窗长**沿时间铺开**：`hop = len / n_slices`，让 n_slices 片覆盖整曲
+    （而不是头 n_slices 个 hop）。`nperseg` 见 `VIEW_NPERSEG_CHOICES`。
+    """
     info = sf.info(path)
     fs, total = info.samplerate, info.frames
     x = _read(path, fs, total, nperseg, max_seconds)

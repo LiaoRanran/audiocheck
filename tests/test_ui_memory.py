@@ -190,11 +190,11 @@ class TestViewCacheIsBounded(unittest.TestCase):
         self._register(["/mem_%d.wav" % i for i in range(12)])
         for i in range(12):
             S = np.zeros((512, 256), dtype=np.float32) + i
-            w._view_ready("/mem_%d.wav" % i, "spec", t, f, S)
+            w._view_ready("/mem_%d.wav" % i, "spec", 4096, t, f, S)
             self.assertLessEqual(w._cache_bytes(), w.CACHE_MAX_BYTES,
                                  "加第 %d 份后缓存越过了字节预算" % i)
             self.assertGreaterEqual(len(w._cache), 1, "至少该留下一份可用的数据")
-        self.assertIn(("/mem_11.wav", "spec"), w._cache, "最新的那份不该被淘汰")
+        self.assertIn(("/mem_11.wav", "spec", 4096), w._cache, "最新的那份不该被淘汰")
 
     def test_fifo_order_drops_oldest_first(self):
         w = self.w
@@ -203,11 +203,28 @@ class TestViewCacheIsBounded(unittest.TestCase):
         t, f = np.zeros(256), np.zeros(512)
         self._register(["/fifo_%d.wav" % i for i in range(5)])
         for i in range(5):
-            w._view_ready("/fifo_%d.wav" % i, "spec", t, f,
+            w._view_ready("/fifo_%d.wav" % i, "spec", 4096, t, f,
                           np.zeros((512, 256), dtype=np.float32))
         keys = list(w._cache)
-        self.assertNotIn(("/fifo_0.wav", "spec"), keys, "应当先丢最旧的")
-        self.assertEqual(keys[-1], ("/fifo_4.wav", "spec"), "最新的一份必须还在")
+        self.assertNotIn(("/fifo_0.wav", "spec", 4096), keys, "应当先丢最旧的")
+        self.assertEqual(keys[-1], ("/fifo_4.wav", "spec", 4096), "最新的一份必须还在")
+
+    def test_different_fft_tiers_do_not_share_cache(self):
+        """B14：视图精度可调后，**同一路径不同 FFT 档是两份数据**。
+
+        键里少了 nperseg 的后果：先按 4096 算一次、切成 8192，第二次直接命中
+        旧缓存 ⇒ 图上"换了没反应"。这是静默失效，所以钉一条回归。
+        """
+        w = self.w
+        self._register(["/tier.wav"])
+        t, f = np.zeros(256), np.zeros(512)
+        w._view_ready("/tier.wav", "spec", 4096, t, f,
+                      np.zeros((512, 256), dtype=np.float32))
+        w._view_ready("/tier.wav", "spec", 8192, t, f,
+                      np.zeros((512, 256), dtype=np.float32))
+        self.assertEqual(len(w._cache), 2, "同路径不同 FFT 档必须各存一份")
+        self.assertIn(("/tier.wav", "spec", 4096), w._cache)
+        self.assertIn(("/tier.wav", "spec", 8192), w._cache)
 
     @classmethod
     def tearDownClass(cls):
@@ -230,7 +247,7 @@ class TestViewWorkersAreBounded(unittest.TestCase):
         w, p = self.w, os.path.join(tempfile.gettempdir(), "audiocheck_missing.wav")
         w._load_view(p, "spec")
         w._load_view(p, "spec")
-        self.assertEqual(list(w._view_workers), [(p, "spec")],
+        self.assertEqual(list(w._view_workers), [(p, "spec", 4096)],
                          "同一个 (文件, 视图) 起了多个线程：会白读一遍盘 + 白做一遍 STFT")
         self.assertTrue(drain(w), "线程没有结束")
         self.assertEqual(w._view_workers, {}, "线程跑完后没从登记表摘掉")
@@ -246,7 +263,7 @@ class TestViewWorkersAreBounded(unittest.TestCase):
         self.assertEqual(w._view_workers, {},
                          "总览页不该为频谱图/瀑布图起线程")
         w._navigate("spectro")
-        self.assertEqual(list(w._view_workers), [(p, "spec")],
+        self.assertEqual(list(w._view_workers), [(p, "spec", 4096)],
                          "切到频谱图页时应当补算 spec")
         drain(w)
 

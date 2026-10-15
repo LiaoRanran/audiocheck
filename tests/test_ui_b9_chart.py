@@ -244,7 +244,10 @@ class TestRenderUnchanged(unittest.TestCase):
                       "频谱图的 interpolation 被动了——数据映射不是配色")
         # B14 精度：dB 窗改成**具名常量**（固定窗 = 跨文件可比，专业软件通行做法）
         self.assertRegex(code, r"SPECTRO_DB_RANGE\s*=\s*90")
-        self.assertRegex(code, r"vmin=-SPECTRO_DB_RANGE\b")
+        # B14：窗按**画布实例**持有（用户可切 60/90/120），所以字面量是
+        # `-self.db_range` 而不是 `-SPECTRO_DB_RANGE`。默认值相等的断言在
+        # `TestDbRangeIsPerCanvasInstance`（构造画布，不是扫源码）。
+        self.assertRegex(code, r"vmin=-self\.db_range\b")
         self.assertRegex(code, r"vmax=0\b")
 
     def test_no_default_matplotlib_colormaps_left(self):
@@ -613,6 +616,49 @@ class TestAtmosphereCompositions(unittest.TestCase):
             self.assertTrue(a["file"], "%s 缺文件名锚" % rec["image"])
             self.assertTrue(a["verdict"], "%s 缺判定态锚" % rec["image"])
             self.assertTrue(a["hero"], "%s 缺 hero 锚（真实截止）" % rec["image"])
+
+
+class TestDbRangeIsPerCanvasInstance(unittest.TestCase):
+    """B14：dB 显示窗按**画布实例**持有，默认值必须等于具名常量。
+
+    为什么要按实例而不是类属性：同一次会话里两张图画同一个文件时，
+    类属性会让它们共享一个窗（改一张另一张跟着变）。而默认值必须是常量——
+    否则"跨文件可比"这个前提就没了（大家都在默认档上）。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.cv = C.SpectrogramCanvas()
+        cls.wf = C.WaterfallCanvas()
+
+    @classmethod
+    def tearDownClass(cls):
+        for cv in (cls.cv, cls.wf):
+            cv.close()
+            cv.deleteLater()
+        pump()
+
+    def test_default_equals_the_named_constant(self):
+        self.assertEqual(self.cv.db_range, C.SPECTRO_DB_RANGE)
+        self.assertEqual(self.wf.db_range, C.SPECTRO_DB_RANGE)
+
+    def test_two_instances_are_independent(self):
+        self.cv.set_db_range(60.0)
+        try:
+            self.assertEqual(self.wf.db_range, C.SPECTRO_DB_RANGE,
+                             "改一张画布的窗影响了另一张——是类属性不是实例属性")
+            # 幂等：同值再调不该改变状态
+            self.wf.set_db_range(C.SPECTRO_DB_RANGE)
+            self.assertEqual(self.wf.db_range, C.SPECTRO_DB_RANGE)
+        finally:
+            self.cv.set_db_range(C.SPECTRO_DB_RANGE)
+
+    def test_only_offered_choices_are_valid(self):
+        """窗口档位是**离散**的（60/90/120）：连续滑条会让"跨文件可比"变成空话。"""
+        for d in C.DB_RANGE_CHOICES:
+            self.wf.set_db_range(float(d))
+            self.assertEqual(self.wf.db_range, float(d))
+        self.wf.set_db_range(C.SPECTRO_DB_RANGE)
 
 
 class TestSpectroColormapPerceptualNorms(unittest.TestCase):

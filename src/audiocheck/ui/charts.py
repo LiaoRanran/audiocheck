@@ -385,13 +385,21 @@ class BaseCanvas(FigureCanvasQTAgg):
 #: 但比原始的 2049 行少 5.7 倍，这正是 imshow 比 pcolormesh 快的主要来源。
 RESAMPLE_ROWS = 360
 
-#: 频谱图 / 瀑布图的 dB 显示窗（相对峰值）。
+#: 频谱图 / 瀑布图的 dB 显示窗（相对峰值）——**默认值**。
 #:
-#: **固定窗，不是每文件自适应**——这是专业软件的通行做法，理由是可**跨文件比较**：
-#: 自适应窗会让"两张看着差不多亮"的图其实量纲不同（一张 40dB 窗、一张 90dB 窗），
-#: 肉眼分不出、结论就错。数据在画之前做了 `S - nanmax(S)`（峰值归一到 0 dB），
-#: 所以窗就是"**峰值下 N dB**"。90 dB 覆盖 CD 级动态范围（16bit 理论 96 dB）的绝大部分。
+#: **不要做成"每文件自适应"**——那是看起来聪明的错：自适应窗会让"两张看着差不多亮"
+#: 的图其实量纲不同（一张 40dB 窗、一张 90dB 窗），肉眼分不出、结论就错。
+#: 数据在画之前做了 `S - nanmax(S)`（峰值归一到 0 dB），所以窗就是"**峰值下 N dB**"。
+#: 90 dB 覆盖 CD 级动态范围（16bit 理论 96 dB）的绝大部分。
+#:
+#: B14：窗**可由用户切换**（60/90/120），因为显示窗不参与判定——判定读的是
+#: `context.spectrum()`，与这里的窗无关。**但默认必须是 90**，且切换要留下痕迹
+#: （见 `SpectrogramCanvas.set_db_range`：把当前窗画在色条标签上）。
 SPECTRO_DB_RANGE = 90.0
+
+#: 可选的 dB 显示窗（dB）。只有这几个——不是一个滑条：离散档让"跨文件可比"
+#: 仍然是可说的（大家默认都在 90，要偏离是有意识的、看得见的）。
+DB_RANGE_CHOICES = (60.0, 90.0, 120.0)
 
 #: 纵轴刻度（Hz）
 TICKS_HZ = (20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000)
@@ -855,7 +863,20 @@ class SpectrogramCanvas(BaseCanvas):
         self._rs_key = None
         self._rs_cache = None
         self._cursor = None                     # B14 E.2-3 游标读数（时间/频率/dB）
+        # B14：dB 显示窗按**画布实例**持有（可被用户切 60/90/120）。
+        # 类属性做不到——同一次会话里两张图画同一个文件也共享不了各自的窗。
+        self.db_range = SPECTRO_DB_RANGE
         self.mpl_connect("motion_notify_event", self._on_hover)
+
+    def set_db_range(self, n: float):
+        """切换 dB 显示窗。**幂等**：同值再调不重画。
+
+        换了窗必须重画：窗变了，色条量程、`_rs_cache` 的裁剪界、游标读数全跟着变。
+        """
+        if abs(n - self.db_range) < 1e-9:
+            return
+        self.db_range = float(n)
+        self.redraw_if_visible()
 
     def _on_hover(self, ev):
         """B14 E.2-3：鼠标处读数。**不知道就说不知道**（数据没渲染/不在轴内 → 藏起）。"""
@@ -917,12 +938,14 @@ class SpectrogramCanvas(BaseCanvas):
         t, f, S = self.data
         # 重采样结果按数据身份缓存：换肤、切页会反复重画**同一份**数据，
         # 而重采样是 2049→360 行的插值，不缓存等于每次白算一遍。
-        key = (id(S), RESAMPLE_ROWS, len(t))
+        # ⚠ 键必须含 db_range：换了窗，裁剪界就变，缓存不复用（否则 60dB 窗
+        #    会画出 90dB 缓存的数据——看起来"换了没反应"，实则是旧数据）。
+        key = (id(S), RESAMPLE_ROWS, len(t), self.db_range)
         if self._rs_key != key:
             self._rs_cache = np.clip(
                 _resample_rows(S - np.nanmax(S), f, np.geomspace(20.0, f[-1],
                                                                  RESAMPLE_ROWS)),
-                -SPECTRO_DB_RANGE, 0.0)
+                -self.db_range, 0.0)
             self._rs_key = key
         db = self._rs_cache
         # **对数频轴重采样 + imshow**，替代 `pcolormesh` + 对数轴。
@@ -933,7 +956,7 @@ class SpectrogramCanvas(BaseCanvas):
         # 代价只在"频域采样密度"上（360 行 ≈ 每 1/24 倍频程一行，够读）。
         mesh = ax.imshow(db, aspect="auto", origin="lower",
                          extent=(t[0], t[-1], math.log10(20.0), math.log10(f[-1])),
-                         cmap=spectro_cmap(), vmin=-SPECTRO_DB_RANGE, vmax=0.0, interpolation="nearest",
+                         cmap=spectro_cmap(), vmin=-self.db_range, vmax=0.0, interpolation="nearest",
                          zorder=1)
         ax.set_ylim(math.log10(20.0), math.log10(f[-1]))
         ax.grid(False)
@@ -978,7 +1001,10 @@ class SpectrogramCanvas(BaseCanvas):
         cb = self._cbar
         cb.ax.tick_params(colors=p["text_faint"], labelsize=p['fs_tick'])
         cb.outline.set_edgecolor(p["border"])
-        cb.set_label("dB", color=p["text_faint"], fontsize=p['fs_tick'])
+        # B14：把**当前窗**写进色条标签——否则"看着比那张暗"分不清是内容差异
+        # 还是窗不同（这正是我们不肯做自适应窗的理由：量纲必须说得出来）。
+        cb.set_label("dB（峰值下 %.0f）" % self.db_range,
+                     color=p["text_faint"], fontsize=p['fs_tick'])
 
 
 # --------------------------------------------------------------------- 频段能量
@@ -1056,6 +1082,8 @@ class WaterfallCanvas(BaseCanvas):
         self._msg = "选择条目后自动生成"
         self._elev, self._azim = 26, -58
         self._elev0, self._azim0 = 26, -58      # 复位目标（B14 E.2-5）
+        # B14：dB 显示窗按**画布实例**持有（与频谱图同一套控件驱动）。
+        self.db_range = SPECTRO_DB_RANGE
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._drag = None
         # 拖拽节流：3D 重绘在本机实测 367 ms/帧（2.7 fps），不节流的话
@@ -1067,6 +1095,13 @@ class WaterfallCanvas(BaseCanvas):
         self._drag_timer.setInterval(self.DRAG_THROTTLE_MS)
         self.mpl_connect("button_press_event", self._on_press)
         self.mpl_connect("motion_notify_event", self._on_drag)
+
+    def set_db_range(self, n: float):
+        """切换 dB 显示窗（幂等）。换了窗：切片底面与 z 轴量程都跟着变。"""
+        if abs(n - self.db_range) < 1e-9:
+            return
+        self.db_range = float(n)
+        self.redraw_if_visible()
 
     def set_data(self, r=None, data=None, msg=None):
         same = (r is self.r and data is self.data
@@ -1164,8 +1199,8 @@ class WaterfallCanvas(BaseCanvas):
         verts, facecols = [], []
         for i in idxs:
             u = i / max(1, n - 1)
-            v = ([(lf[0], -SPECTRO_DB_RANGE)] + list(zip(lf, db[:, i]))
-                 + [(lf[-1], -SPECTRO_DB_RANGE)])
+            v = ([(lf[0], -self.db_range)] + list(zip(lf, db[:, i]))
+                 + [(lf[-1], -self.db_range)])
             verts.append(v)
             col = cmap(0.10 + 0.82 * u)
             fog = 0.34 * (1.0 - u)               # 远端向背景收敛（大气透视）
@@ -1183,7 +1218,7 @@ class WaterfallCanvas(BaseCanvas):
             ax.plot(lf, db[:, i], zs=i, zdir="y",
                     color=(float(rc[0]), float(rc[1]), float(rc[2])),
                     lw=0.8, alpha=0.34 + 0.56 * u, solid_capstyle="round")
-        ax.set_zlim(-90, 0)
+        ax.set_zlim(-self.db_range, 0)
         ax.set_ylim(0, n)
         ax.set_xlim(lf[0], lf[-1])
         try:
