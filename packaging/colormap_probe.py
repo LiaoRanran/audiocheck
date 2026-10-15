@@ -152,6 +152,51 @@ def _fmt(r: dict) -> str:
                r["dE_cvd_min"], r["dE_cvd_mean"], "有" if r["dE_cvd_mono"] else "**无**"))
 
 
+def measure_diverging(name: str, rgba: np.ndarray) -> dict:
+    """测**发散色图**（相位场用）。判据与顺序色图不同，见下面的说明。
+
+    发散色图的中点是"零点"，明度天然非单调（两端深、中间浅），
+    所以**不能**套顺序色图那三条。它的判据是：
+
+      ① **两臂各自单调**：|ρ| 越大越深（否则"有多反常"读不出来）；
+      ② **中点最亮**：ρ≈0 是近白中性，不能是某一臂的浅色（否则零点读不出来）；
+      ③ **高彩只在一臂**：整支色图的高彩（C ≥ 0.05）只许出现在一侧——
+         两臂都高彩会让两个色块抢注意力（"哪里反相"要一个个比），
+         且把整屏高彩面积推爆配额（实测 45%）、引入第二色相族。
+    """
+    tab = np.asarray(rgba, dtype=float).reshape(-1, 4)
+    idx = np.clip((np.linspace(0.0, 1.0, N) * (len(tab) - 1)).astype(int), 0, len(tab) - 1)
+    cols = tab[idx][:, :3]
+    lab = rgb_to_lab(cols)
+    L = lab[:, 0]
+    mid = len(L) // 2
+    # 两臂单调：从两端向中点，L 必须单调上升（越靠近零点越亮）
+    neg_mono = bool(np.all(np.diff(L[:mid + 1]) > 0.0))      # -1 → 0：变亮
+    pos_mono = bool(np.all(np.diff(L[mid:]) < 0.0))          # 0 → +1：变暗
+    # ⚠ 彩度必须用**项目的 OKLCH 口径**，不能用 CIELAB 的 C：
+    # 本项目的"高彩"门限是 OKLCH C ≥ 0.05，而 CIELAB C 的同一档约在 15–16，
+    # 用 5.0 当门限会把"极低彩"整段误判成高彩（第一版就这么错了）。
+    from audiocheck.ui.palette import srgb_to_oklch
+    okc = np.array([srgb_to_oklch("#%02x%02x%02x" % tuple(
+        int(round(min(1.0, max(0.0, v)) * 255)) for v in row)) for row in cols])
+    C = okc[:, 1]
+    high = C >= 0.05                                          # 与 hue_family 同一门限
+    neg_hi, pos_hi = int(high[:mid].sum()), int(high[mid:].sum())
+    return dict(name=name, neg_mono=neg_mono, pos_mono=pos_mono,
+                mid_is_lightest=bool(abs(int(L.argmax()) - mid) <= 1),
+                L_mid=float(L[mid]), neg_high=neg_hi, pos_high=pos_hi,
+                C_max_neg=float(C[:mid].max()), C_max_pos=float(C[mid:].max()))
+
+
+def _fmt_div(r: dict) -> str:
+    return ("%-16s 两臂单调 负=%-5s 正=%-5s ｜ 中点最亮=%-5s (L*=%.0f) ｜ "
+            "高彩档 负 %d / 正 %d（C 上限 负 %.3f 正 %.3f）"
+            % (r["name"], "有" if r["neg_mono"] else "**无**",
+               "有" if r["pos_mono"] else "**无**",
+               "是" if r["mid_is_lightest"] else "**否**", r["L_mid"],
+               r["neg_high"], r["pos_high"], r["C_max_neg"], r["C_max_pos"]))
+
+
 def main() -> int:
     import argparse
 
@@ -228,6 +273,27 @@ def main() -> int:
         return 1 if a.strict else 0
     print("\n结论：inferno 三条判据全过（明度单调 0→98 / ΔE CV %.3f ≤ 0.40 / "
           "CVD 明度顺序单调）。" % ours["dE_cv"])
+
+    # ---- 发散色图（相位场）：判据不同，单独测 ----
+    print("\n发散色图（相位场）· 判据 = 两臂各自单调 + 中点最亮 + 高彩只在一臂")
+    print("-" * 118)
+    div = measure_diverging("phase(本项目)", C.phase_cmap()(np.linspace(0, 1, 256)))
+    print(_fmt_div(div))
+    print("-" * 118)
+    dprobs = []
+    if not div["neg_mono"]:
+        dprobs.append("负臂（反相）明度非单调")
+    if not div["pos_mono"]:
+        dprobs.append("正臂（同相）明度非单调")
+    if not div["mid_is_lightest"]:
+        dprobs.append("中点不是最亮的（零点读不出来）")
+    if div["pos_high"] > 0:
+        dprobs.append("正臂出现高彩档 %d 个——两臂抢注意力，且会推爆高彩面积配额"
+                      % div["pos_high"])
+    if dprobs:
+        print("结论：**相位场色图不合格** → " + "；".join(dprobs))
+        return 1 if a.strict else 0
+    print("结论：相位场色图三条全过（两臂单调 / 中点最亮 / 高彩只在反相臂）。")
     return 0
 
 
