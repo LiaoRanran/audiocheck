@@ -315,6 +315,10 @@ TICKS_HZ = (20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000)
 #: 3D 瀑布图**每条谱线的频点数**（对数等距）。300 ≈ 每 1/12 倍频程一点。
 WATERFALL_POINTS = 300
 
+#: 3D 瀑布图的**时间切片数**（画多少片）。44 片在 1440 宽窗上片间距 <1px 的
+#: 视觉融合临界；再多只是白增多边形（实测每片 300 点，44 片 draw 仍 < 拖拽节流窗）。
+WATERFALL_SLICES = 44
+
 
 def _hz_label(v: float) -> str:
     return ("%gk" % (v / 1000)) if v >= 1000 else "%g" % v
@@ -1063,10 +1067,15 @@ class WaterfallCanvas(BaseCanvas):
         lf = np.log10(fl)
         n = db.shape[1]
         cmap = spectro_cmap()
-        # B14：**填充带状切片**（PolyCollection）——原来是细线，没有立体/深度感；
-        # 填充后每片是"实体"，远近叠起来才有瀑布的纵深。
         from matplotlib.collections import PolyCollection
-        step = max(1, n // 34)
+        from matplotlib.colors import to_rgb
+        bg = to_rgb(p["surface"])
+        # B14 E.2-1：**填充带状切片 + 深度雾 + 脊线高光**。
+        # 细线→填充片给了"实体"，但实体之间还是"平"的；补两条物理线索：
+        #   ① 深度雾：越远（时间越早）越向背景色收敛 ⇒ 大气透视，纵深可分；
+        #   ② 脊线高光：每片的上沿提亮描一条 ⇒ 顶面受光，片与片分层。
+        # 这是 3D 可视化里最省算力的立体线索（不引入 LightSource 的逐面法线计算）。
+        step = max(1, n // WATERFALL_SLICES)
         idxs = list(range(0, n, step))
         verts, facecols = [], []
         for i in idxs:
@@ -1074,12 +1083,22 @@ class WaterfallCanvas(BaseCanvas):
             v = ([(lf[0], -SPECTRO_DB_RANGE)] + list(zip(lf, db[:, i]))
                  + [(lf[-1], -SPECTRO_DB_RANGE)])
             verts.append(v)
-            # 深度线索：越靠后（时间越早）越淡越暗 → 纵深
             col = cmap(0.10 + 0.82 * u)
-            facecols.append((float(col[0]), float(col[1]), float(col[2]), 0.42 + 0.52 * u))
+            fog = 0.34 * (1.0 - u)               # 远端向背景收敛（大气透视）
+            facecols.append((float(col[0] * (1 - fog) + bg[0] * fog),
+                             float(col[1] * (1 - fog) + bg[1] * fog),
+                             float(col[2] * (1 - fog) + bg[2] * fog),
+                             0.40 + 0.55 * u))
         poly = PolyCollection(verts, facecolors=facecols,
-                              edgecolors=(1.0, 1.0, 1.0, 0.12), linewidths=0.3)
+                              edgecolors=(1.0, 1.0, 1.0, 0.10), linewidths=0.25)
         ax.add_collection3d(poly, zs=idxs, zdir="y")
+        # 脊线高光：每片上沿提亮描一条（顶面受光），立体感的主要来源
+        for i in idxs:
+            u = i / max(1, n - 1)
+            rc = cmap(min(1.0, 0.16 + 0.80 * u))
+            ax.plot(lf, db[:, i], zs=i, zdir="y",
+                    color=(float(rc[0]), float(rc[1]), float(rc[2])),
+                    lw=0.8, alpha=0.34 + 0.56 * u, solid_capstyle="round")
         ax.set_zlim(-90, 0)
         ax.set_ylim(0, n)
         ax.set_xlim(lf[0], lf[-1])
@@ -1108,7 +1127,12 @@ class WaterfallCanvas(BaseCanvas):
         cut = (self.r or {}).get("cutoff_khz")
         ax.text2D(.015, .95, ("真实截止 %.2f kHz" % cut) if cut else "", transform=ax.transAxes,
                   color=p["text_dim"], fontsize=p['fs_tick'])
-        ax.text2D(.86, .95, "拖拽旋转", transform=ax.transAxes, color=p["text_faint"], fontsize=p['fs_tick'])
+        # B14 精度：披露频率/时间分辨率（Δf、Δt 从数据直接算，与频谱图同口径）
+        df = float(f[1] - f[0]) if len(f) > 1 else 0.0
+        dt = float(t[1] - t[0]) if len(t) > 1 else 0.0
+        ax.text2D(.015, .90, "Δf ≈ %.3g Hz   Δt ≈ %.3g s" % (df, dt), transform=ax.transAxes,
+                  color=p["text_faint"], fontsize=p['fs_tick'])
+        ax.text2D(.86, .95, "拖拽旋转 · 双击复位", transform=ax.transAxes, color=p["text_faint"], fontsize=p['fs_tick'])
         self.draw()
 
 
