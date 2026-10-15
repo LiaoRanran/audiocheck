@@ -19,6 +19,8 @@ import numpy as np
 import soundfile as sf
 from scipy import signal
 
+from . import dsp
+
 
 def _to_db(S: np.ndarray) -> np.ndarray:
     """功率谱 → dB，并降到 float32。
@@ -131,16 +133,6 @@ def waterfall(path: str, n_slices: int = 44, nperseg: int = DEFAULT_VIEW_NPERSEG
     return t, f, _to_db(S)
 
 
-#: ρ 的**可定义门限**（dB）：当某一格上弱侧比强侧低过这个数，就认为该格
-#: **没有"两声道相位关系"可言**，ρ 置 0（中性）。
-#:
-#: ⚠ 这一条是必须的，不是保险：ρ = Re(L·conj(R)) / (|L|·|R|)。若某格只有左声道
-#: 有能量（比如右声道在该频率是静音），分母趋近 0，剩下的就是**数值噪声**——
-#: 实测会被推到 **±1.00**，于是图上一片"完全同相/反相"的假结论。
-#: 30 dB 是"弱侧已进入本底"的常用判据（与频谱分析里"信号高于本底"同量级）。
-PHASE_UNDEF_DB = 30.0
-
-
 def _peak_hold_abs(rho: np.ndarray, t: np.ndarray, max_cols: int):
     """列数超限时按**最极端值**抽稀（对相关系数场而言，"峰值保持"= 取 |ρ| 最大者）。
 
@@ -177,12 +169,8 @@ def stereo_field(path: str, nperseg: int = DEFAULT_VIEW_NPERSEG, hop: int | None
 
     ## 数学
 
-    对每声道取 STFT（复数）得 `L(f,t)`、`R(f,t)`，则
-
-        ρ(f,t) = Re(L·conj(R)) / (|L|·|R| + ε)
-
-    这是**归一化互谱的实部**，即两声道在该格的相位差余弦——只对**有能量**的格
-    有意义。能量接近 0 的格 ρ 无定义，用 ε 压住（图上会落在 0 附近，中性色）。
+    ρ = Re(L·conj(R)) / (|L|·|R|)，**实现在 `dsp.phase_field` 一处**——
+    判定层的 `dsp.anti_phase_scan` 用的是同一个函数（同一个数学不许有两份代码）。
 
     单声道文件返回 `(None, None, None)`：**没有"立体声相位"这回事**，
     不许拿单声道的 ρ≡+1 冒充"完美的同相立体声"。
@@ -193,25 +181,7 @@ def stereo_field(path: str, nperseg: int = DEFAULT_VIEW_NPERSEG, hop: int | None
     if x.shape[1] < 2:
         return None, None, None
     hop = hop or _hop_for(nperseg)
-    noverlap = max(0, nperseg - hop)
-    f = t = None
-    L = R = None
-    for ch, slot in ((0, "L"), (1, "R")):
-        f, t, Z = signal.stft(x[:, ch], fs=fs, nperseg=nperseg, noverlap=noverlap,
-                              window="hann")
-        Z = Z.astype(np.complex64, copy=False)      # 复数 128 → 64：内存减半
-        if slot == "L":
-            L = Z
-        else:
-            R = Z
-    denom = np.sqrt(np.abs(L) ** 2 * np.abs(R) ** 2) + 1e-30
-    rho = np.clip((L * np.conj(R)).real / denom, -1.0, 1.0)
-    # **可定义门限**（见 PHASE_UNDEF_DB）：弱侧比强侧低太多 ⇒ 该格没有相位关系，
-    # 置 0（中性）。不做这一步，分母只剩数值噪声时 ρ 会被推到 ±1——
-    # 图上会出现一片"完全同相"的假结论（实测：正交信号在 1 kHz 格上 ρ=-1.00）。
-    pL, pR = np.abs(L) ** 2, np.abs(R) ** 2
-    undef = np.minimum(pL, pR) < np.maximum(pL, pR) * (10.0 ** (-PHASE_UNDEF_DB / 10.0))
-    rho = np.where(undef, 0.0, rho).astype(np.float32)
+    f, t, rho = dsp.phase_field(x, fs, nperseg=nperseg, hop=hop)
     rho, t = _peak_hold_abs(rho, t, max_cols)
     return t, f, rho
 

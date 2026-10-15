@@ -201,6 +201,118 @@ def stereo_features(left: np.ndarray, right: np.ndarray) -> dict:
     }
 
 
+#: ρ 的**可定义门限**（dB）：某格上弱侧比强侧低过这个数，就认为该格
+#: **没有"两声道相位关系"可言**，ρ 置 0（中性）。
+#:
+#: ⚠ 这条是必须的，不是保险：ρ = Re(L·conj(R)) / (|L|·|R|)。若某格只有左声道
+#: 有能量（比如右声道在该频率是静音），分母趋近 0，剩下的是**数值噪声**——
+#: 实测会被推到 **±1.00**，于是图/指标会报出"这里完全反相"的假结论。
+#: 30 dB 是"弱侧已进入本底"的常用判据（与频谱分析里"信号高于本底"同量级）。
+PHASE_UNDEF_DB = 30.0
+
+#: 判"反相格"的相关系数门限：ρ < −0.5 ⇒ 相位差超过 120°，已经是明确反相。
+ANTI_RHO = -0.5
+
+#: 判"有能量"的门限（相对本帧峰值的 dB）。低于此的格不参与反相统计——
+#: 安静处的相位没有意义（且 ρ 不可靠）。
+ANTI_FLOOR_DB = 40.0
+
+
+def phase_field(x2d: np.ndarray, fs: int, nperseg: int = 4096, hop: int | None = None):
+    """**立体声相位场**：L/R 在每个时频格的相关系数 ρ ∈ [−1, 1]。
+
+    ρ(f,t) = Re(L·conj(R)) / (|L|·|R|)，即归一化互谱的实部、两声道相位差的余弦。
+    ρ=+1 同相 ｜ ρ≈0 不相关 ｜ ρ=−1 完全反相。
+
+    **唯一实现**：视图层（`core/views.stereo_field`）与判定层
+    （`anti_phase_scan`）都调这里——同一个数学不许有两份代码（本项目的老毛病）。
+    """
+    hop = hop or max(1, int(nperseg * 3 // 4))
+    noverlap = max(0, nperseg - hop)
+    f = t = None
+    L = R = None
+    for ch, slot in ((0, "L"), (1, "R")):
+        f, t, Z = signal.stft(x2d[:, ch], fs=fs, nperseg=nperseg, noverlap=noverlap,
+                              window="hann")
+        Z = Z.astype(np.complex64, copy=False)      # 复数 128 → 64：内存减半
+        if slot == "L":
+            L = Z
+        else:
+            R = Z
+    denom = np.sqrt(np.abs(L) ** 2 * np.abs(R) ** 2) + 1e-30
+    rho = np.clip((L * np.conj(R)).real / denom, -1.0, 1.0)
+    pL, pR = np.abs(L) ** 2, np.abs(R) ** 2
+    undef = np.minimum(pL, pR) < np.maximum(pL, pR) * (10.0 ** (-PHASE_UNDEF_DB / 10.0))
+    return f, t, np.where(undef, 0.0, rho).astype(np.float32)
+
+
+def anti_phase_scan(left: np.ndarray, right: np.ndarray, fs: int,
+                    nperseg: int = 4096) -> dict:
+    """**局部化反相检测**（自研）：全局相关度看不见的"只在某频段/某时段反相"。
+
+    ## 为什么需要它（`stereo_features` 的 `corr` 不够）
+
+    `corr` 是**整段一个数**。只要有一半时间是正常立体声，整段 `corr` 就能是正的——
+    而"某段人声被反相加倍""某频段被极性反转"这类缺陷，在全局数上**完全看不出来**：
+    它被平均值吃掉了。本函数把相位关系**按频率和时间分开看**。
+
+    ## 口径（不许含糊）
+
+    * 只在**有能量**的格上统计（高于本帧峰值下 `ANTI_FLOOR_DB`）——
+      安静处的相位没有意义；
+    * "反相格" = ρ < `ANTI_RHO`（−0.5，即相位差 > 120°）；
+    * ⚠ **判据用能量占比，不用格数占比**。这一条是**实测纠出来的**：
+      格数占比会被"边缘格"主导——实测真立体声（L=1 kHz / R=3 kHz，完全正常的
+      素材）格数占比报 **18%**，而反相**能量**只占 **0.02%**（−36.9 dB）。
+      那些格是泄漏裙边（一侧只有噪声，另一侧有信号，但失衡不足 30 dB 所以 ρ 仍被保留）。
+      **格数会说谎，能量不会**——所以对外只报能量口径，格数不再输出。
+
+    ## 返回
+
+      * `anti_energy_db`  反相格里的能量占**有能量格**总能量的比例（dB，越低越少）
+      * `anti_energy_pct` 同一件事的线性百分比（给人看）
+      * `anti_band_khz`   反相能量最集中的频点
+      * `anti_scope`      "无 / 轻微 / 明显 / 严重" —— 按能量占比分档，给判定用
+    """
+    if left is None or right is None or len(left) < nperseg * 2:
+        return {}
+    x = np.stack([np.asarray(left, dtype=np.float32), np.asarray(right, dtype=np.float32)],
+                 axis=1)
+    hop = max(1, int(nperseg * 3 // 4))
+    f, _t, rho = phase_field(x, fs, nperseg=nperseg, hop=hop)
+    if rho.size == 0:
+        return {}
+    _f2, _t2, ZL = signal.stft(x[:, 0], fs=fs, nperseg=nperseg,
+                               noverlap=max(0, nperseg - hop), window="hann")
+    _f3, _t3, ZR = signal.stft(x[:, 1], fs=fs, nperseg=nperseg,
+                               noverlap=max(0, nperseg - hop), window="hann")
+    power = (np.abs(ZL) ** 2 + np.abs(ZR) ** 2).astype(np.float64)
+    frame_peak = power.max(axis=0, keepdims=True) + 1e-30
+    active = power > frame_peak * (10.0 ** (-ANTI_FLOOR_DB / 10.0))
+    if not active.any():
+        return {"anti_energy_db": -120.0, "anti_energy_pct": 0.0,
+                "anti_band_khz": None, "anti_scope": "无"}
+    anti = active & (rho < ANTI_RHO)
+    tot_p = float(power[active].sum())
+    anti_p = float(power[anti].sum()) if anti.any() else 0.0
+    share = anti_p / (tot_p + 1e-30)
+    edb = 10.0 * np.log10(share + 1e-30)
+    band = None
+    if anti.any():
+        per_bin = (power * anti).sum(axis=1)
+        band = float(f[int(np.argmax(per_bin))] / 1000.0)
+    # 分档**只看能量占比**（格数不可靠，见 docstring）
+    scope = ("无" if share < 0.01 else
+             "轻微" if share < 0.10 else
+             "明显" if share < 0.50 else "严重")
+    return {
+        "anti_energy_db": round(float(edb), 1),
+        "anti_energy_pct": round(100.0 * share, 3),
+        "anti_band_khz": round(band, 2) if band is not None else None,
+        "anti_scope": scope,
+    }
+
+
 def dc_offset(path: str, channels: int, chunk: int = 1 << 20) -> dict:
     """直流偏移——会吃掉动态余量，是转码/母带环节的常见瑕疵。"""
     s = np.zeros(channels)
