@@ -615,5 +615,54 @@ class TestAtmosphereCompositions(unittest.TestCase):
             self.assertTrue(a["hero"], "%s 缺 hero 锚（真实截止）" % rec["image"])
 
 
+class TestSpectroColormapPerceptualNorms(unittest.TestCase):
+    """B14 E.2-1：频谱图色图必须过**感知均匀性**三条（不再是"引用别人的说法"）。
+
+    色图从粉白 D 换成 `inferno` 的理由写成了"感知均匀、明度单调"——
+    那是引用，不是本项目的测量。`packaging/colormap_probe.py` 把三条测出来
+    （CIEDE2000 自实现，不引入运行期依赖），这里把它钉成回归：
+
+      ① 明度单调（否则"变亮"会被读成"变弱"——假信号）；
+      ② ΔE 不均匀度 CV ≤ 0.40（CV 与采样步数无关，可辩护；
+         早先用"ΔE min > 2"是拍的：步数 64→128 就让 ΔE min 近乎减半，
+         而色图一个像素都没变——判据不许跟采样步数耦合）；
+      ③ CVD 下明度顺序仍单调（色盲用户读不了色相，读得了"越亮越响"）。
+
+    **反面参照同测**：`jet` 必须**不过**——它是"AI 味彩虹"，本项目不用。
+    如果哪天它反而过了，说明判据或实现坏了。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import colormap_probe
+        import numpy as np  # noqa: F401
+
+        cls.probe = colormap_probe
+        cls.ours = colormap_probe.measure(
+            "spectro", C.spectro_cmap()(np.linspace(0, 1, 256)))
+        import matplotlib
+        matplotlib.use("Agg")
+        cls.jet = colormap_probe.measure(
+            "jet", matplotlib.colormaps["jet"](np.linspace(0, 1, 256)))
+
+    def test_lightness_is_monotonic(self):
+        self.assertTrue(self.ours["mono"],
+                        "频谱图色图明度非单调——强信号会被读成弱信号（假信号）")
+
+    def test_delta_e_is_uniform_enough(self):
+        self.assertLessEqual(self.ours["dE_cv"], 0.40,
+                             "ΔE 不均匀（CV %.3f > 0.40）——有区间在'跳'、有区间在'糊'"
+                             % self.ours["dE_cv"])
+
+    def test_cvd_keeps_lightness_order(self):
+        self.assertTrue(self.ours["dE_cvd_mono"],
+                        "红绿色盲下明度顺序塌了——色盲用户读不出强弱")
+
+    def test_jet_is_the_negative_reference(self):
+        """`jet` 必须**不过**三条：它非感知均匀、明度非单调，本项目不用。"""
+        self.assertFalse(self.jet["mono"] or self.jet["dE_cvd_mono"],
+                         "jet 反而过了——判据或实现坏了")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
