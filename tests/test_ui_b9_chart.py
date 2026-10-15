@@ -712,3 +712,88 @@ class TestSpectroColormapPerceptualNorms(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestCompareGridMode(unittest.TestCase):
+    """B14 补强⑥：对比图的**并排（small multiples）**模式。
+
+    叠加与并排是两种读法：叠加读"差异有多细"，并排读"这一批里谁不合群"。
+    这里钉三件容易静默坏掉的事：
+      ① 切换**幂等**、且**单条时不进并排**（一张小图阵列没有意义）；
+      ② 网格轴**数量正确且有上限**（超过要说明，不许静默截断）；
+      ③ 切回叠加必须**把网格轴拆干净**——轴是最容易泄漏的图元
+         （本项目历史上的内存 bug 就是色条 Axes 每画一次多一个）。
+    """
+
+    @staticmethod
+    def _items(n, cut_base=16000):
+        import numpy as np
+        f = np.geomspace(20, 22050, 400)
+        out = []
+        for i in range(n):
+            cut = cut_base + i * 400
+            db = np.where(f < cut, -10 - 6 * np.log10(f / 20), -95.0)
+            out.append(({"file": "t%02d.wav" % i, "sr": 44100, "cutoff_hz": cut,
+                         "cutoff_khz": cut / 1000.0},
+                        [[float(a), float(b)] for a, b in zip(f, db)]))
+        return out
+
+    def setUp(self):
+        self.cv = C.CompareCanvas()
+        self.cv.apply_theme(T.plot_palette(T.DARK.p, T.DARK))
+        self.cv.resize(900, 520)
+        self.cv.show()
+        pump()
+
+    def tearDown(self):
+        self.cv.close()
+        self.cv.deleteLater()
+        pump()
+
+    def test_default_is_overlay(self):
+        self.assertEqual(self.cv.mode, "overlay")
+
+    def test_set_mode_is_idempotent_and_validated(self):
+        self.cv.set_mode("nonsense")          # 非法值：忽略，不抛
+        self.assertEqual(self.cv.mode, "overlay")
+        self.cv.set_mode("grid")
+        self.cv.set_mode("grid")              # 同值：幂等
+        self.assertEqual(self.cv.mode, "grid")
+
+    def test_single_item_stays_overlay(self):
+        """只有一条时不进并排——一张小图阵列没有意义（也省一次重建轴）。"""
+        self.cv.set_data(self._items(1))
+        self.cv.set_mode("grid")
+        pump()
+        self.assertEqual(len(self.cv._grid_axes), 0, "单条也进了并排模式")
+
+    def test_grid_axis_count_and_cap(self):
+        self.cv.set_data(self._items(4))
+        self.cv.set_mode("grid")
+        pump()
+        self.assertEqual(len(self.cv._grid_axes), 4)
+        # 超过上限必须**截断到上限**（并在图上写明，见下一条）
+        self.cv.set_data(self._items(C.CompareCanvas.GRID_MAX + 3))
+        pump()
+        self.assertEqual(len(self.cv._grid_axes), C.CompareCanvas.GRID_MAX)
+
+    def test_truncation_is_disclosed(self):
+        """超过上限时**必须写在图上**——不许静默截断（用户会以为那就是全部）。"""
+        self.cv.set_data(self._items(C.CompareCanvas.GRID_MAX + 3))
+        self.cv.set_mode("grid")
+        pump()
+        texts = [t.get_text() for t in self.cv.fig.texts]
+        self.assertTrue(any("仅显示前" in t for t in texts),
+                        "截断了但没说明：%r" % texts)
+
+    def test_switching_back_removes_grid_axes(self):
+        """★ 切回叠加必须把网格轴**拆干净**（轴泄漏是本项目的老病）。"""
+        self.cv.set_data(self._items(5))
+        self.cv.set_mode("grid")
+        pump()
+        self.assertEqual(len(self.cv._grid_axes), 5)
+        self.cv.set_mode("overlay")
+        pump()
+        self.assertEqual(self.cv._grid_axes, [], "网格轴没被拆掉（会一直累积）")
+        self.assertEqual(len(self.cv.fig.axes), 1,
+                         "切回叠加后 figure 里多于 1 个轴：有轴没拆干净")

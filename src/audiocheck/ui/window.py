@@ -346,7 +346,24 @@ class MainWindow(FramelessWindow):
         self.cb_filter.setMaximumWidth(112)
         self.cb_filter.currentIndexChanged.connect(self.refresh_table)
         h.addWidget(self.cb_filter)
+        # B14 补强⑥：对比页专属的"叠加 / 并排"切换。放在工具条而不是画布页里——
+        # 画布页直接是 `CompareCanvas`（stack 的第 6 页），外面套一层容器会把
+        # `VIEW_KEYS ↔ stack` 的映射判据从"类型相同"降级成"包含关系"，
+        # 那条判据正是用来抓"点元数据却显示对比图"的，不能削弱。
+        self.act_cmp = QPushButton("并排对比")
+        self.act_cmp.setObjectName("Ghost")
+        self.act_cmp.setCursor(Qt.PointingHandCursor)
+        self.act_cmp.setFixedHeight(32)
+        self.act_cmp.setVisible(False)
+        self.act_cmp.clicked.connect(self._toggle_cmp_mode)
+        h.addWidget(self.act_cmp)
         return bar
+
+    def _toggle_cmp_mode(self):
+        """在 叠加 / 并排 之间切换（幂等由 `set_mode` 保证）。"""
+        grid = self.cv_cmp.mode != "grid"
+        self.cv_cmp.set_mode("grid" if grid else "overlay")
+        self.act_cmp.setText("叠加对比" if grid else "并排对比")
 
     def _view_precision(self):
         """B14：**视图精度**控件条（补强"不可调"那一条）。
@@ -677,6 +694,8 @@ class MainWindow(FramelessWindow):
         if key in self.VIEW_KEYS:
             self.stack.setCurrentIndex(self.VIEW_KEYS.index(key))
             self.sidebar.set_active(key)
+            # 对比页才显示"叠加 / 并排"切换（别的页上没有意义，留着是噪音）
+            self.act_cmp.setVisible(key == "compare")
             motion.fade(self.stack.currentWidget(), self)
             self._load_visible_view()          # 切到频谱图/瀑布图时才补算数据
 

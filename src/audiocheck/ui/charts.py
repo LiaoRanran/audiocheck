@@ -1636,6 +1636,9 @@ class CompareCanvas(BaseCanvas):
         #: `_draw_end_labels` 之前就被别处读到（构造函数顺序不是接口）。
         self.end_labels = []
         self.direct_degraded = False
+        # B14 补强⑥：视图模式。"overlay" 叠加（默认）｜ "grid" 并排小图阵列。
+        self.mode = "overlay"
+        self._grid_axes: list = []
         # ---- 缩放 / 平移（与频谱曲线同一套逻辑，见 SpectrumCanvas）----
         self._full_x = (20.0, 24000.0)
         self._view_x = None            # None = 未缩放 / 数据刚换过（见 SpectrumCanvas）
@@ -1778,12 +1781,88 @@ class CompareCanvas(BaseCanvas):
                 self.draw_idle()
                 return
 
+    #: 并排模式每行最多几列。3 列在 900px 宽窗上每格约 290px——频谱曲线缩到
+    #: 290px 时仍看得出砖墙台阶在哪；4 列只剩约 210px，台阶开始糊。
+    GRID_COLS = 3
+    #: 并排模式最多画几张。超过就得**分页**（那是另一种交互），这里先给上限并
+    #: 在标题上写明"只画前 N 张"——**不许静默截断**（用户会以为这就是全部）。
+    GRID_MAX = 9
+
+    def set_mode(self, mode: str) -> None:
+        """切换 叠加 / 并排。**幂等**（同值不重画）。"""
+        if mode not in ("overlay", "grid") or mode == self.mode:
+            return
+        self.mode = mode
+        self.redraw_if_visible()
+
+    def _clear_grid(self) -> None:
+        for a in self._grid_axes:
+            a.remove()
+        self._grid_axes = []
+
+    def _redraw_grid(self, p) -> None:
+        """并排小图：**每个文件一张同轴小图**，扫一遍就能看出谁不一样。
+
+        与叠加的分工：叠加读"差异有多细"（能叠着比同一段频响），并排读
+        "这一批里谁不合群"（十几个文件时叠加会糊成一片）。
+        每格保留自己的截止标注，标题带文件名——**不需要图例**（图例是叠加的负担）。
+        """
+        self._clear_grid()
+        items = self.items[:self.GRID_MAX]
+        n = len(items)
+        cols = min(self.GRID_COLS, n)
+        rows = (n + cols - 1) // cols
+        for k, (r, cur) in enumerate(items):
+            ax = self.fig.add_subplot(rows, cols, k + 1)
+            self._grid_axes.append(ax)
+            arr = np.asarray(cur, dtype=float)
+            self._ax_style(ax, None, None)
+            top = float(np.percentile(arr[:, 1], 99.5))
+            # lw=1.5：小图里的曲线**也是数据曲线**，走同一条判据（1.5–2px）。
+            # 别因为"图小了"就调细——判据盯的是"数据墨够不够重"，与画布尺寸无关。
+            ax.semilogx(arr[:, 0], arr[:, 1] - top, lw=1.5, color=p["accent"],
+                        alpha=.95, zorder=3)
+            cut = r.get("cutoff_hz")
+            if cut:
+                ax.axvline(cut, color=p["text_dim"], lw=0.9, ls="--", alpha=.6, zorder=2)
+            ax.axhline(0, color=p["text_faint"], lw=.6, ls=":", zorder=1)
+            ax.set_xlim(20.0, max(float(r.get("sr", 48000)) / 2.0, 24000.0))
+            ax.set_ylim(-80, 8)
+            # 每格标题 = 文件名 + 真实截止（并排时图例没地方放，信息进标题）
+            nm = str(r.get("file") or "")[:22]
+            ck = r.get("cutoff_khz")
+            ax.set_title(("%s  ｜ %.1fk" % (nm, ck)) if ck else nm,
+                         color=p["text_dim"], fontsize=p["fs_micro"], pad=4)
+            # 轴标签只给**最左列 / 最下行**，否则 9 张图会挂 9 组标签把图压扁
+            if k % cols == 0:
+                ax.set_ylabel("dB", color=p["text_faint"], fontsize=p["fs_tick"],
+                              labelpad=2)
+            if k >= n - cols:
+                ax.set_xlabel("Hz", color=p["text_faint"], fontsize=p["fs_tick"],
+                              labelpad=2)
+            ax.tick_params(axis="both", labelsize=p["fs_tick"], pad=1)
+        if len(self.items) > self.GRID_MAX:
+            # **不许静默截断**：说清楚只画了前几张
+            self.fig.text(0.5, 0.005, "仅显示前 %d 张（共 %d 张）"
+                          % (self.GRID_MAX, len(self.items)),
+                          ha="center", va="bottom", color=p["text_faint"],
+                          fontsize=p["fs_tick"])
+        self.draw()
+
     def redraw(self):
         self._stale = False
         p, ax = self.p, self.ax
         if p is None:
             return
         self.fig.set_facecolor(p["surface"])
+        # B14 补强⑥：**并排（small multiples）**模式。叠加适合"几条可疑的放一起比"，
+        # 并排适合"十几个文件扫一遍看谁不一样"——后者叠起来会糊成一片。
+        if self.mode == "grid" and len(self.items) > 1:
+            self.ax.set_visible(False)
+            self._redraw_grid(p)
+            return
+        self._clear_grid()
+        self.ax.set_visible(True)
         ax.clear()
         self._ax_style(ax, "频率 Hz", "相对电平 dB")
         if not self.items:
