@@ -81,6 +81,10 @@ class TestProvenance(unittest.TestCase):
         """
         bad = []
         for f, (cat, src) in config.PROVENANCE.items():
+            # ⚠ **不许写"同上"**：看单行的人不该需要往上翻。实测抓到过 4 条。
+            if "同上" in src:
+                bad.append((f, "写了『同上』，依据不自足"))
+                continue
             if cat == "工程估计" and "无外部出处" not in src and "未取到" not in src \
                     and "本项目取值" not in src and "工程取值" not in src \
                     and "工程判断" not in src and "工程经验" not in src \
