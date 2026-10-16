@@ -379,9 +379,14 @@ class BaseCanvas(FigureCanvasQTAgg):
         # B14 E.2-6 宽敞：constrained layout 的默认留白偏紧（轴标题贴边）。
         # w_pad/h_pad 是**字体高度的倍数**（不是像素）；0.6/0.5 让轴标题与画布边
         # 之间有呼吸，同时不压缩数据墨占比。
+        # ⚠ 2026-10-17：改用 `get_layout_engine().set(...)`。`set_constrained_layout_pads`
+        #   在 matplotlib 里已标 PendingDeprecation（pytest 汇总里每次都刷一条
+        #   `PendingDeprecationWarning`——它不是 DeprecationWarning，不受 filterwarnings
+        #   的 `ignore::DeprecationWarning` 覆盖）。**口径不变**，只换写法。
         try:
-            self.fig.set_constrained_layout_pads(w_pad=0.6, h_pad=0.5,
-                                                 wspace=0.04, hspace=0.04)
+            _eng = self.fig.get_layout_engine()
+            if _eng is not None:
+                _eng.set(w_pad=0.6, h_pad=0.5, wspace=0.04, hspace=0.04)
         except (AttributeError, ValueError):
             pass
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)   # 收 F 键（全屏）
