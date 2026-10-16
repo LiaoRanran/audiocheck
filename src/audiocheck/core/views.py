@@ -20,6 +20,7 @@ import soundfile as sf
 from scipy import signal
 
 from . import dsp
+from .context import io_path
 
 
 def _to_db(S: np.ndarray) -> np.ndarray:
@@ -69,11 +70,15 @@ def _peak_hold(S: np.ndarray, t: np.ndarray, max_cols: int):
 
 
 def _read(path: str, fs: int, total: int, nperseg: int, max_seconds: float | None):
-    """读整曲（或 max_seconds 上限）的立体声；过短则整段。"""
+    """读整曲（或 max_seconds 上限）的立体声；过短则整段。
+
+    `io_path` 兜住 Windows 长路径（>260 字符）——`collect_files` 现在会收录它们，
+    这里若不补前缀，GUI 打开长路径文件时就会在 libsndfile 处报错。
+    """
     n = total if max_seconds is None else min(total, int(max_seconds * fs))
     if n < nperseg * 4:
         n = total
-    x, _ = sf.read(path, start=0, frames=n, dtype="float32", always_2d=True)
+    x, _ = sf.read(io_path(path), start=0, frames=n, dtype="float32", always_2d=True)
     return x
 
 
@@ -173,7 +178,7 @@ def spectrogram(path: str, nperseg: int = DEFAULT_VIEW_NPERSEG, hop: int | None 
     **只动视图 STFT**：判定曲线（16384 锁死）走 `context.spectrum()`，与本处
     两套独立参数、互不影响。
     """
-    info = sf.info(path)
+    info = sf.info(io_path(path))
     fs, total = info.samplerate, info.frames
     x = _read(path, fs, total, nperseg, max_seconds)
     if dual_resolution and int(nperseg) < DUAL_RES_NPERSEG:
@@ -191,7 +196,7 @@ def waterfall(path: str, n_slices: int = 44, nperseg: int = DEFAULT_VIEW_NPERSEG
     窗长**沿时间铺开**：`hop = len / n_slices`，让 n_slices 片覆盖整曲
     （而不是头 n_slices 个 hop）。`nperseg` 见 `VIEW_NPERSEG_CHOICES`。
     """
-    info = sf.info(path)
+    info = sf.info(io_path(path))
     fs, total = info.samplerate, info.frames
     x = _read(path, fs, total, nperseg, max_seconds)
     hop = max(1, x.shape[0] // n_slices)
@@ -244,7 +249,7 @@ def stereo_field(path: str, nperseg: int = DEFAULT_VIEW_NPERSEG, hop: int | None
     单声道文件返回 `(None, None, None)`：**没有"立体声相位"这回事**，
     不许拿单声道的 ρ≡+1 冒充"完美的同相立体声"。
     """
-    info = sf.info(path)
+    info = sf.info(io_path(path))
     fs, total = info.samplerate, info.frames
     x = _read(path, fs, total, nperseg, max_seconds)
     if x.shape[1] < 2:

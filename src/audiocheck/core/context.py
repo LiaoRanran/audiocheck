@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -16,18 +17,54 @@ from ..config import Thresholds
 from .metrics import BUILTIN, Metric
 
 
+def io_path(p: str) -> str:
+    """文件系统 I/O 用的路径：Windows 上补 `\\\\?\\` 长路径前缀（绕开 MAX_PATH 260）。
+
+    ⚠ `\\\\?\\` 会**关闭**所有路径规范化：必须吃**完全限定的绝对路径**，
+    `.`/`..`/正斜杠都不再解释 ⇒ 先 `os.path.abspath`。
+    ⚠ UNC（`\\\\server\\share`）必须写成 `\\\\?\\UNC\\server\\share`。
+    ⚠ 实测（2026-10-17）：`\\\\?\\` 被 **libsndfile（sf.read/info/write）**、
+    内建 `open`、`mutagen.File`、`os.walk/isfile/getsize` 全部接受；普通长路径则
+    在 libsndfile 处直接 `System error`。非 Windows 原样返回（零影响）。
+    """
+    if os.name != "nt":
+        return p
+    ap = os.path.abspath(p)
+    if ap.startswith("\\\\?\\"):
+        return ap
+    if ap.startswith("\\\\"):                    # UNC
+        return "\\\\?\\UNC\\" + ap[2:]
+    return "\\\\?\\" + ap
+
+
+def display_path(p: str) -> str:
+    """去掉 `\\\\?\\` 前缀，还原成给人看 / 进 JSON 的普通路径。"""
+    if p.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + p[8:]
+    if p.startswith("\\\\?\\"):
+        return p[4:]
+    return p
+
+
 @dataclass
 class AnalysisContext:
-    path: str
+    path: str                       # **文件系统 I/O 用**（Windows 上可能带 \\?\ 前缀）
     thresholds: Thresholds = field(default_factory=Thresholds)
     deep: bool = True
     result: dict = field(default_factory=dict)
     metrics: dict[str, Metric] = field(default_factory=dict)
+    #: 用户给的**原始路径**（显示 / 进 JSON 用）。None ⇒ 与 `path` 相同。
+    src_path: str | None = None
     _info: object = None
     _spec: tuple | None = None
     _seg: tuple | None = None
     _tp_scan: dict | None = None
     _dc: tuple | None = None
+
+    @property
+    def shown_path(self) -> str:
+        """对外展示 / 落 JSON 的路径（剥掉 `\\\\?\\`）。"""
+        return display_path(self.src_path if self.src_path is not None else self.path)
 
     # ---------------- 基础信息 ----------------
     @property

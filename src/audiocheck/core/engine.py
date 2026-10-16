@@ -5,21 +5,28 @@ import os
 
 from ..config import AUDIO_EXTS, Thresholds
 from . import analyzers  # noqa: F401  触发分析器自动注册（不要删）
-from .context import AnalysisContext, to_native
+from .context import AnalysisContext, display_path, io_path, to_native
 from .registry import all_analyzers, schedule
 from .views import compact_curve
 
 
 def collect_files(targets) -> list[str]:
-    """把"文件或目录"混搭的输入展开成音频文件列表（去重、排序）。"""
+    """把"文件或目录"混搭的输入展开成音频文件列表（去重、排序）。
+
+    ⚠ Windows **MAX_PATH（260）**：用 `io_path`（`\\\\?\\` 前缀）去探测与遍历，
+    否则超长路径会被 `isfile`/`walk` **静默漏掉**（实测：用户曲库里 268 字符的
+    2 个 wav 曾整个消失）。**返回的是剥掉前缀的普通路径**（供显示/进 JSON），
+    真正读文件时再由 `analyze`/`AnalysisContext` 换成 `io_path`。
+    """
     out: list[str] = []
     for t in targets:
-        if os.path.isdir(t):
-            for dp, _, fns in os.walk(t):
+        it = io_path(t)
+        if os.path.isdir(it):
+            for dp, _, fns in os.walk(it):
                 for fn in fns:
                     if fn.lower().endswith(AUDIO_EXTS):
-                        out.append(os.path.join(dp, fn))
-        elif os.path.isfile(t) and t.lower().endswith(AUDIO_EXTS):
+                        out.append(display_path(os.path.join(dp, fn)))
+        elif os.path.isfile(it) and t.lower().endswith(AUDIO_EXTS):
             out.append(t)
     return sorted(dict.fromkeys(out))
 
@@ -35,7 +42,7 @@ def _unreadable(path: str, err: Exception, deep: bool) -> dict:
     消费方无需特判字段是否存在，只需看 `level == "error"`。
     """
     reason = str(err).strip() or type(err).__name__
-    size = os.path.getsize(path) if os.path.exists(path) else 0
+    size = os.path.getsize(io_path(path)) if os.path.exists(io_path(path)) else 0
     res = {
         "file": os.path.basename(path),
         "path": os.path.abspath(path),
@@ -69,7 +76,8 @@ def analyze(path: str, *, deep: bool = True, thresholds: Thresholds | None = Non
     （见 `_unreadable`）——不可信输入是常态，不是异常。
     """
     th = thresholds or Thresholds()
-    ctx = AnalysisContext(path=path, thresholds=th, deep=deep)
+    ip = io_path(path)
+    ctx = AnalysisContext(path=ip, thresholds=th, deep=deep, src_path=path)
     ctx.seed_metrics()
     ctx.result["errors"] = []
 
@@ -86,8 +94,8 @@ def analyze(path: str, *, deep: bool = True, thresholds: Thresholds | None = Non
         "channels": info.channels,
         "format": info.format,
         "seconds": round(ctx.seconds, 1),
-        "size_mb": round(os.path.getsize(path) / 1e6, 1),
-        "kbps": round(os.path.getsize(path) * 8 / ctx.seconds / 1000) if ctx.seconds else None,
+        "size_mb": round(os.path.getsize(ip) / 1e6, 1),
+        "kbps": round(os.path.getsize(ip) * 8 / ctx.seconds / 1000) if ctx.seconds else None,
         "deep": deep,
     })
 
