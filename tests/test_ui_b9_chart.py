@@ -716,8 +716,42 @@ class TestSpectroColormapPerceptualNorms(unittest.TestCase):
                          "jet 反而过了——判据或实现坏了")
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
+class TestPhaseColormapDivergingNorms(unittest.TestCase):
+    """B14 E.2-1 续：**相位场**色图的判据与顺序色图**不同**，单独钉。
+
+    相位场是**发散**色图（中点 = 零点 ρ≈0），明度天然非单调（两端深、中间浅），
+    所以不能套顺序色图那三条。它的判据（`colormap_probe.measure_diverging`）：
+
+      ① 两臂各自单调：|ρ| 越大越深（否则"有多反常"读不出来）；
+      ② 中点最亮：ρ≈0 是近白中性（否则零点读不出来）；
+      ③ 高彩只在一臂：两臂都高彩会让两个色块抢注意力，且推爆高彩面积配额。
+
+    这条判据此前**只在手动跑探针时才查**（顺序色图的三条早已钉进本文件），
+    这里补上让它进 CI——`python -m pytest` 即 CI 的守卫入口。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        import colormap_probe
+        import numpy as np
+
+        cls.div = colormap_probe.measure_diverging(
+            "phase", C.phase_cmap()(np.linspace(0, 1, 256)))
+
+    def test_both_arms_monotonic(self):
+        self.assertTrue(self.div["neg_mono"],
+                        "反相臂（负）明度非单调——|ρ| 越大越深读不出来")
+        self.assertTrue(self.div["pos_mono"],
+                        "同相臂（正）明度非单调——|ρ| 越大越深读不出来")
+
+    def test_midpoint_is_lightest(self):
+        self.assertTrue(self.div["mid_is_lightest"],
+                        "中点不是最亮的——零点（ρ≈0）读不出来")
+
+    def test_high_chroma_only_in_one_arm(self):
+        self.assertEqual(self.div["pos_high"], 0,
+                         "正臂出现高彩档 %d 个——两臂抢注意力，且推爆高彩面积配额"
+                         % self.div["pos_high"])
 
 
 class TestCompareGridMode(unittest.TestCase):
@@ -803,3 +837,7 @@ class TestCompareGridMode(unittest.TestCase):
         self.assertEqual(self.cv._grid_axes, [], "网格轴没被拆掉（会一直累积）")
         self.assertEqual(len(self.cv.fig.axes), 1,
                          "切回叠加后 figure 里多于 1 个轴：有轴没拆干净")
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

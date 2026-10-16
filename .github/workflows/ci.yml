@@ -15,6 +15,11 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
         python-version: ["3.9", "3.12", "3.13"]
+    # Qt 控件测试在无显示环境必须走离屏平台（Linux 无 X、CI 无 DISPLAY）。
+    # 本项目的 19 个 test_ui_*.py 都 import PySide6 —— 没有这一行会在
+    # ubuntu 上直接 "could not connect to display" 崩掉。
+    env:
+      QT_QPA_PLATFORM: offscreen
     steps:
       - uses: actions/checkout@v4
 
@@ -26,7 +31,10 @@ jobs:
       - name: 安装依赖
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]"
+          # 必须带 gui extra：UI/色图测试 import PySide6 与 matplotlib，
+          # 只装 .[dev] 会让 19 个测试文件在 collection 阶段就 ImportError
+          # （CI 从未真正跑过 GUI 测试——这里补上）。
+          python -m pip install -e ".[dev,gui]"
 
       - name: 单元测试
         run: python -m pytest -q
@@ -37,6 +45,25 @@ jobs:
           python -m pip install pytest-cov
           python -m pytest --cov=audiocheck --cov-report=term-missing
 
+  color-probes:
+    # 确定性色图/配色判据（纯色彩数学，无渲染不确定性）——`--strict` 不达标即红。
+    # 与 test job 里的 TestSpectroColormapPerceptualNorms / TestPhaseColormapDivergingNorms
+    # 互为双保险：测试钉"色图自身"，探针额外报全量对照（jet 反面参照 / 发散色图）。
+    name: 色彩判据探针
+    runs-on: ubuntu-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e ".[gui]"
+      - name: 色图感知均匀性（inferno ΔE CV ≤ 0.40 + 相位场发散色图）
+        run: python packaging/colormap_probe.py --strict
+      - name: 配色对照度（文字/非文字/焦点环 ≥ 阈值）
+        run: python packaging/palette_report.py --strict
+
   lint:
     name: lint
     runs-on: ubuntu-latest
@@ -46,7 +73,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install ruff
-      - run: ruff check src tests
+      - run: ruff check src tests packaging
 
   cli-smoke:
     name: CLI 冒烟

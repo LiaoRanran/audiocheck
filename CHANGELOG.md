@@ -201,6 +201,32 @@
 - 验证：全量 **592 passed** + ruff 全树绿；palette/mem 探针全过；
   a11y_report --strict 退出 0。
 
+### 修复（色图判据进 CI：相位场发散色图补齐 + 结构性缺陷）
+
+- **发现 CI 从未真正跑过 GUI 测试**（`.github/workflows/ci.yml`）：测试 job
+  只装 `.[dev]`，而 **19/43 个测试文件 import PySide6**、色图测试还需
+  matplotlib ⇒ 在 CI 上 collection 阶段就 ImportError，test job 不可能绿。
+  修：装 `.[dev,gui]` + 全局 `QT_QPA_PLATFORM=offscreen`（Linux 无 DISPLAY）。
+  ⚠ 这一条**只能靠静态检查证明**（本地无法跑 GitHub Actions）——见下。
+- **新增 `color-probes` job**：`colormap_probe.py --strict` +
+  `palette_report.py --strict`。两者都是**确定性纯色彩数学**（无渲染不确定性），
+  适合进 CI；`perf_probe`/`mem_probe` 是时序探针（阈值按本机调），**不进 CI**
+  （会 flaky）——分工写进 ci.yml 注释。
+- lint job 的 `ruff check` 由 `src tests` 扩到 `src tests packaging`（探针脚本
+  此前不受 lint 守卫；本地已验全绿）。
+- **补相位场发散色图判据测试** `TestPhaseColormapDivergingNorms`（3 条）：
+  此前 `colormap_probe.measure_diverging` 的三条判据（两臂单调 / 中点最亮 /
+  高彩只在一臂）**只在手动跑探针时才查**，现钉进 `test_ui_b9_chart.py` 进 CI。
+  顺序色图（inferno ΔE CV ≤ 0.40）三条早已钉住，本轮不动。
+- **修一个结构性缺陷**：`test_ui_b9_chart.py` 的 `if __name__ == "__main__"`
+  块错位在**文件中段**（`TestCompareGridMode` 之前）⇒ 直接 `python <该文件>`
+  会静默跳过它之后的整个类（pytest 不受影响，故一直没暴露）。移到文件末尾。
+
+> 口径：CI 的"能否绿"由**静态核对**（19 个文件 import PySide6 ↔ install 步骤）
+> 证明，不宣称已在 GitHub Actions 上跑过。色图判据的数值由
+> `colormap_probe.py --strict` 与 `TestSpectroColormapPerceptualNorms` /
+> `TestPhaseColormapDivergingNorms` 双向给出（inferno ΔE CV = 0.258 ≤ 0.40）。
+
 ### 口径变更（C4 判定颗粒度）
 
 > 逐行 CLI diff 留档：`out/_before_demo{1,2,3}*.txt`（改前，`f5bb3b6` worktree）
