@@ -103,19 +103,21 @@ def test_scaling_law_is_exact_in_the_gating_math():
 
 
 # ------------------------------------------------------- 2. 采样率不变性
-@given(cut=st.floats(min_value=12000.0, max_value=21000.0))
+@given(cut=st.floats(min_value=6000.0, max_value=21000.0))
 @settings(max_examples=14, deadline=None,
           suppress_health_check=[HealthCheck.too_slow])
 def test_cutoff_consistent_across_sample_rates(cut):
     """同一带限内容（砖墙 @cut）在 44.1k/48k/96k 下的检出应一致。
 
-    容差 15%（**实测标定**，非拍脑袋）：250 Hz 步长扫 [12000, 21000] ×
-    {44.1k,48k,96k}，最大相对偏差 10.8%、最大跨率散布 10.2% ⇒ 取 15% 留 1.4× 余量。
-    依据是 1/6 倍频程平滑（≈12% 量级）带来的 fs 相关系统偏差。
+    容差 3%（**实测标定**，非拍脑袋）：250 Hz 步长扫 [6000, 21000] ×
+    {44.1k,48k,96k}，最大相对偏差 **1.27%**（在 96k @ 6 kHz）、最大跨率散布
+    **0.69%** ⇒ 取 3% 留 2.4× 余量。残余偏差来自 1/6 倍频程平滑（≈12% 量级窗）。
 
-    ⚠ **本属性只覆盖 ≥12 kHz**：实测 9–12 kHz 段偏差可达 15%（96k 容器），
-    更低截止的精度判据**未立**（如实登记，不假装覆盖）。
-    ⚠ 这条在修复 `detect_cutoff` 粗搜索缺陷**之前会红**——它是发现那个缺陷的属性。
+    ⚠ 这条**曾经很松（15%）且只覆盖 ≥12 kHz**：2026-10-17 修 `detect_cutoff`
+    v3.1（通带参考窗跨骑候选 ⇒ 阈值塌陷到噪声底）之前，96k 低截止偏差高达 **+25%**、
+    44.1k +10%，所以当时只能登记"9–12 kHz 精度判据未立"。修后本属性覆盖整段
+    **[6,21] kHz** 且容差收紧到 3%。见 `docs/theory.md` §1.6。
+    ⚠ 这条在修复 `detect_cutoff` 粗搜索缺陷（E1 那条）**之前会红**——它是发现那个缺陷的属性。
     """
     est = []
     for fs in (44100, 48000, 96000):
@@ -126,9 +128,9 @@ def test_cutoff_consistent_across_sample_rates(cut):
         assert c is not None, "fs=%d cut=%.0f 完全未检出" % (fs, cut)
         est.append(c)
     rel = [abs(c - cut) / cut for c in est]
-    assert max(rel) <= 0.15, "检出偏离真值 >15%%：cut=%.0f 估=%s" % (cut, [round(c) for c in est])
+    assert max(rel) <= 0.03, "检出偏离真值 >3%%：cut=%.0f 估=%s" % (cut, [round(c) for c in est])
     spread = (max(est) - min(est)) / cut
-    assert spread <= 0.15, "跨采样率不一致 %.1f%%：cut=%.0f 估=%s" % (
+    assert spread <= 0.03, "跨采样率不一致 %.1f%%：cut=%.0f 估=%s" % (
         spread * 100, cut, [round(c) for c in est])
 
 

@@ -100,6 +100,18 @@ def detect_cutoff(f: np.ndarray, db: np.ndarray, min_drop_db: float = _DEFAULTS.
        · 取"通带参考 -3dB"的最高点，对砖墙即真实边缘（实测误差 <1%）
        · 再用陡度守卫剔除自然衰减（音乐高频本来就会滚降），
          避免把普通滚降误判成"截止"
+
+    v3.1（2026-10-17 修一个**实测的系统性偏差**，见 `docs/theory.md` §1.6）
+    ----------------------------------------------------------------
+    第二步定位边缘时用来算阈值的**通带参考窗**不能**跨骑**候选点。原实现取
+    `[cand/1.6, cand]`：当粗候选落到真边缘上方约 1.2–1.33×（这在粗搜索步长
+    1/12 倍频程下是常态）时，该窗内通带占比可能 <50% ⇒ **中位数落到阻带底**
+    ⇒ `thr=(pass+floor)/2` 塌陷到数值噪声底 ⇒ 命中点变成"噪声底越过阈值"的位置，
+    **系统性偏高**。实测误差（44.1/48/96k × 6–21kHz 全网格，最大相对偏差）：
+    **96k 低截止高达 +25%、44.1k +10%**。
+    修法：通带窗改为**带间隙、不跨骑**的 `[cand/2.56, cand/1.6]`（守卫窗与粗搜索
+    一字未改 ⇒ "是否判为带限"的**集合不变**，只有带限文件的截止点**读数**变准）。
+    修后最大相对偏差 **≤1.3%**（同一网格），且 E1 回归与满带宽/自然滚降行为不变。
     """
     if f is None or db is None or len(f) < 16:
         return None, 0.0
@@ -144,6 +156,9 @@ def detect_cutoff(f: np.ndarray, db: np.ndarray, min_drop_db: float = _DEFAULTS.
             cur /= step
         if cand is None:
             break
+        # 守卫：候选的阻带必须真的是个坑（`pass - floor ≥ min_stop_db`）。
+        # ⚠ 守卫窗**保持跨骑口径**（`[cand/1.6, cand]`）——它只决定"是否判为带限"，
+        #   本轮精度修复不动它，以免改变判定集合；见下方第二步的说明。
         jc = int(np.argmin(np.abs(f - cand)))
         jl = int(np.argmin(np.abs(f - cand / 1.6)))
         jh = int(np.argmin(np.abs(f - min(cand * 1.6, nyq))))
@@ -159,7 +174,18 @@ def detect_cutoff(f: np.ndarray, db: np.ndarray, min_drop_db: float = _DEFAULTS.
 
     # 第二步：以「通带电平与阻带底的中间点」为阈值，在原始谱上定位边缘。
     # 用中点而非"通带 -3dB"：后者对倾斜谱会落到谱自然下降 3dB 的位置，而不是真正的截止点。
-    # （`pass_lvl` / `floor_lvl` 已在上面的搜索里算好，此处复用。）
+    #
+    # ⚠ 2026-10-17 修：通带参考窗**必须落在候选下方且不跨骑候选**。
+    #   粗候选来自 1/12 倍频程的粗搜索，常落在真边缘上方 1.2–1.33×；此时
+    #   跨骑窗 `[coarse/1.6, coarse]` 的通带占比可能 <50% ⇒ 中位数**塌到阻带底**
+    #   ⇒ `thr` 深陷数值噪声底 ⇒ 命中点变成"噪声底越过该电平"的位置、**系统性偏高**
+    #   （实测 96k 低截止 +25%、44.1k +10%；见 docs/precision.md）。
+    #   改为带间隙的 `[coarse/2.56, coarse/1.6]`——因候选 <1.6× 真边缘，此窗**必在通带内**。
+    #   `[coarse, min(1.6coarse, nyq)]`（阻带窗）本就在候选上方、不跨骑，一字未改。
+    jl = int(np.argmin(np.abs(f - coarse / 2.56)))
+    jl2 = int(np.argmin(np.abs(f - coarse / 1.6)))
+    if jl2 > jl:                              # 窗内 ≥2 点才重估（否则保留上面的跨骑值）
+        pass_lvl = float(np.median(raw[jl:jl2 + 1]))
     thr = (pass_lvl + floor_lvl) / 2.0
 
     run, j0 = 0, None

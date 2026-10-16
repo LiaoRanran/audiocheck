@@ -32,9 +32,9 @@ import time
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(_ROOT, "src"))
 
-from audiocheck.config import Thresholds              # noqa: E402
-from audiocheck.core import context as C              # noqa: E402
-from audiocheck.core.registry import schedule         # noqa: E402
+from audiocheck.config import Thresholds  # noqa: E402
+from audiocheck.core import context as C  # noqa: E402
+from audiocheck.core.registry import schedule  # noqa: E402
 
 
 def _synth(sr: int, seconds: float, bits: str, path: str) -> str:
