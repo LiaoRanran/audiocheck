@@ -389,9 +389,36 @@ class BaseCanvas(FigureCanvasQTAgg):
 
 # --------------------------------------------------------------------- 时频重采样
 #: 频谱图重采样后的**行数**（对数频域等距）。
-#: 360 行 ≈ 每 1/24 倍频程一行——比人耳的临界频带（Bark）还密，够读；
-#: 但比原始的 2049 行少 5.7 倍，这正是 imshow 比 pcolormesh 快的主要来源。
-RESAMPLE_ROWS = 360
+#: 720 行 ≈ 每 1/48 倍频程一行（B11-B：360→720）。
+#: ★ 实测收益边界（`docs/views_coverage.md`，E1 量出来的）：
+#:   * **@1kHz 行距 19.71→9.79 Hz（2.01×）**——行距粗过 STFT bin 的高频区
+#:     （插值区 546Hz 之上）垂直定位误差减半，这是"不细腻"的主因之一；
+#:   * **50Hz 占行不变（7→7）**——低频区分辨率由 bin 泄漏（10.77Hz）限制，
+#:     行数早就细过 bin，翻倍加不了信息（提示词原判据被实测推翻）；
+#:   * 渲染代价 1.62→2.00ms（1.24×，判据 ≤2.5×）。
+RESAMPLE_ROWS = 720
+
+#: B11-B：色窗下界自适应的两个具名参数（**不许在代码里写裸数**）。
+#:
+#: 病灶（B11 诊断第 6 条）：固定窗让 ① 噪底低于窗底的内容截成同色（安静尾部
+#: 的"性格"看不见）；② 底噪高的文件把色阶浪费在本底上、信号纹理被压进顶端。
+#:
+#: 公式：**vmin = max(−db_range, p5 − 余量)**。三点纪律：
+#: 1. **用户窗（db_range）是硬上界**——"可调"指调 db_range，自适应只在该窗
+#:    内收紧，永远不超出用户选择（上面那条"别做每文件自适应"的警告因此仍成立：
+#:    自适应是**单向**的，且实际窗宽印在色条标签与披露里）。
+#: 2. **底是量出来的**（矩阵 5% 分位），余量具名——"不许造假抬高"。
+#: 3. ⚠ B11 提示词写的"vmin = floor + 10"按实测语义应为 **floor − 10**：
+#:    窗口底必须落在内容底**之下** 10dB；+10 会把内容底本身截进同一色，
+#:    正好是它要治的病。先量（E1）后想（这个符号）再改。
+VDFLOOR_PCTL = 5.0        # 矩阵的 5% 分位当作"内容底"
+VDFLOOR_MARGIN_DB = 10.0  # 窗底 = 内容底 − 10dB
+
+
+def _adaptive_vmin(db: np.ndarray, db_range: float) -> float:
+    """色窗下界：max(−db_range, 内容底 − 余量)。纯函数，可单测。"""
+    floor = float(np.nanpercentile(db, VDFLOOR_PCTL))
+    return max(-db_range, floor - VDFLOOR_MARGIN_DB)
 
 #: 频谱图 / 瀑布图的 dB 显示窗（相对峰值）——**默认值**。
 #:
@@ -574,6 +601,15 @@ def _resample_rows(db, f, fl, signed: bool = False):
     out = np.empty((n, db.shape[1]), dtype=db.dtype)
     lo = 0
     for i in range(n):
+        # ⚠ **行数 > bin 数时 bin 会耗尽**（B11-B 踩到：720 行 vs 400 bin 的
+        # 测试夹具 / 小 nperseg 档）。耗尽后 `db[lo:lo+1]` 是空切片，
+        # `blk.max(axis=0)` 抛 ValueError；而重画发生在 showEvent 里，
+        # 异常从 Qt 事件处理冒泡会**破坏事件循环状态**——症状是下一次建画布
+        # 直接段错误（139），离根因八百里。修法：最近邻**重复**上一行
+        # （不制造数据，只是"没有更多 bin 可分"的诚实表达）。
+        if lo >= len(f):
+            out[i] = out[i - 1] if i else db[-1]
+            continue
         hi = max(lo + 1, int(edges[i]))
         blk = db[lo:hi]
         if signed:
@@ -1035,6 +1071,7 @@ class SpectrogramCanvas(BaseCanvas):
         # B14：dB 显示窗按**画布实例**持有（可被用户切 60/90/120）。
         # 类属性做不到——同一次会话里两张图画同一个文件也共享不了各自的窗。
         self.db_range = SPECTRO_DB_RANGE
+        self._vmin = -SPECTRO_DB_RANGE      # B11：色窗下界（draw 时自适应更新）
         self.mpl_connect("motion_notify_event", self._on_hover)
 
     def set_db_range(self, n: float):
@@ -1147,15 +1184,12 @@ class SpectrogramCanvas(BaseCanvas):
                 -self.db_range, 0.0)
             self._rs_key = key
         db = self._rs_cache
-        # **对数频轴重采样 + imshow**，替代 `pcolormesh` + 对数轴。
-        # 旧写法在 (2049, ~900) 的网格上为**每个格子建一个多边形**——约 180 万个，
-        # 单这一项就 83 ms，加上对数轴的坐标变换让整图 draw 到 470 ms（实测，
-        # 见 packaging/perf_probe.py）。改成：先在**对数频域**上重采样成 ~360 行，
-        # 再用 imshow 画一张位图；纵轴用 log10 坐标 + 手动刻度，观感完全等价，
-        # 代价只在"频域采样密度"上（360 行 ≈ 每 1/24 倍频程一行，够读）。
+        # B11-B：色窗下界自适应（内容底 − 余量，db_range 兜底）。单调收紧、
+        # 量出来的底、披露在图上——"不许造假抬高"三条纪律见 _adaptive_vmin 注释。
+        self._vmin = _adaptive_vmin(db, self.db_range)
         mesh = ax.imshow(db, aspect="auto", origin="lower",
                          extent=(t[0], t[-1], math.log10(20.0), math.log10(f[-1])),
-                         cmap=spectro_cmap(), vmin=-self.db_range, vmax=0.0, interpolation="nearest",
+                         cmap=spectro_cmap(), vmin=self._vmin, vmax=0.0, interpolation="nearest",
                          zorder=1)
         ax.set_ylim(math.log10(20.0), math.log10(f[-1]))
         ax.grid(False)
@@ -1172,8 +1206,15 @@ class SpectrogramCanvas(BaseCanvas):
         ax.set_yticks(minor, minor=True)
         ax.tick_params(axis="y", which="minor", length=2, color=p["text_faint"])
         # B14 精度：披露频率分辨率（Δf = 相邻 bin 间距，从数据直接算，不靠 nperseg 猜）
+        # B11-A3：披露**补全到覆盖口径**——全曲 + 显示列宽 + 实际色窗。
+        # ★ 显示列宽是 200ms 不是 70ms（E1 实测：2580 原始列被峰值保持压到
+        # 900 列；70ms 是原始 hop）。披露必须写显示值，写 70ms 是不诚实的。
         if len(f) > 1:
-            ax.text(0.995, 0.02, "Δf ≈ %.3g Hz" % float(f[1] - f[0]), transform=ax.transAxes,
+            _dt = float(np.mean(np.diff(t))) * 1000.0 if len(t) > 1 else 0.0
+            ax.text(0.995, 0.02,
+                    "全曲 ｜ 每列 %.0fms ｜ Δf≈%.3gHz ｜ 峰值下 %.0fdB"
+                    % (_dt, float(f[1] - f[0]), -self._vmin),
+                    transform=ax.transAxes,
                     color=p["text_faint"], fontsize=p['fs_tick'], ha="right", va="bottom", zorder=3)
         self._colorbar(mesh, p)
         self.draw()
@@ -1202,7 +1243,11 @@ class SpectrogramCanvas(BaseCanvas):
         cb.outline.set_edgecolor(p["border"])
         # B14：把**当前窗**写进色条标签——否则"看着比那张暗"分不清是内容差异
         # 还是窗不同（这正是我们不肯做自适应窗的理由：量纲必须说得出来）。
-        cb.set_label("dB（峰值下 %.0f）" % self.db_range,
+        # B11-B：自适应收紧后，标签写**实际窗**（不是配置值），并在收紧时标
+        # "自适应"——量纲说得出来是这套改造的前提，不是可选项。
+        _win = -getattr(self, "_vmin", -self.db_range)
+        _tag = "自适应" if _win < self.db_range - 1e-9 else ""
+        cb.set_label("dB（峰值下 %.0f%s）" % (_win, _tag),
                      color=p["text_faint"], fontsize=p['fs_tick'])
 
 
@@ -1432,6 +1477,7 @@ class WaterfallCanvas(BaseCanvas):
         self._elev0, self._azim0 = 26, -58      # 复位目标（B14 E.2-5）
         # B14：dB 显示窗按**画布实例**持有（与频谱图同一套控件驱动）。
         self.db_range = SPECTRO_DB_RANGE
+        self._vmin = -SPECTRO_DB_RANGE      # B11：色窗下界（draw 时自适应更新）
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._drag = None
         # 拖拽节流：3D 重绘在本机实测 367 ms/帧（2.7 fps），不节流的话
@@ -1556,6 +1602,9 @@ class WaterfallCanvas(BaseCanvas):
         lf = np.log10(fl)
         n = db.shape[1]
         cmap = spectro_cmap()
+        # B11-B：瀑布与频谱图同一套色窗口径（内容底 − 余量，db_range 兜底）。
+        # 3D 的 z 轴就是 dB——窗底跟着数据走，别再把 45dB 浪费在本底上。
+        self._vmin = _adaptive_vmin(db, self.db_range)
         from matplotlib.collections import PolyCollection
         from matplotlib.colors import to_rgb
         bg = to_rgb(p["surface"])
@@ -1588,7 +1637,7 @@ class WaterfallCanvas(BaseCanvas):
             ax.plot(lf, db[:, i], zs=i, zdir="y",
                     color=(float(rc[0]), float(rc[1]), float(rc[2])),
                     lw=0.8, alpha=0.34 + 0.56 * u, solid_capstyle="round")
-        ax.set_zlim(-self.db_range, 0)
+        ax.set_zlim(self._vmin, 0)
         ax.set_ylim(0, n)
         ax.set_xlim(lf[0], lf[-1])
         try:
@@ -1603,8 +1652,9 @@ class WaterfallCanvas(BaseCanvas):
         ax.set_yticks([0, n // 2, n])
         ax.set_yticklabels(["0", "%.0fs" % (t[len(t) // 2] if len(t) else 0),
                             "%.0fs" % (t[-1] if len(t) else 0)], fontsize=p['fs_tick'])
-        ax.set_zticks([-80, -60, -40, -20, 0])
-        ax.set_zticklabels(["-80", "-60", "-40", "-20", "0"], fontsize=p['fs_tick'])
+        ax.set_zticks([round(self._vmin), -60, -40, -20, 0])
+        ax.set_zticklabels(["%.0f" % round(self._vmin), "-60", "-40", "-20", "0"],
+                           fontsize=p['fs_tick'])
         ax.set_xlabel("Hz", color=p["text_dim"], fontsize=p['fs_tick'], labelpad=-2)
         ax.set_ylabel("时间", color=p["text_dim"], fontsize=p['fs_tick'], labelpad=-2)
         ax.set_zlabel("dB", color=p["text_dim"], fontsize=p['fs_tick'], labelpad=-4)
@@ -1617,9 +1667,12 @@ class WaterfallCanvas(BaseCanvas):
         ax.text2D(.015, .95, ("真实截止 %.2f kHz" % cut) if cut else "", transform=ax.transAxes,
                   color=p["text_dim"], fontsize=p['fs_tick'])
         # B14 精度：披露频率/时间分辨率（Δf、Δt 从数据直接算，与频谱图同口径）
+        # B11-A3：补**实际色窗**（与频谱图同口径：量纲必须说得出来）。
         df = float(f[1] - f[0]) if len(f) > 1 else 0.0
         dt = float(t[1] - t[0]) if len(t) > 1 else 0.0
-        ax.text2D(.015, .90, "Δf ≈ %.3g Hz   Δt ≈ %.3g s" % (df, dt), transform=ax.transAxes,
+        ax.text2D(.015, .90,
+                  "Δf ≈ %.3g Hz ｜ Δt ≈ %.3g s ｜ 峰值下 %.0fdB" % (df, dt, -self._vmin),
+                  transform=ax.transAxes,
                   color=p["text_faint"], fontsize=p['fs_tick'])
         ax.text2D(.86, .95, "拖拽旋转 · 双击复位 · F 全屏", transform=ax.transAxes, color=p["text_faint"], fontsize=p['fs_tick'])
         # B14 补强⑤：**别处**指过来的频率 → 画一面"频率墙"（底边 + 顶边）。
@@ -1627,7 +1680,7 @@ class WaterfallCanvas(BaseCanvas):
         # 是"指位置"，不是"遮内容"。
         if self._xhz is not None and lf[0] <= math.log10(self._xhz) <= lf[-1]:
             lx = math.log10(self._xhz)
-            for z in (-self.db_range, 0.0):
+            for z in (self._vmin, 0.0):
                 ax.plot([lx, lx], [0, n], [z, z], color=p["accent"], lw=REF_LINE_W,
                         alpha=.55, zorder=6)
         self.draw()

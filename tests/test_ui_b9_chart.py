@@ -247,8 +247,14 @@ class TestRenderUnchanged(unittest.TestCase):
         # B14：窗按**画布实例**持有（用户可切 60/90/120），所以字面量是
         # `-self.db_range` 而不是 `-SPECTRO_DB_RANGE`。默认值相等的断言在
         # `TestDbRangeIsPerCanvasInstance`（构造画布，不是扫源码）。
-        self.assertRegex(code, r"vmin=-self\.db_range\b")
+        # B11-B（2026-10-16，口径变更）：色窗下界改**自适应**——`vmin=self._vmin`
+        # （= max(−db_range, 内容底 p5 − 10dB)）。db_range 仍是**硬上界**
+        # （单向收紧，永不超过用户窗），实际窗宽印在色条标签与披露里。
+        # ⚠ 这条断言跟着口径改过：旧值 `vmin=-self.db_range`（固定窗）钉的是
+        # 上一代行为；改判据前判明"口径变了"（B11-B 有意为之，CHANGELOG 有账）。
+        self.assertRegex(code, r"vmin=self\._vmin\b")
         self.assertRegex(code, r"vmax=0\b")
+        self.assertRegex(code, r"max\(-db_range, floor - VDFLOOR_MARGIN_DB\)")
 
     def test_no_default_matplotlib_colormaps_left(self):
         """曲线**不许**用 matplotlib 默认色图（那批是"AI 味"的来源）。
