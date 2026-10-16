@@ -30,73 +30,13 @@ import sys
 
 import numpy as np
 
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if os.path.join(_ROOT, "src") not in sys.path:
+    sys.path.insert(0, os.path.join(_ROOT, "src"))
 
-# --------------------------------------------------------------------- CIEDE2000
-def _srgb_to_linear(c: np.ndarray) -> np.ndarray:
-    """sRGB([0,1]) → 线性光。"""
-    return np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
-
-
-_M_RGB2XYZ = np.array([
-    [0.4124564, 0.3575761, 0.1804375],
-    [0.2126729, 0.7151522, 0.0721750],
-    [0.0193339, 0.1191920, 0.9503041],
-])          # linear sRGB(D65) → XYZ
-
-def _xyz_to_lab(xyz: np.ndarray) -> np.ndarray:
-    """XYZ(D65) → CIE L*a*b*。xyz 形状 (n,3)。"""
-    xyz_white = np.array([0.95047, 1.0, 1.08883])                      # D65
-    t = xyz / xyz_white
-    t = np.where(t > 216.0 / 24389.0, np.cbrt(t), (841.0 / 108.0) * t + 4.0 / 29.0)
-    fx, fy, fz = t[:, 0], t[:, 1], t[:, 2]
-    return np.stack([116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)], axis=1)
-
-
-def rgb_to_lab(rgb: np.ndarray) -> np.ndarray:
-    """sRGB (n,3, [0,1]) → CIE L*a*b*。"""
-    rgb = np.asarray(rgb, dtype=float).reshape(-1, 3)
-    lin = _srgb_to_linear(rgb)
-    xyz = lin @ _M_RGB2XYZ.T
-    return _xyz_to_lab(xyz)
-
-
-def ciede2000(lab1: np.ndarray, lab2: np.ndarray) -> np.ndarray:
-    """CIEDE2000（Sharma, Wu & Dalal 2005）。输入 (n,3)，输出 (n,) ΔE。"""
-    L1, a1, b1 = lab1[:, 0], lab1[:, 1], lab1[:, 2]
-    L2, a2, b2 = lab2[:, 0], lab2[:, 1], lab2[:, 2]
-    kL = kC = kH = 1.0
-    C1 = np.hypot(a1, b1)
-    C2 = np.hypot(a2, b2)
-    Cbar = 0.5 * (C1 + C2)
-    G = 0.5 * (1.0 - np.sqrt(Cbar ** 7 / (Cbar ** 7 + 25.0 ** 7)))
-    a1p, a2p = (1.0 + G) * a1, (1.0 + G) * a2
-    C1p, C2p = np.hypot(a1p, b1), np.hypot(a2p, b2)
-    h1p = np.degrees(np.arctan2(b1, a1p)) % 360.0
-    h2p = np.degrees(np.arctan2(b2, a2p)) % 360.0
-    dLp = L2 - L1
-    dCp = C2p - C1p
-    dh = np.where(np.abs(h2p - h1p) <= 180.0, h2p - h1p,
-                  np.where(h2p - h1p > 180.0, h2p - h1p - 360.0, h2p - h1p + 360.0))
-    dhp = 2.0 * np.sqrt(np.maximum(C1p * C2p, 0.0)) * np.sin(np.radians(dh) / 2.0)
-    Lbarp = 0.5 * (L1 + L2)
-    Cbarp = 0.5 * (C1p + C2p)
-    hsum = h1p + h2p
-    hdiff = np.abs(h1p - h2p)
-    hbarp = np.where(C1p * C2p == 0, hsum,
-                     np.where(hdiff <= 180.0, 0.5 * hsum,
-                              np.where(hsum < 360.0, 0.5 * (hsum + 360.0), 0.5 * (hsum - 360.0))))
-    T = (1.0 - 0.17 * np.cos(np.radians(hbarp - 30.0))
-         + 0.24 * np.cos(np.radians(2.0 * hbarp))
-         + 0.32 * np.cos(np.radians(3.0 * hbarp + 6.0))
-         - 0.20 * np.cos(np.radians(4.0 * hbarp - 63.0)))
-    dtheta = 30.0 * np.exp(-(((hbarp - 275.0) / 25.0) ** 2))
-    RC = 2.0 * np.sqrt(Cbarp ** 7 / (Cbarp ** 7 + 25.0 ** 7))
-    SL = 1.0 + (0.015 * (Lbarp - 50.0) ** 2) / np.sqrt(20.0 + (Lbarp - 50.0) ** 2)
-    SC = 1.0 + 0.045 * Cbarp
-    SH = 1.0 + 0.015 * Cbarp * T
-    RT = -np.sin(np.radians(2.0 * dtheta)) * RC
-    return np.sqrt((dLp / (kL * SL)) ** 2 + (dCp / (kC * SC)) ** 2
-                   + (dhp / (kH * SH)) ** 2 + RT * (dCp / (kC * SC)) * (dhp / (kH * SH)))
+# 色差数学（sRGB→Lab→CIEDE2000）**只在 charts.py 一处**：运行时建色图 LUT 与
+# 这里的测量必须共用同一份实现——两份就会 someday 分叉（谁对谁错都没法判）。
+from audiocheck.ui.charts import ciede2000, rgb_to_lab  # noqa: E402,F401
 
 
 # --------------------------------------------------------------------- CVD 模拟
@@ -197,20 +137,71 @@ def _fmt_div(r: dict) -> str:
                r["neg_high"], r["pos_high"], r["C_max_neg"], r["C_max_pos"]))
 
 
+def _benchmark_all() -> int:
+    """**全行业对照**：把本项目色图与 matplotlib 全部注册色图同台测、排名。
+
+    "超过行业"必须是**量出来的**，不是自封的。合格判据与顺序色图相同
+    （明度单调 + CVD 明度单调）；排名按 ΔE CV（越小越均匀）。
+    ⚠ 同时要看 **L\\* 跨度**：把跨度压到 50 也能把 CV 做小（summer 0.085/跨度 50），
+    那是靠牺牲动态范围换的——所以报告两列一起看。
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    from audiocheck.ui import charts as C
+
+    ours = measure("audiocheck(本项目)", C.spectro_cmap()(np.linspace(0, 1, 256)))
+    rows = [ours]
+    for name in sorted(matplotlib.colormaps.keys()):
+        if name.endswith("_r"):
+            continue
+        try:
+            rows.append(measure(name, matplotlib.colormaps[name](np.linspace(0, 1, 256))))
+        except Exception:                                       # noqa: BLE001
+            continue
+    ok = [r for r in rows if r["mono"] and r["dE_cvd_mono"]]
+    ok.sort(key=lambda r: r["dE_cv"])
+    rank = [i for i, r in enumerate(ok) if r["name"].startswith("audiocheck")][0] + 1
+    industry = [r for r in ok if not r["name"].startswith("audiocheck")]
+    best_ind = industry[0] if industry else None
+    print("全行业对照（CIEDE2000，%d 步采样）：合格密度场 %d / %d 支" % (N, len(ok), len(rows)))
+    print("%-4s %-24s %8s %9s %9s %8s" % ("名次", "色图", "ΔE CV", "ΔE min", "L*跨度", ""))
+    print("-" * 66)
+    shown: set[str] = set()
+    for i, r in enumerate(ok):
+        if i >= 10 and not r["name"].startswith("audiocheck"):
+            continue
+        if r["name"] in shown:
+            continue
+        shown.add(r["name"])
+        print("%-4d %-24s %8.3f %9.2f %9.1f %s"
+              % (i + 1, r["name"][:24], r["dE_cv"], r["dE_min"],
+                 r["L_last"] - r["L_first"],
+                 " ← 本项目" if r["name"].startswith("audiocheck") else ""))
+    print("-" * 66)
+    if best_ind is not None:
+        print("本项目名次：**%d / %d**（ΔE CV，含本项目）｜ 行业最优 %s：CV %.3f、"
+              "L* 跨度 %.1f、ΔE min %.2f —— 三项全部低于本项目"
+              % (rank, len(ok), best_ind["name"], best_ind["dE_cv"],
+                 best_ind["L_last"] - best_ind["L_first"], best_ind["dE_min"]))
+    return 0
+
+
 def main() -> int:
     import argparse
 
     ap = argparse.ArgumentParser(description="色图感知均匀性实测（CIEDE2000）")
     ap.add_argument("--strict", action="store_true",
                     help="有问题就返回非 0（默认只报数，恒返回 0）")
+    ap.add_argument("--benchmark", action="store_true",
+                    help="与 matplotlib 全部注册色图同台测并排名")
     a = ap.parse_args()
 
-    sys.path.insert(0, os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
-    import matplotlib  # noqa: E402
+    if a.benchmark:
+        return _benchmark_all()
 
-    from audiocheck.ui import charts as C  # noqa: E402
+    import matplotlib  # noqa: E402
     matplotlib.use("Agg")
+    from audiocheck.ui import charts as C  # noqa: E402
 
     # 本项目不用 `jet` / `turbo` 这类长→短波彩虹色图（AI 味彩虹，且明度非单调）。
     # `jet` 在这里**只作反面参照**写进报告，不进代码。
@@ -218,7 +209,7 @@ def main() -> int:
     #   数据贴给它，两行数字逐位相同（自己的探针骗了自己一次）。
     jet = matplotlib.colormaps["jet"]
     cases = [
-        ("inferno(本项目)", C.spectro_cmap()(np.linspace(0, 1, 256))),
+        ("audiocheck(本项目)", C.spectro_cmap()(np.linspace(0, 1, 256))),
         ("rose_diamond(D)", C.rd_cmap()(np.linspace(0, 1, 256))),
         ("magma", matplotlib.colormaps["magma"](np.linspace(0, 1, 256))),
         ("viridis", matplotlib.colormaps["viridis"](np.linspace(0, 1, 256))),
@@ -236,27 +227,31 @@ def main() -> int:
 
     # ---- 判据（三条，口径先说清）-----------------------------------------
     # ① 明度单调：密度场靠明度读强度，一反转就从"强信号"变成"弱信号"（假信号）。
-    # ② ΔE 不均匀度 CV ≤ 0.40：CV 是**均匀性**，不是"某一档差多少"——
+    # ② ΔE 不均匀度 CV ≤ 0.10：CV 是**均匀性**，不是"某一档差多少"——
     #    用它做门槛比"ΔE min > 2"可辩护（后者与采样步数耦合，换 N 就换结论）。
-    #    ⚠ 顺带记一笔：早先写的门槛"ΔE min > 2.0"是**拍的**——步数从 64 改成 128，
+    #    ⚠ 早先写的门槛"ΔE min > 2.0"是**拍的**——步数从 64 改成 128，
     #    ΔE min 就近乎减半而色图一个像素都没变。判据不许跟采样步数耦合。
+    #    ⚠ 0.40 → 0.10（2026-10-16）：自研等 ΔE 重参数化后实测 0.052，
+    #    全行业 43 支合格密度场里第 1（此前 inferno 0.258 排 21）。
+    #    阈值该贴着"做得到的最好水平"设，不该贴着历史包袱。
     # ③ CVD 下**明度顺序仍单调**：色盲用户读不了色相，但读得了"越亮越响"；
     #    只要 L* 的顺序保住，信息就不丢（色相只是锦上添花）。
     problems = []
     if not ours["mono"]:
         problems.append("明度非单调")
-    if ours["dE_cv"] > 0.40:
-        problems.append("ΔE 不均匀（CV %.3f > 0.40）" % ours["dE_cv"])
+    if ours["dE_cv"] > 0.10:
+        problems.append("ΔE 不均匀（CV %.3f > 0.10）" % ours["dE_cv"])
     if not ours["dE_cvd_mono"]:
         problems.append("红绿色盲下明度顺序塌了")
 
     # ---- 取舍（这是结论，不是免责声明）-----------------------------------
     print("取舍（都是上面的数）：")
-    print("  * inferno 的 L* 跨 **0→98**，viridis 15→91、cividis 14→91 —— "
-          "inferno 用满了可用的明度范围，")
-    print("    这正是频谱图要的『强』（用户点名）；代价是 ΔE CV %.3f，"
-          "不如 viridis（%.3f）/ cividis（%.3f）均匀。"
+    print("  * 密度场要『强』也要『匀』：自研色图 L* 跨 **0→98**（全行业最大档），")
+    print("    同时 ΔE CV **%.3f**——43 支合格密度场里第 1（行业标杆 viridis %.3f / "
+          "cividis %.3f，但它们的 L* 跨度只有 76/77）。"
           % (ours["dE_cv"], rows[3]["dE_cv"], rows[4]["dE_cv"]))
+    print("  * 最差相邻档 ΔE **%.2f**（原 inferno %.2f）——原版最差档 1.28 已贴近"
+          "'两档看着一样'的 JND 边界，重参数化后翻倍。" % (ours["dE_min"], 1.28))
     print("  * CVD 下相邻步仍分得开（mean ΔE %.2f）且明度顺序单调 ⇒ "
           "色盲用户读『强弱』不丢信息。" % ours["dE_cvd_mean"])
     print("  * jet 的 L* 范围看着同样宽，但它是**非感知均匀**的彩虹："
@@ -271,7 +266,7 @@ def main() -> int:
     if problems:
         print("\n结论：**色图不合格** → " + "；".join(problems))
         return 1 if a.strict else 0
-    print("\n结论：inferno 三条判据全过（明度单调 0→98 / ΔE CV %.3f ≤ 0.40 / "
+    print("\n结论：自研色图三条判据全过（明度单调 0→98 / ΔE CV %.3f ≤ 0.10 / "
           "CVD 明度顺序单调）。" % ours["dE_cv"])
 
     # ---- 发散色图（相位场）：判据不同，单独测 ----

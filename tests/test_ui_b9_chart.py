@@ -837,5 +837,65 @@ class TestCompareGridMode(unittest.TestCase):
                          "切回叠加后 figure 里多于 1 个轴：有轴没拆干净")
 
 
+class TestFreqAxisPrecision(unittest.TestCase):
+    """E 轮"轴精度"：对数频轴的主刻度带单位、次刻度有标签。
+
+    为什么：主刻度只有 1-2-5 序列时，20–500 Hz 这段（人耳最敏感、也是
+    C7 双分辨率把分辨率提到 10 Hz 的区域）只能靠估读；次刻度此前**只有
+    刻度线没有标签**。补上标签（小字号）后可直读，且带单位让轴自解释。
+    """
+
+    def test_major_labels_carry_units(self):
+        majors, _ = C._freq_axis_ticks(22050.0)
+        labels = [C._hz_label(v, unit=True) for v in majors]
+        self.assertIn("20Hz", labels)
+        self.assertIn("1kHz", labels)
+        self.assertIn("20kHz", labels)
+
+    def test_minor_ticks_fill_the_gaps_without_overlapping(self):
+        majors, minors = C._freq_axis_ticks(22050.0)
+        self.assertIn(30.0, minors)
+        self.assertIn(400.0, minors)
+        self.assertIn(3000.0, minors)
+        self.assertEqual(set(majors) & set(minors), set(),
+                         "主刻度不许重复出现在次刻度里（会画两遍）")
+        # 1-2-5 主序列 + 整数次刻度 ⇒ 100–1k、1k–10k 两个十倍程内 1..9 全覆盖；
+        # 10–100 段缺 10 Hz 是**有意的**（轴下限就是 20 Hz，再低没有数据）。
+        for dec in (100, 1000):
+            covered = {v for v in majors + minors if dec <= v < dec * 10}
+            self.assertEqual(len(covered), 9, "%d–%d 段没补齐：%s" % (dec, dec * 10, covered))
+        self.assertNotIn(10.0, majors + minors, "10 Hz 在轴下限之下，不该出现")
+
+    def test_single_implementation_for_both_canvases(self):
+        """频谱图与相位场的频轴实现必须**共用一处**（此前抄了两份）。"""
+        import inspect
+        src = inspect.getsource(C)
+        self.assertEqual(src.count("_apply_freq_axis("), 3,
+                         "应为 定义 1 处 + 调用 2 处；数目不对说明又抄了一份")
+
+
+class TestFreqAxisRendered(unittest.TestCase):
+    """渲染级判据（量**画出来的**轴，不是量实现代码）。"""
+
+    def test_spectrogram_axis_has_units_and_minor_labels(self):
+        import numpy as np
+        cv = C.SpectrogramCanvas()
+        cv.resize(720, 430)
+        cv.apply_theme(T.plot_palette(T.DARK.p, T.DARK))
+        f = np.geomspace(20.0, 22050.0, 400)
+        t = np.linspace(0.0, 30.0, 240)
+        S = -30.0 - 40.0 * (np.arange(len(f))[:, None] / len(f))
+        cv.set_data({"file": "x.wav"}, (t, f, S))
+        cv.redraw()
+        majors = [tl.get_text() for tl in cv.ax.get_yticklabels()]
+        minors = [tl.get_text() for tl in cv.ax.get_yticklabels(minor=True)]
+        self.assertTrue(any(s.endswith("Hz") for s in majors),
+                        "主刻度没带单位：%s" % majors)
+        self.assertIn("1kHz", majors)
+        self.assertIn("30", minors, "次刻度没有标签（20–500Hz 段只能估读）:%s" % minors[:8])
+        cv.close()
+        cv.deleteLater()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

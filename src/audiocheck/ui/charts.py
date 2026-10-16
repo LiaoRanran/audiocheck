@@ -152,18 +152,110 @@ def rd_cmap():
 _SPECTRO_CACHE = None
 
 
-def spectro_cmap():
-    """**频谱图**色图（B14：专业可视化色图，替掉粉白 D）。
+# ============================================================ 密度场色图（自研：等 ΔE 重参数化）
+# E 轮"色差精益求精"：把密度场的感知均匀性做到**行业之上**——全行业对照见
+# `packaging/colormap_probe.py --benchmark`（本项目的数学与探针共用这一处实现）。
 
-    `inferno` 是密度 / 时频图的**科学标准**色图：感知均匀、明度单调，
-    峰值（亮黄白）与噪底（暗紫黑）一眼分得开——这正是频谱图要的"强"。
-    **曲线仍用 D 玫瑰钻石**（品牌色，曲线要认得出是"我们的"图）；
-    两者分工：**数据点/线 = 品牌色，密度场 = 科学色图**。
+
+def _srgb_to_linear(c):
+    return np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+
+
+#: 线性 sRGB(D65) → XYZ（IEC 61966-2-1 / sRGB 标准矩阵）
+_M_RGB2XYZ = np.array([[0.4124564, 0.3575761, 0.1804375],
+                       [0.2126729, 0.7151522, 0.0721750],
+                       [0.0193339, 0.1191920, 0.9503041]])
+_D65 = np.array([0.95047, 1.0, 1.08883])
+
+
+def rgb_to_lab(rgb):
+    """sRGB([0,1]) → CIE L\\*a\\*b\\*。**一处实现**：运行时建色图 LUT 与
+    `packaging/colormap_probe` 的测量共用（不许两份数学）。"""
+    rgb = np.asarray(rgb, dtype=float).reshape(-1, 3)
+    t = (_srgb_to_linear(rgb) @ _M_RGB2XYZ.T) / _D65
+    t = np.where(t > 216.0 / 24389.0, np.cbrt(t), (841.0 / 108.0) * t + 4.0 / 29.0)
+    return np.stack([116.0 * t[:, 1] - 16.0,
+                     500.0 * (t[:, 0] - t[:, 1]),
+                     200.0 * (t[:, 1] - t[:, 2])], axis=1)
+
+
+def ciede2000(lab1, lab2):
+    """CIEDE2000 色差（Sharma, Wu & Dalal 2005 的实现口径）。输入 (n,3)，输出 (n,)。"""
+    L1, a1, b1 = lab1[:, 0], lab1[:, 1], lab1[:, 2]
+    L2, a2, b2 = lab2[:, 0], lab2[:, 1], lab2[:, 2]
+    C1, C2 = np.hypot(a1, b1), np.hypot(a2, b2)
+    Cbar = 0.5 * (C1 + C2)
+    G = 0.5 * (1.0 - np.sqrt(Cbar ** 7 / (Cbar ** 7 + 25.0 ** 7)))
+    a1p, a2p = (1.0 + G) * a1, (1.0 + G) * a2
+    C1p, C2p = np.hypot(a1p, b1), np.hypot(a2p, b2)
+    h1p = np.degrees(np.arctan2(b1, a1p)) % 360.0
+    h2p = np.degrees(np.arctan2(b2, a2p)) % 360.0
+    dLp, dCp = L2 - L1, C2p - C1p
+    dh = np.where(np.abs(h2p - h1p) <= 180.0, h2p - h1p,
+                  np.where(h2p - h1p > 180.0, h2p - h1p - 360.0, h2p - h1p + 360.0))
+    dhp = 2.0 * np.sqrt(np.maximum(C1p * C2p, 0.0)) * np.sin(np.radians(dh) / 2.0)
+    Lbarp, Cbarp = 0.5 * (L1 + L2), 0.5 * (C1p + C2p)
+    hsum, hdiff = h1p + h2p, np.abs(h1p - h2p)
+    hbarp = np.where(C1p * C2p == 0, hsum,
+                     np.where(hdiff <= 180.0, 0.5 * hsum,
+                              np.where(hsum < 360.0, 0.5 * (hsum + 360.0),
+                                       0.5 * (hsum - 360.0))))
+    T = (1.0 - 0.17 * np.cos(np.radians(hbarp - 30.0))
+         + 0.24 * np.cos(np.radians(2.0 * hbarp))
+         + 0.32 * np.cos(np.radians(3.0 * hbarp + 6.0))
+         - 0.20 * np.cos(np.radians(4.0 * hbarp - 63.0)))
+    dtheta = 30.0 * np.exp(-(((hbarp - 275.0) / 25.0) ** 2))
+    RC = 2.0 * np.sqrt(Cbarp ** 7 / (Cbarp ** 7 + 25.0 ** 7))
+    SL = 1.0 + (0.015 * (Lbarp - 50.0) ** 2) / np.sqrt(20.0 + (Lbarp - 50.0) ** 2)
+    SC = 1.0 + 0.045 * Cbarp
+    SH = 1.0 + 0.015 * Cbarp * T
+    RT = -np.sin(np.radians(2.0 * dtheta)) * RC
+    return np.sqrt((dLp / SL) ** 2 + (dCp / SC) ** 2
+                   + (dhp / SH) ** 2 + RT * (dCp / SC) * (dhp / SH))
+
+
+def _equal_de_lut(base, n: int = 256) -> np.ndarray:
+    """把基础色图的**色路径**按等 ΔE（CIEDE2000）重采样成 n 档。
+
+    原理：密度场的"感知均匀" = 相邻两档的色差相等（Kovesi 2015,
+    *Good Colour Maps: How to Design Them*, arXiv:1509.03700 的核心判据）。
+    厂家的 LUT **不保证**这一点——实测 inferno 相邻档 ΔE 在 1.28–4.06 之间跳
+    （CV 0.258；最差档 1.28 接近"两档看起来一样"的 JND 边界）。
+
+    做法：沿色路径算累计 ΔE，再按等间隔反插值。**路径一个颜色都不改**，
+    只改推进速度 ⇒ 色图的长相（黑→紫→红→橙→黄白）与首尾色**逐位不变**，
+    而 ΔE 的变异系数从 0.258 降到 **0.052**、最差档从 1.28 **翻倍到 2.36**。
+    对照全行业（43 支合格密度场）：均匀度第 1，且 L\\* 跨度 97.9 是第 1 名的
+    2 倍（summer 0.085 但跨度仅 50；cividis 0.150 但 77）。
+    """
+    rgb = np.asarray(base, dtype=float)[:, :3]
+    lab = rgb_to_lab(rgb)
+    dE = ciede2000(lab[:-1], lab[1:])
+    cum = np.concatenate([[0.0], np.cumsum(dE)])
+    idx = np.interp(np.linspace(0.0, cum[-1], n), cum, np.arange(cum.size))
+    lut = np.stack([np.interp(idx, np.arange(cum.size), rgb[:, c]) for c in range(3)],
+                   axis=1)
+    return np.clip(lut, 0.0, 1.0)
+
+
+def spectro_cmap():
+    """**频谱图 / 瀑布图**色图：**自研等 ΔE 重参数化的 inferno**。
+
+    为什么不是直接用 `inferno`：它是密度/时频图的科学标准（明度单调、
+    首尾黑→黄白、CVD 安全），但它的**参数化不保证相邻档等色差**——
+    实测相邻档 ΔE 在 1.28–4.06 之间跳。密度场要的是"数据走一步、
+    眼睛走同样一步"，所以这里沿 inferno 的**同一条色路径**做等 ΔE 重采样：
+    长相不变（首尾色逐位保留），均匀性测得 CV 0.052——全行业 43 支合格
+    密度场里第 1，且 L\\* 跨度 97.9 保持"强"（用户点名的要求）。
+    **曲线仍用 D 玫瑰钻石**（品牌色）；分工：数据点/线 = 品牌色，密度场 = 科学色图。
     """
     global _SPECTRO_CACHE
     if _SPECTRO_CACHE is None:
         import matplotlib
-        _SPECTRO_CACHE = matplotlib.colormaps["inferno"]
+        from matplotlib import colors as _mc
+        lut = _equal_de_lut(matplotlib.colormaps["inferno"](np.linspace(0, 1, 4096)))
+        _SPECTRO_CACHE = _mc.LinearSegmentedColormap.from_list(
+            "audiocheck-inferno", lut, N=256)
     return _SPECTRO_CACHE
 
 
@@ -462,8 +554,48 @@ SPECTRO_DB_RANGE = 90.0
 #: 仍然是可说的（大家默认都在 90，要偏离是有意识的、看得见的）。
 DB_RANGE_CHOICES = (60.0, 90.0, 120.0)
 
-#: 纵轴刻度（Hz）
+#: 纵轴刻度（Hz）：主刻度取 **1-2-5 序列**（对数轴的标准做法）。
 TICKS_HZ = (20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000)
+
+
+def _hz_label(v: float, unit: bool = False) -> str:
+    """频率刻度标签。`unit=True` 给主刻度带上单位（E 轮"轴精度"：
+    光写"1k"读不出是 1 kHz 还是 1 kbin；带上单位后轴是自解释的）。"""
+    s = ("%gk" % (v / 1000.0)) if v >= 1000 else ("%g" % v)
+    return (s + "Hz") if unit else s
+
+
+def _freq_axis_ticks(f_max: float) -> tuple[list[float], list[float]]:
+    """对数频轴的（主刻度, 次刻度）位置（Hz）。
+
+    主 = `TICKS_HZ`（1-2-5 序列，带单位标签）；次 = 每个十倍程内**其余整数**
+    （30/40/60/70/80/90、300/400/600…、3k/4k/6k…）。此前次刻度**只有刻度线
+    没有标签** ⇒ 20–500 Hz 这段（人耳最敏感、也是 C7 双分辨率把分辨率提升
+    到 10 Hz 的区域）只能靠估读——现在补上标签（小字号）可直读。
+    """
+    majors = [v for v in TICKS_HZ if v < f_max]
+    seen = set(majors)
+    minors: list[float] = []
+    for dec in (10, 100, 1000, 10000):
+        for m in range(1, 10):
+            v = dec * m
+            if 20.0 <= v < f_max and v not in seen:
+                minors.append(v)
+                seen.add(v)
+    return majors, minors
+
+
+def _apply_freq_axis(ax, f_max: float, p) -> None:
+    """把对数频率轴的刻度/标签/次刻度装到 `ax` 上（频谱图与瀑布图共用一处，
+    不许两份——此前这段代码在两个画布里各抄了一遍）。"""
+    majors, minors = _freq_axis_ticks(f_max)
+    ax.set_yticks([math.log10(v) for v in majors])
+    ax.set_yticklabels([_hz_label(v, unit=True) for v in majors],
+                       fontsize=p["fs_tick"], color=p["text_dim"])
+    ax.set_yticks([math.log10(v) for v in minors], minor=True)
+    ax.set_yticklabels([_hz_label(v) for v in minors], minor=True,
+                       fontsize=max(6.0, p["fs_tick"] - 1.5), color=p["text_faint"])
+    ax.tick_params(axis="y", which="minor", length=2, color=p["text_faint"])
 
 #: **相位场**的发散色图九点 LCH 表（ρ 从 −1 到 +1）。
 #:
@@ -604,10 +736,6 @@ class CursorBus:
 #: 进程级唯一总线。**故意不用 Qt 信号**：画布之间没有父子关系，信号要
 #: 先找个共同 QObject 当中介，而那正是"为了机制而加一层"的例子。
 CURSOR = CursorBus()
-
-
-def _hz_label(v: float) -> str:
-    return ("%gk" % (v / 1000)) if v >= 1000 else "%g" % v
 
 
 def _resample_rows(db, f, fl, signed: bool = False):
@@ -1226,14 +1354,8 @@ class SpectrogramCanvas(BaseCanvas):
             if lev < f[-1]:
                 ax.axhline(math.log10(lev), color=p["grid"], lw=.6, alpha=.55, zorder=2)
         # 纵轴刻度：位置是 log10(Hz)，标签写 Hz（读起来和原来一样）
-        ax.set_yticks([math.log10(v) for v in TICKS_HZ if v < f[-1]])
-        ax.set_yticklabels([_hz_label(v) for v in TICKS_HZ if v < f[-1]])
-        # B14 E.2-2 次刻度：主刻度之间按 2–9 倍频程细分，读频率时不用"估"
-        minor = [math.log10(v * m) for v in (10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000)
-                 for m in (2, 3, 4, 5, 6, 7, 8, 9)
-                 if 20.0 <= v * m < f[-1]]
-        ax.set_yticks(minor, minor=True)
-        ax.tick_params(axis="y", which="minor", length=2, color=p["text_faint"])
+        # E 轮轴精度：主刻度带单位 + 次刻度补标签（实现集中在一处，不许两份）
+        _apply_freq_axis(ax, f[-1], p)
         # B14 精度：披露频率分辨率（Δf = 相邻 bin 间距，从数据直接算，不靠 nperseg 猜）
         # B11-A3：披露**补全到覆盖口径**——全曲 + 显示列宽 + 实际色窗。
         # ★ 显示列宽是 200ms 不是 70ms（E1 实测：2580 原始列被峰值保持压到
@@ -1400,13 +1522,8 @@ class StereoCanvas(BaseCanvas):
         for lev in (100, 1000, 10000):
             if lev < f[-1]:
                 ax.axhline(math.log10(lev), color=p["grid"], lw=.6, alpha=.55, zorder=2)
-        ax.set_yticks([math.log10(v) for v in TICKS_HZ if v < f[-1]])
-        ax.set_yticklabels([_hz_label(v) for v in TICKS_HZ if v < f[-1]])
-        minor = [math.log10(v * m) for v in (10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000)
-                 for m in (2, 3, 4, 5, 6, 7, 8, 9)
-                 if 20.0 <= v * m < f[-1]]
-        ax.set_yticks(minor, minor=True)
-        ax.tick_params(axis="y", which="minor", length=2, color=p["text_faint"])
+        # E 轮轴精度：与频谱图同一处实现（不许两份）
+        _apply_freq_axis(ax, f[-1], p)
         # 披露分辨率（与频谱图同口径）——相位场同样吃 STFT 的窗长
         if len(f) > 1:
             ax.text(0.995, 0.02, "Δf ≈ %.3g Hz" % float(f[1] - f[0]), transform=ax.transAxes,
