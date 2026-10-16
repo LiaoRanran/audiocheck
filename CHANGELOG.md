@@ -61,9 +61,32 @@
   改为**独立画布 + 显式深色起点 + 前提自检**，并用**显式 `paintEvent`**
   触发延迟帧（离屏下事件循环不保证投递 `update()` 的 paint）。连跑 3 次稳定。
 
-> **E1 未完成项（如实登记）**：E1.2 **变异测试**（本机无 `cosmic-ray`/`mutmut`，
-> 离线装不了；自带实现属独立批次）与 E1.3 **视觉回归**（无 `pixelmatch`，
-> 需先定基线图与容差口径）留待后续。
+### 新增（E1.2 变异测试：自实现 AST 注入 + 进 CI）
+
+- `packaging/mutation_probe.py`：**自实现**变异测试（本机无 `cosmic-ray`/`mutmut`，
+  离线装不了；项目先例是自写 CIEDE2000/CVD——测量脚本不进运行时，不构成新依赖）。
+  AST 注入四类故障（比较符 / 算术符 / 布尔符 / 数值常量），把 `src`+`tests` 复制到
+  临时工作区跑**定向测试子集**（`-x` 早停），报分数 + **逐个存活变异体的结论**。
+  `--max-seconds` 限定时长（E1 要求）；`--strict` 分数 < 基线即红。已进 CI
+  （`mutation` job）。
+- **首轮实测：有效变异体 21 ｜ 杀死 11 ｜ 存活 10 ｜ 等价 3 ⇒ 分数 0.524**
+  （E0 基线未立，此值即首个基线，`MIN_SCORE = 0.50`）。
+- 登记的**等价变异体**（语义不变，测不出来是对的）：`TP_OVERLAP ±1`、
+  `TP_TRIM ±1`、`_smooth_log_axis` 的 `fraction` 默认值（**从不被使用**——
+  两个调用方都显式传参）。
+- 列出的**测试缺失**（真发现，10 条）：`smooth_log`/`smooth_power` 的 `fraction`
+  默认值、`detect_cutoff` 的 `None` 守卫（无测试走 None 输入）、`cur > floor_hz`
+  与 `cut < min_hz` 的边界比较、`f` 上的 `<=` 比较、`TP_OS = 4`、
+  `PHASE_UNDEF_DB`/`ANTI_FLOOR_DB` 等常量未钉。
+- ⚠ **开发中量具坏了两次，症状都是"全存活/分数 0"**（看起来像"测试极差"）：
+  ① `_candidates` 用 `id(node)` 标识目标，而变异时**重新 parse** 了一棵树 ⇒ id
+  永不匹配 ⇒ 变异静默不生效；② 未把工作区 `src` 放进 `PYTHONPATH` ⇒ 本仓库是
+  editable 安装，**真实仓库**代码被 import（`tests/test_cutoff.py` 这类
+  **不带 `sys.path.insert`** 的文件尤其如此）⇒ 变异体根本没加载。
+  教训：**分数异常低先怀疑量具**。两条都写进探针 docstring。
+
+> **E1 未完成项（如实登记）**：E1.3 **视觉回归**（本机无 `pixelmatch`，且需先定
+> 基线图与抗锯齿容差口径）留待后续。
 
 ### 口径变更（B11-B 细腻级：720 行 + 色窗自适应）
 
