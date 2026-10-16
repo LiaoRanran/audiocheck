@@ -80,6 +80,37 @@ def test_confidence_is_none_without_brickwall_data():
     assert conf is None
 
 
+def test_confidence_is_normalized_slope_position():
+    """★ conf 的**统计定义**（theory.md §11.2）：砖墙陡度在证据区间
+    [conf_slope_lo, lo+span] 上的归一化位置——**不是概率**。
+
+    端点与中点钉死：8dB/oct ⇒ 0（自然滚降，无证据）、24 ⇒ 1（硬砖墙，
+    满证据）、16 ⇒ 0.5。区间外截断（≤8 恒 0，≥24 恒 1）。
+    写"概率/置信度%"的文案是**越界**——p(有损|谱) 需要先验，本项目没有。
+    """
+    lo, span = TH.conf_slope_lo, TH.conf_slope_span
+    for slope, want in ((4.0, 0.0), (lo, 0.0), (lo + span / 2, 0.5),
+                        (lo + span, 1.0), (60.0, 1.0)):
+        _, _, conf = axis_bandwidth(44100, 17000, slope, TH)
+        assert abs(conf - want) < 1e-9, "slope=%.1f ⇒ conf=%.3f，期望 %.1f" % (slope, conf, want)
+    # 单调：陡度越大证据越强（这条是方向的，端点是值的）
+    prev = -1.0
+    for slope in (8.0, 12.0, 16.0, 20.0, 24.0, 40.0):
+        _, _, conf = axis_bandwidth(44100, 17000, slope, TH)
+        assert conf >= prev, "conf 非单调：%.1f ⇒ %.3f" % (slope, conf)
+        prev = conf
+
+
+def test_strength_wording_never_claims_probability():
+    """强度文案纪律：成因候选用"强度"，**不许**写"概率/置信度"（§11.2）。"""
+    import inspect
+
+    from audiocheck.core.analyzers import causes
+    for name in ("cause_candidates", "usability_matrix"):
+        src = inspect.getsource(getattr(causes, name))
+        assert "概率" not in src and "置信度" not in src, "%s 的文案越界了" % name
+
+
 def test_thresholds_are_overridable():
     th = Thresholds(cd_full=18.0, ltd=15.0)
     level, text, _ = axis_bandwidth(44100, 19000, 113.0, th)
