@@ -1454,6 +1454,128 @@ class BandCanvas(BaseCanvas):
         self.draw()
 
 
+# --------------------------------------------------------------------- 时间定位
+class TimelineCanvas(BaseCanvas):
+    """时间定位：逐段 LUFS / 真峰值 / 削波率随时间的变化。
+
+    **数据来自判定结果，不重读文件**：`r["timeline"]` 每段一行
+    （start / end / lufs / true_peak_dbfs / clip_pct），与 `BandCanvas`
+    同一模式（`set_data(r)`）。段级判定口径见
+    `core/analyzers/timeline.py`（100ms 步 / 400ms 块门限积分，段级门限
+    独立 ⇒ 段 LUFS 可与相邻段比较、不可与整轨相加/平均）。
+
+    **问题段标注不重造判据**：遮罩与红柱直接取内核产出的
+    `timeline_loudness_problems`（真峰值 ≥ 0 dBFS）与 `timeline_problems`
+    （削波超限）——显示层只画清单，不再判一遍（单一来源）。
+    """
+
+    def __init__(self):
+        # 上下两轴共享时间：上轴响度（LUFS/真峰值），下轴削波率柱。
+        # constrained 布局管间距（不传 hspace——那是给非 constrained 的 GridSpec）。
+        super().__init__(6.2, 4.4)
+        gs = self.fig.add_gridspec(2, 1, height_ratios=[2.3, 1.0])
+        self.ax1 = self.fig.add_subplot(gs[0])
+        self.ax2 = self.fig.add_subplot(gs[1], sharex=self.ax1)
+        self.r = None
+
+    def set_data(self, r):
+        self.r = r
+        self.redraw_if_visible()
+
+    def _has_data(self):
+        return bool((self.r or {}).get("timeline"))
+
+    @staticmethod
+    def _runs(points):
+        """把 [(i, v), …] 按索引连续切成多段——**None 处断线**。
+
+        响度值可能缺（段太短凑不出 4 个 100ms 步 / 门限全灭 / 数字静音）。
+        跨缺口连线等于把"没测到"画成"测到了"——查不到与没问题是本
+        项目最忌讳的混淆方式。
+        """
+        runs, cur = [], []
+        for i, v in points:
+            if cur and i != cur[-1][0] + 1:
+                runs.append(cur)
+                cur = []
+            cur.append((i, v))
+        if cur:
+            runs.append(cur)
+        return runs
+
+    def redraw(self):
+        self._stale = False
+        p, r = self.p, self.r
+        if p is None:
+            return
+        self.fig.set_facecolor(p["surface"])
+        rows = (r or {}).get("timeline") or []
+        for ax in (self.ax1, self.ax2):
+            ax.clear()
+            ax.set_facecolor(p["plot_bg"])
+        if not rows:
+            note = (r or {}).get("timeline_note") \
+                or "无分段数据（浅模式未做，或文件短于一个分段窗）"
+            for ax in (self.ax1, self.ax2):
+                ax.set_xticks([])
+                ax.set_yticks([])
+            self.ax1.text(.5, .5, note, ha="center", va="center", wrap=True,
+                          color=p["text_faint"], transform=self.ax1.transAxes,
+                          fontsize=p["fs_caption"])
+            self.draw()
+            return
+
+        mid = [(row["start"] + row["end"]) / 2.0 for row in rows]
+        lu = [(i, row["lufs"]) for i, row in enumerate(rows)
+              if row.get("lufs") is not None]
+        tp = [(i, row["true_peak_dbfs"]) for i, row in enumerate(rows)
+              if row.get("true_peak_dbfs") is not None]
+
+        # ---- 上轴：LUFS + 真峰值；0 dBFS 是数字满刻度硬上限（事实线）----
+        # ⚠ marker 大小写 `markersize=` 不写 `ms=`：test_ui_motion 的
+        # `ms=\d` 豁免按行匹配（只放行含 `plot(` 的行），本循环的 marker 参数
+        # 落在**续行**上会误报。markersize 是 matplotlib 的同一参数的
+        # 规范长名，语义不变。
+        ax = self.ax1
+        for run in self._runs(lu):
+            ax.plot([mid[i] for i, _ in run], [v for _, v in run],
+                    color=p["accent"], lw=1.6, marker="o", markersize=3.2,
+                    zorder=4, label="LUFS（段级）")
+        for run in self._runs(tp):
+            ax.plot([mid[i] for i, _ in run], [v for _, v in run],
+                    color=p["bad"], lw=1.2, ls=(0, (4, 2)), marker="o", markersize=2.6,
+                    zorder=4, label="真峰值\u00a0dBTP")
+        ax.axhline(0.0, color=p["text_faint"], lw=.9, ls=(0, (2, 3)),
+                   zorder=3, label="0 dBFS 上限")
+        # 真峰值顶限段（内核清单）：低透明遮罩标时间范围，不画第二个判据
+        for q in (r.get("timeline_loudness_problems") or []):
+            ax.axvspan(q["start"], q["end"], color=p["bad"], alpha=.10,
+                       lw=0, zorder=1)
+        vals = [v for _, v in lu] + [v for _, v in tp]
+        ax.set_ylim(min(vals + [0.0]) - 1.5, max(vals + [0.0]) + 1.5)
+        self._ax_style(ax, None, "LUFS / dBTP")
+        ax.tick_params(labelbottom=False)      # 时间轴由下轴统一显示
+        ax.legend(loc="upper right", fontsize=p["fs_caption"], framealpha=0,
+                  handlelength=2.2, borderaxespad=0)
+
+        # ---- 下轴：削波率柱。柱宽 = 步长（段跨的一半）——
+        # **留出的空隙就是重叠**，画满整段会把"50% 重叠"画成"每段全覆盖"。----
+        ax = self.ax2
+        seg = rows[0]["end"] - rows[0]["start"]
+        hop = (mid[1] - mid[0]) if len(mid) > 1 else seg
+        prob_starts = {q["start"] for q in (r.get("timeline_problems") or [])}
+        for i, row in enumerate(rows):
+            ax.bar(mid[i], row.get("clip_pct") or 0.0, width=hop,
+                   color=(p["bad"] if row["start"] in prob_starts else p["warn"]),
+                   zorder=3, align="center")
+        self._ax_style(ax, "时间（段 %gs · 步 %gs）" % (seg, hop), "削波 %")
+        from matplotlib.ticker import FuncFormatter
+        ax.xaxis.set_major_formatter(
+            FuncFormatter(lambda s, _: "%d:%02d" % (int(s) // 60, int(s) % 60)))
+        ax.set_xlim(mid[0] - hop / 2, mid[-1] + hop / 2)
+        self.draw()
+
+
 # --------------------------------------------------------------------- 3D 瀑布
 class WaterfallCanvas(BaseCanvas):
     """3D 瀑布频谱：把时间轴立起来，低频堆积与高频骤停一目了然。"""

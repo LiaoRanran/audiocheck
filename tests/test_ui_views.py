@@ -41,6 +41,7 @@ class TestViewKeysMatchStack(unittest.TestCase):
             SpectrogramCanvas,
             SpectrumCanvas,
             StereoCanvas,
+            TimelineCanvas,
             WaterfallCanvas,
         )
         expect = {
@@ -50,6 +51,7 @@ class TestViewKeysMatchStack(unittest.TestCase):
             "waterfall": WaterfallCanvas,
             "phase": StereoCanvas,       # B14 自研：立体声相位场
             "bands": BandCanvas,
+            "timeline": TimelineCanvas,  # C4.3 响度维度：逐段 LUFS/真峰值/削波
             "compare": CompareCanvas,
             "batch": OverviewCanvas,
             "meta": None,                # 元数据页也是裸 QWidget

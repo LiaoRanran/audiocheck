@@ -56,6 +56,7 @@ from .charts import (
     SpectrogramCanvas,
     SpectrumCanvas,
     StereoCanvas,
+    TimelineCanvas,
     VerdictDelegate,
     WaterfallCanvas,
 )
@@ -209,11 +210,11 @@ class MainWindow(FramelessWindow):
     REFRESH_COALESCE_MS = 120
     # 视图 key → QStackedWidget 的索引。**顺序必须与 _stack() 里 addWidget 的
     # 真实顺序一致**：overview, spectrum, spectro, waterfall, bands,
-    # compare(cv_cmp), batch(cv_ovw), meta(两个 KVTable)。
+    # timeline, compare(cv_cmp), batch(cv_ovw), meta(两个 KVTable)。
     # 曾把 meta/compare/batch 三者顺序写错，症状是侧边栏点「元数据」显示的是
     # 对比画布、而真正的元数据页永远到不了（tests/test_ui_views.py 钉住此映射）。
     VIEW_KEYS = ["overview", "spectrum", "spectro", "waterfall", "phase", "bands",
-                 "compare", "batch", "meta"]
+                 "timeline", "compare", "batch", "meta"]
 
     def __init__(self):
         # 高 DPI：必须在创建 QApplication 之后、创建窗口之前设置
@@ -274,7 +275,8 @@ class MainWindow(FramelessWindow):
         self.sidebar.add_section("分析")
         for key, label, ico in (("overview", "总览", "chart"), ("spectrum", "频谱曲线", "wave"),
                                 ("spectro", "频谱图", "grid"), ("waterfall", "瀑布图", "layers"),
-                                ("phase", "相位场", "layers"), ("bands", "频段能量", "chart")):
+                                ("phase", "相位场", "layers"), ("bands", "频段能量", "chart"),
+                                ("timeline", "时间定位", "clock")):
             self.sidebar.add_item(key, label, ico)
         self.sidebar.add_section("信息")
         for key, label, ico in (("meta", "元数据", "doc"), ("batch", "批次概览", "chart")):
@@ -584,10 +586,11 @@ class MainWindow(FramelessWindow):
         self.cv_wfall = WaterfallCanvas()
         self.cv_phase = StereoCanvas()
         self.cv_band = BandCanvas()
+        self.cv_timeline = TimelineCanvas()
         self.cv_cmp = CompareCanvas()
         self.cv_ovw = OverviewCanvas()
         for cv in (self.cv_spec, self.cv_spectro, self.cv_wfall, self.cv_phase, self.cv_band,
-                   self.cv_cmp, self.cv_ovw):
+                   self.cv_timeline, self.cv_cmp, self.cv_ovw):
             self.stack.addWidget(cv)
 
         # --- 元数据 ---
@@ -661,7 +664,7 @@ class MainWindow(FramelessWindow):
         self.delegate.apply_theme(T.plot_palette(t.p, t), t)   # 委托仍按旧字典键取值
         pp = T.plot_palette(t.p, t)
         for cv in (self.cv_spec, self.cv_spectro, self.cv_wfall, self.cv_phase,
-                   self.cv_band, self.cv_cmp, self.cv_ovw):
+                   self.cv_band, self.cv_timeline, self.cv_cmp, self.cv_ovw):
             cv.apply_theme(pp)
         # B9.1：判定胶囊（Badge）不再出现在判定区——小样的形态是
         # **方点 + 疏排判词**（`● 不达标`），不是一个填充胶囊。
@@ -733,6 +736,7 @@ class MainWindow(FramelessWindow):
             ("跳转到 频谱图", "", lambda: self._navigate("spectro")),
             ("跳转到 瀑布图", "", lambda: self._navigate("waterfall")),
             ("跳转到 频段能量", "", lambda: self._navigate("bands")),
+            ("跳转到 时间定位", "", lambda: self._navigate("timeline")),
             ("跳转到 元数据", "", lambda: self._navigate("meta")),
             ("跳转到 批次概览", "", lambda: self._navigate("batch")),
         ]
@@ -905,6 +909,7 @@ class MainWindow(FramelessWindow):
         self.table.setRowCount(0)
         self.cv_spec.set_data(None)
         self.cv_band.set_data(None)
+        self.cv_timeline.set_data(None)
         self.cv_spectro.set_data(None, None, "选择条目后自动生成")
         self.cv_wfall.set_data(None, None, "选择条目后自动生成")
         self.cv_cmp.set_data([])
@@ -1067,6 +1072,7 @@ class MainWindow(FramelessWindow):
         self._cards(r)
         self.cv_spec.set_data(r)
         self.cv_band.set_data(r)
+        self.cv_timeline.set_data(r)
         self._meta(r)
         self.lbl_advice.setText(r.get("advice", "—"))
         # 只给**当前真的在看**的视图起线程：频谱图与瀑布图的 S 矩阵各要读盘 +
@@ -1246,6 +1252,10 @@ class MainWindow(FramelessWindow):
             rows.append(("", ""))
             for k, _, _ in BANDS:
                 rows.append(("频段 " + BAND_CN[k], fmt_num(r["bands_pct"].get(k), " %", 1)))
+        # C4.3：时间定位口径写进指标页（时间定位图画的是这份数据，判据在此）
+        if r.get("timeline_note"):
+            rows.append(("", ""))
+            rows.append(("时间定位口径", r["timeline_note"]))
         return [(a, b) for a, b in rows if a or b]
 
     def _meta(self, r):

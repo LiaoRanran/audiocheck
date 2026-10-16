@@ -1285,6 +1285,11 @@ def make_pixmap(name: str, color: str, size: int = 18, weight: float = 1.6) -> Q
             pr.setBrush(QColor(color))
             pr.setPen(Qt.NoPen)
             pr.drawRoundedRect(QRectF(x, s - m - (s - 2 * m) * hh, w, (s - 2 * m) * hh), 1.6, 1.6)
+    elif name == "clock":
+        # 时间定位视图用：圆 + 两根针（12 点 / 4 点方向）。
+        pr.drawEllipse(QRectF(m, m, s - 2 * m, s - 2 * m))
+        pr.drawLine(QPointF(s / 2, s / 2), QPointF(s / 2, s * 0.28))
+        pr.drawLine(QPointF(s / 2, s / 2), QPointF(s * 0.70, s * 0.58))
     elif name == "layers":
         pr.drawLine(QPointF(m, s * 0.62), QPointF(s - m, s * 0.62))
         path = QPainterPath()

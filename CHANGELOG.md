@@ -91,6 +91,41 @@
   seg_* + dual_resolution_stft；出处总账 33→42 字段（41 工程估计 + 1 一手文档，
   数字由 `config.provenance_summary()` 实取）；§2.1 补三分类说明。
 
+### 新增（timeline 视图面板：时间定位进 GUI）
+
+> 判据见 `tests/test_ui_timeline.py`。
+
+- **第 8 个视图**：侧边栏「时间定位」（clock 图标）→ `TimelineCanvas`。
+  上半轴 LUFS（实线）/ 真峰值（虚线）按段心时间 + 0 dBFS 事实参考线；
+  下半轴削波率柱——**柱宽 = 步长，空隙即重叠**（画满整段会把 50% 重叠
+  画成"每段全覆盖"）。
+- **数据来自判定结果、不重读文件**：读 `r["timeline"]`（与 BandCanvas 同模式
+  `set_data(r)`）；问题段遮罩/红柱**直接取内核清单**
+  （`timeline_loudness_problems` / `timeline_problems`）——显示层不重造判据。
+- **None 处断线**：lufs 缺口跨点不连线（"没测到"不许画成"测到了"）；
+  数字静音/门限全灭的段只缺线不缺轴。
+- **空态如实**：无 timeline（浅模式/短文件）显示内核 note 原文；指标页新增
+  「时间定位口径」一行（长文 tooltip，与既有长值同模式）。
+- 口径披露写在轴上：「时间（段 10s · 步 5s）」从数据直算，不写死。
+- 两处**既有测试按行扫描的边界情形**（成因已写进代码注释）：`ms=` 写在续行上
+  被 `test_ui_motion` 的 `plot(` 按行豁免漏掉误报 ⇒ 用规范长名
+  `markersize=`；`"真峰值 dBTP"` 的混排普通空格 ⇒ U+00A0（`test_ui_typography`
+  口径，与 window.py 既有标签一致）。
+- 改动文件：`ui/charts.py`（TimelineCanvas）、`ui/window.py`（VIEW_KEYS/stack/
+  侧边栏/on_select/clear/apply_theme/命令面板/指标行）、`ui/theme.py`（clock
+  图标）、`tests/test_ui_timeline.py`（12 条）、`tests/test_ui_views.py`（+1 映射）。
+- 验证：全量 **585 passed** + ruff 全树绿；palette/hue_family/mem_probe 全过；
+  **深/浅两主题各渲染一帧人工看过**（前半正常后半削波素材：LUFS 阶梯、
+  真峰值贴 0、遮罩与红柱位置正确）。
+
+### 已知欠账（非本批次引入，探针实测留档）
+
+- `perf_probe` P7 换肤 apply_theme **p95 ≈ 1950 ms > 1500 ms 阈值，在 HEAD
+  （本批次之前）即红**。cProfile 定位：约一半是 `QApplication.setStyleSheet`
+  （13 KB QSS 全局 repolish，**裸 app 即 225 ms**——Qt 解析成本的地板），
+  其余分散在画布重绘与表格重建。本批次新增第 8 张画布使 p95 +44 ms（噪声级）。
+  ⇒ 修复需独立批次（QSS 作用域或样式缓存），**不动阈值**（阈值是判据不是旋钮）。
+
 ### 口径变更（C4 判定颗粒度）
 
 > 逐行 CLI diff 留档：`out/_before_demo{1,2,3}*.txt`（改前，`f5bb3b6` worktree）
