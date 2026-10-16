@@ -26,6 +26,8 @@ class AnalysisContext:
     _info: object = None
     _spec: tuple | None = None
     _seg: tuple | None = None
+    _tp_scan: dict | None = None
+    _dc: tuple | None = None
 
     # ---------------- 基础信息 ----------------
     @property
@@ -98,6 +100,37 @@ class AnalysisContext:
                                dtype="float32", always_2d=True)
                 self._seg = (x, self.fs)
         return self._seg
+
+    def true_peak_scan(self) -> dict:
+        """**整轨与逐段共用的真峰值扫描**（只做一次 4× 过采样）。
+
+        为什么放在 context（而不是让 `timeline` 自己扫）：`loudness` 要整轨一个数、
+        `timeline` 要逐段一个数，两处各扫一遍等于把 4× 过采样做两次
+        （实测 12 分钟文件上 `timeline` 占整条分析 44%，真峰值是主项）。
+        段区间由 `timeline.segment_spans` **算一次**（与它自己用的完全是同一份，
+        不许两处各推一套），懒计算 + 缓存 ⇒ 谁先要谁触发，后来者零成本。
+
+        返回 `dsp.true_peak_scan` 的字典；`spans` 与 `timeline` 的行**一一对应**。
+        """
+        if self._tp_scan is None:
+            from . import dsp
+            from .analyzers.timeline import segment_spans  # 懒导入，避免环
+            spans, _capped, _hop, _seg = segment_spans(self.frames, self.fs, self.thresholds)
+            self._tp_scan = dsp.true_peak_scan(self.path, spans)
+        return self._tp_scan
+
+    def set_dc(self, sums, frames: int) -> None:
+        """登记**逐声道有符号和**与帧数（`basic` 的那一趟顺手算出来的）。
+
+        直流偏移本来是**独立的一遍整轨解码**（`dsp.dc_offset`）。而 `basic` 已经在
+        同一份样本上跑过一趟，多累加一个 `b.sum(axis=0)` 几乎免费 ⇒ 让 `dc_offset`
+        分析器直接取这里的值，**省掉一遍整文件解码**（实测 12 分钟文件上约 2 s）。
+        `basic` 在 order 10，`dc_offset` 在 41 ⇒ 顺序天然满足。
+        """
+        self._dc = (sums, frames)
+
+    def dc(self):
+        return self._dc
 
     # ---------------- 指标声明 ----------------
     def metric(self, key: str, label: str, **kw) -> None:

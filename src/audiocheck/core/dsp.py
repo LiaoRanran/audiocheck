@@ -67,10 +67,21 @@ def _gated_loudness(block_ms: np.ndarray, rel_gate: float) -> float | None:
     return float(OFFSET + 10 * np.log10(z[keep].mean() + 1e-30))
 
 
-def loudness(path: str, fs: int, channels: int, total: int, chunk: int = 1 << 20) -> dict:
+#: `loudness(..., true_peak_dbfs=...)` 的**自动**哨兵：不传 = 自己扫一遍。
+#: 用哨兵而不是 `None`，是因为 `None` 是**合法的结果**（静音/空文件没有真峰值）——
+#: 拿 `None` 当"没传"，静音文件会被白扫一遍（而这正是本项目最忌讳的"用值域兼表状态"）。
+_AUTO_TP = object()
+
+
+def loudness(path: str, fs: int, channels: int, total: int, chunk: int = 1 << 20,
+             true_peak_dbfs: float | None = _AUTO_TP) -> dict:
     """流式积分响度 + LRA + True Peak（4 倍过采样）。
 
     内存占用与文件长度无关：每 100ms 只保留一个均方值。
+
+    `true_peak_dbfs`：调用方**已经扫过真峰值**时传进来，省掉这一遍 4× 过采样
+    （`AnalysisContext.true_peak_scan` 一次扫描供整轨与逐段共用）。
+    不传则自己扫（直接调用时的口径与以前**逐位相同**）。
     """
     hop = int(BLOCK_STEP * fs)
     if hop < 1 or total < hop * 4:
@@ -118,9 +129,9 @@ def loudness(path: str, fs: int, channels: int, total: int, chunk: int = 1 << 20
         return {}
     step_ms = step_ms[:si]
 
-    # True Peak 单独一遍（见 true_peak() 的 docstring）：每段带 TP_TRIM 上下文、
-    # 只取中段，既不在人造边界上生出虚假峰值，也不漏掉真实峰值。
-    tp_db = true_peak(path)
+    # True Peak：优先用调用方预扫好的值（`true_peak_scan` **一次过采样**供整轨与逐段共用）；
+    # 不传则自己扫一遍（直接调用时的兜底，口径与以前逐位相同）。
+    tp_db = true_peak(path) if true_peak_dbfs is _AUTO_TP else true_peak_dbfs
 
     # 积分响度：400ms 块 = 4 个 100ms 步（用卷积做滑窗，矢量化）
     kern = np.ones(4) / 4.0
@@ -343,8 +354,27 @@ def anti_phase_scan(left: np.ndarray, right: np.ndarray, fs: int,
     }
 
 
+def dc_result(sums, n: int) -> dict:
+    """由**逐声道有符号和**与样本数产出直流结果。
+
+    单独抽出来是为了"一趟读取、两处结论"：`basic` 已经在整轨那一趟里顺手累加了
+    有符号和（`b.sum(axis=0)`，浮点口径与 `dc_offset()` 逐位一致），
+    `dc_offset` 分析器直接调这里 ⇒ **省掉一遍整文件解码**。
+    """
+    if n <= 0:
+        return {}
+    dc = np.asarray(sums, dtype=np.float64) / n
+    return {
+        "dc_offset": [round(float(x), 6) for x in dc],
+        "dc_max_dbfs": round(float(20 * np.log10(np.abs(dc).max() + 1e-12)), 1),
+    }
+
+
 def dc_offset(path: str, channels: int, chunk: int = 1 << 20) -> dict:
-    """直流偏移——会吃掉动态余量，是转码/母带环节的常见瑕疵。"""
+    """直流偏移——会吃掉动态余量，是转码/母带环节的常见瑕疵。
+
+    **独立调用时的入口**（分析路径已改为复用 `basic` 那一趟，见 `dc_result`）。
+    """
     s = np.zeros(channels)
     n = 0
     with sf.SoundFile(path) as f:
@@ -354,13 +384,7 @@ def dc_offset(path: str, channels: int, chunk: int = 1 << 20) -> dict:
                 break
             s += b.sum(axis=0, dtype=np.float64)
             n += b.shape[0]
-    if n == 0:
-        return {}
-    dc = s / n
-    return {
-        "dc_offset": [round(float(x), 6) for x in dc],
-        "dc_max_dbfs": round(float(20 * np.log10(np.abs(dc).max() + 1e-12)), 1),
-    }
+    return dc_result(s, n)
 
 
 def _oversample(x: np.ndarray) -> np.ndarray:
@@ -384,8 +408,86 @@ def _true_peak_of(x: np.ndarray) -> float:
     return float(np.abs(ov).max()) if ov.size else 0.0
 
 
+def true_peak_scan(path: str, spans: list[tuple[int, int]] | None = None,
+                   chunk: int = 1 << 21) -> dict:
+    """**一次流式过采样**，同时给出整轨真峰值与给定各段（帧区间）的真峰值。
+
+    为什么要合一（2026-10-17，真实曲库画像驱动，不是"我觉得可以合并"）
+    ----------------------------------------------------------------
+    * `loudness` 要**整轨一个数**，`timeline` 要**逐段一个数**；
+    * 此前两处各做一遍 4× 过采样：整轨 1 遍 + **逐段最多 96 遍**。实测（12 分钟
+      44.1k 文件）`timeline` 占整条分析的 **44%**，其中真峰值是主项；
+    * 旧的逐段实现还把段当**独立文件**：先 `sf.write` 写临时 wav、再让
+      `true_peak()` 重新打开读回来（每段一次磁盘往返），而段的**两端是硬切**，
+      滤波器的振铃会在边界补出**假峰**。
+
+    现在的做法：分块读（每块带 `TP_TRIM` 上下文、只取中段——与 `true_peak()`
+    同一套，`true_peak()` 也改成调这里，**不存两份实现**），块内既更新整轨最大，
+    也更新落在本块内的各段最大。
+    ⇒ 整轨读数与旧 `true_peak()` **逐位相同**；逐段读数**更准**（无边界假峰、
+      无临时文件）。**这是一处口径变更**，diff 证据在 CHANGELOG。
+
+    截断的文件按**已读到的部分**算，并把 `incomplete` / `frames_read` 报出来——
+    不许把"读不满"当成"没问题"。
+
+    spans: `[(start_frame, end_frame), ...]`（左闭右开）
+    返回 : `{"global": dBFS|None, "spans": [dBFS|None, ...], "incomplete": bool, "frames_read": int}`
+    """
+    out = {"global": None, "spans": [None] * len(spans or []),
+           "incomplete": False, "frames_read": 0}
+    try:
+        with sf.SoundFile(path) as f:
+            total = f.frames
+    except Exception:                                        # noqa: BLE001
+        return out
+    if total <= 0:
+        return out
+
+    peak = 0.0
+    span_pk = [0.0] * len(spans or [])
+    pos = 0
+    cur = max(1 << 16, int(chunk))            # 当前块长（失败时减半重试）
+    while pos < total:
+        end = min(pos + cur, total)
+        a = max(0, pos - TP_TRIM)                 # 向前借上下文
+        b = min(total, end + TP_TRIM)             # 向后借上下文
+        try:
+            x, _ = sf.read(path, start=a, frames=b - a, dtype="float32", always_2d=True)
+        except Exception:                                    # noqa: BLE001
+            # ⚠ **截断文件不能整块丢**：一次要太多帧会直接抛（实测 30 s 的截断 FLAC
+            # 单块读 `frames_read` 会停在 0 ⇒ 连前面可读的内容一起丢）。
+            # 块长减半重试（下限 65536，与 `basic.py` 的读块一致），直到读到能读的部分。
+            if cur > (1 << 16):
+                cur = max(1 << 16, cur // 2)
+                continue
+            out["incomplete"] = True             # 到这个粒度还失败 ⇒ 真读不满
+            break
+        if x.size == 0:
+            break
+        ov = np.abs(_oversample(x))
+        lo, hi = (pos - a) * TP_OS, (end - a) * TP_OS
+        seg = ov[lo:hi]
+        if seg.size:
+            peak = max(peak, float(seg.max()))
+            for si, (s0, s1) in enumerate(spans or []):
+                i0, i1 = max(s0, pos) * TP_OS, min(s1, end) * TP_OS
+                if i1 > i0:
+                    sub = seg[i0 - lo:i1 - lo]
+                    if sub.size:
+                        span_pk[si] = max(span_pk[si], float(sub.max()))
+        out["frames_read"] = end
+        pos = end
+
+    def _db(pk: float) -> float | None:
+        return round(20 * np.log10(pk + 1e-12), 2) if pk > 0 else None
+
+    out["global"] = _db(peak)
+    out["spans"] = [_db(v) for v in span_pk]
+    return out
+
+
 def true_peak(path: str, chunk: int = 1 << 21) -> float | None:
-    """单独计算真峰值（供只需要这一项的调用方）。
+    """整轨真峰值（dBFS）。**实现已并入 `true_peak_scan`**（一处数学，两个入口）。
 
     做法：按 `chunk` 分段，但每段都向前后各多读 `TP_TRIM` 个采样作上下文，
     过采样后**只取中段**（丢掉两端各 TP_TRIM 对应的输出）。
@@ -396,20 +498,5 @@ def true_peak(path: str, chunk: int = 1 << 21) -> float | None:
       * 早先「每块独立过采样后从两头各削 10%」则是丢得太多，
         落在削掉区间里的**真实峰值永久漏掉**。
     """
-    with sf.SoundFile(path) as f:
-        total = f.frames
-    if total <= 0:
-        return None
-    peak, pos = 0.0, 0
-    while pos < total:
-        end = min(pos + chunk, total)
-        a = max(0, pos - TP_TRIM)                 # 向前借上下文
-        b = min(total, end + TP_TRIM)             # 向后借上下文
-        x, _ = sf.read(path, start=a, frames=b - a, dtype="float32", always_2d=True)
-        ov = _oversample(x)
-        lo, hi = (pos - a) * TP_OS, (end - a) * TP_OS
-        seg = ov[lo:hi]
-        if seg.size:
-            peak = max(peak, float(np.abs(seg).max()))
-        pos = end
-    return round(20 * np.log10(peak + 1e-12), 2) if peak > 0 else None
+    return true_peak_scan(path, None, chunk)["global"]
+

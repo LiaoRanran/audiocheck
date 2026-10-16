@@ -42,6 +42,10 @@ _MAX_SEGMENTS = 96
 #: 削波检测门限 —— **与 basic.py 同一口径**（|x| ≥ 此值算削平的样本）。
 _CLIP_LEVEL = 0.9999
 
+#: `segment_loudness(..., true_peak_dbfs=...)` 的**自动**哨兵：不传 = 自己按"独立段"算。
+#: 用哨兵而不是 `None`，因为 `None` 是**合法结果**（静音段没有真峰值）。
+_AUTO_SEG_TP = object()
+
 
 def _mmss(t: float) -> str:
     s = int(round(t))
@@ -54,9 +58,33 @@ def _mmss(t: float) -> str:
 _TP_BAD_DB = 0.0
 
 
+def segment_spans(frames: int, fs: int, th) -> tuple[list[tuple[int, int]], bool, int, int]:
+    """**分段区间**（左闭右开帧区间）——唯一定义处。
+
+    返回 `(spans, capped, hop, seg)`。为什么单列出来：段区间不只 `timeline` 要用，
+    `context.true_peak_scan()` 也要用（**整轨与逐段共用同一次 4× 过采样**）。
+    两处各推一套的话，段与真峰值就会错位——而这种错位不会报错，只会静默给错数。
+    """
+    seg = int(th.seg_seconds * fs)
+    if seg <= 0 or frames < seg:
+        return [], False, 0, seg
+    hop = max(1, int(seg * (1.0 - th.seg_overlap)))
+    n_total = 1 + (frames - seg) // hop
+    capped = n_total > _MAX_SEGMENTS
+    n = min(n_total, _MAX_SEGMENTS)
+    return [(i * hop, i * hop + seg) for i in range(n)], capped, hop, seg
+
+
 def _tp_of(x: np.ndarray, fs: int) -> float | None:
-    """段真峰值：把段写成临时 wav，复用 `dsp.true_peak` 的**标准**过采样实现
-    （不另写一遍，避免与核心资产分叉）。失败返回 None（不静默降级成 0）。"""
+    """段真峰值（**按"这一段是一个独立文件"的口径**）：把段写成临时 wav，复用
+    `dsp.true_peak` 的**标准**过采样实现（不另写一遍，避免与核心资产分叉）。
+
+    ⚠ 2026-10-17：**分析路径已不再用它**——`TimelineAnalyzer` 改用
+    `ctx.true_peak_scan()`（整轨一次过采样、取段内最大）。留在这里是因为
+    ① `segment_loudness()` 被直接调用时（测试、脚本）仍要这条路；
+    ② 它是"逐段 tp 更准"那个结论的**对照基准**（CHANGELOG 的 diff 证据由它产出）。
+    两种口径的差别写在 `dsp.true_peak_scan` 的 docstring 里。
+    """
     fd, tmp = tempfile.mkstemp(suffix=".wav", prefix="ac_seg_")
     os.close(fd)
     try:
@@ -71,13 +99,17 @@ def _tp_of(x: np.ndarray, fs: int) -> float | None:
             pass
 
 
-def segment_loudness(x: np.ndarray, fs: int) -> dict:
+def segment_loudness(x: np.ndarray, fs: int, true_peak_dbfs=_AUTO_SEG_TP) -> dict:
     """单段（x: (n, ch) float）的 ITU-R BS.1770 响度计量（集成响度 + 真峰值）。
 
     **复用标准原语**（`dsp.k_weighting` / `dsp._gated_loudness` / `dsp.true_peak`），
     **不重新发明标准数学**（dsp.py 是核心资产，不许改）。时序分块与 `loudness()`
     同一套：100ms 步 → 400ms 块门限积分。返回 {lufs, true_peak_dbfs}
     （任一项算不出给 None，不静默降级）。
+
+    `true_peak_dbfs`：调用方已从 `ctx.true_peak_scan()` 拿到该段真峰值时传进来
+    （省掉逐段过采样）；不传则自己按"独立段"口径算（上面的 `_tp_of`）。
+    用哨兵而不是 `None` 区分，因为 `None` 是**合法结果**（静音段没有真峰值）。
     """
     if x.size == 0:
         return {"lufs": None, "true_peak_dbfs": None}
@@ -92,10 +124,12 @@ def segment_loudness(x: np.ndarray, fs: int) -> dict:
         y[:, c], z2[c] = signal.lfilter(b2, a2, xc, zi=z2[c])
     np.square(y, out=y)
 
+    tp = _tp_of(x, fs) if true_peak_dbfs is _AUTO_SEG_TP else true_peak_dbfs
+
     hop = max(1, int(dsp.BLOCK_STEP * fs))
     # 段太短凑不出 4 个 100ms 步 ⇒ 只报真峰值（门限积分无意义）
     if y.shape[0] < hop * 4:
-        return {"lufs": None, "true_peak_dbfs": _tp_of(x, fs)}
+        return {"lufs": None, "true_peak_dbfs": tp}
 
     nsteps = y.shape[0] // hop
     step_ms = np.empty((nsteps, ch), dtype=np.float64)
@@ -114,7 +148,7 @@ def segment_loudness(x: np.ndarray, fs: int) -> dict:
             acc[:] = 0.0
             acc_n = 0
     if si < 4:
-        return {"lufs": None, "true_peak_dbfs": _tp_of(x, fs)}
+        return {"lufs": None, "true_peak_dbfs": tp}
     step_ms = step_ms[:si]
 
     # 积分响度：400ms 块（4 个 100ms 步）滑窗，门限平均（与 loudness() 同一公式）
@@ -123,7 +157,7 @@ def segment_loudness(x: np.ndarray, fs: int) -> dict:
                     for c in range(ch)], axis=1)
     lufs = dsp._gated_loudness(blk, dsp.REL_GATE_INT)
     return {"lufs": round(lufs, 1) if lufs is not None else None,
-            "true_peak_dbfs": _tp_of(x, fs)}
+            "true_peak_dbfs": tp}
 
 
 @register
@@ -138,27 +172,26 @@ class TimelineAnalyzer(Analyzer):
     def run(self, ctx) -> dict:
         if not ctx.deep:
             return {}
-        frames, fs = ctx.frames, ctx.fs
+        fs = ctx.fs
         th = ctx.thresholds
-        seg = int(th.seg_seconds * fs)
-        if seg <= 0 or frames < seg:
+        spans, capped, hop, _seg = segment_spans(ctx.frames, fs, th)
+        if not spans:
             return {"timeline": [],
                     "timeline_note": "文件短于一个分段窗（%.0fs），无法分段" % th.seg_seconds}
-        hop = max(1, int(seg * (1.0 - th.seg_overlap)))
-        n_total = 1 + (frames - seg) // hop
-        capped = n_total > _MAX_SEGMENTS
-        n = min(n_total, _MAX_SEGMENTS)
+        # 真峰值：**整轨一次过采样**，段内取最大（`ctx.true_peak_scan`）。
+        # 与 `loudness` 共用同一次扫描 ⇒ 不再逐段过采样 96 遍、不再写 96 个临时文件。
+        tp_scan = ctx.true_peak_scan()
+        tp_segs = tp_scan["spans"]
 
         rows = []
-        for i in range(n):
-            a = i * hop
-            x, _ = sf.read(ctx.path, start=a, frames=seg, dtype="float32", always_2d=True)
+        for i, (a, b) in enumerate(spans):
+            x, _ = sf.read(ctx.path, start=a, frames=b - a, dtype="float32", always_2d=True)
             if x.size == 0:
                 break
             peak = float(abs(x).max())
             clips = int((abs(x) >= _CLIP_LEVEL).sum())
             rms = float((x.astype("float64") ** 2).mean() ** 0.5)
-            ld = segment_loudness(x, fs)
+            ld = segment_loudness(x, fs, true_peak_dbfs=tp_segs[i] if i < len(tp_segs) else None)
             rows.append({
                 "start": round(a / fs, 1), "end": round((a + x.shape[0]) / fs, 1),
                 "clip_pct": round(clips / x.size * 100.0, 4),
@@ -187,7 +220,9 @@ class TimelineAnalyzer(Analyzer):
             notes.append("仅 %d 段（< %d），不下分段结论——小样本不许硬判"
                          % (len(rows), th.seg_min_count))
         if capped:
-            notes.append("文件超长，只扫前 %d 段（步长 %.0fs）" % (n, hop / fs))
+            notes.append("文件超长，只扫前 %d 段（步长 %.0fs）" % (len(spans), hop / fs))
+        if tp_scan.get("incomplete"):
+            notes.append("**文件读不完整（疑似截断）**：真峰值只覆盖已读到的部分")
         if not notes:
             notes.append("时域逐段统计（削波/峰值/RMS）+ 逐段响度（ITU-R BS.1770："
                          "LUFS/真峰值）；逐段频谱未做——区分力未立，只报数值")

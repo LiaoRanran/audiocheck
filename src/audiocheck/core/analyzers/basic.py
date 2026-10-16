@@ -32,6 +32,7 @@ class BasicAnalyzer(Analyzer):
         block_rms: list[float] = []
         corr_num = corr_l = corr_r = 0.0
         mean_l = mean_r = 0.0
+        dc_sum = np.zeros(ch, dtype=np.float64)   # 逐声道**有符号**和（供 dc_offset 复用）
         frames_read = 0
         read_error: Exception | None = None
 
@@ -55,6 +56,10 @@ class BasicAnalyzer(Analyzer):
                 sumsq += float((bf ** 2).sum())
                 n += b.size
                 clips += int((np.abs(b) >= 0.9999).sum())
+                # 有符号和：**浮点口径与 `dsp.dc_offset` 逐位一致**（float32 读入、
+                # float64 累加）。同一趟里多算这一个归约，就省掉 dc_offset 的**整轨
+                # 重复解码**（实测 12 分钟文件上约 2 s）。
+                dc_sum += b.sum(axis=0, dtype=np.float64)
 
                 # 3 秒 RMS 块：**按样本精确消费**，把读块的超出部分留给下一个块。
                 # 若写成「dr_n >= dr_win 就整块结算」，块长会随读块大小漂移
@@ -103,6 +108,10 @@ class BasicAnalyzer(Analyzer):
             out["lr_level_diff_db"] = round(
                 abs(20 * np.log10((mean_l + 1e-9) / (mean_r + 1e-9))), 2)
             out["_corr"] = corr_num / float(np.sqrt(corr_l * corr_r))
+
+        # 把这一趟顺手算出的逐声道有符号和交给 context（`dc_offset` 分析器取用，
+        # 省掉它自己那一遍整轨解码）。
+        ctx.set_dc(dc_sum, frames_read)
 
         # 截断：**显式说出来**（E2.1 的规矩——"读不满"与"读完了"必须可区分）。
         # 为什么不直接判 level=error：可读部分（这里 ≥99.8%）的统计是**有效**的，

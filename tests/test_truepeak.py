@@ -12,6 +12,8 @@
 """
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import pytest
 import soundfile as sf
@@ -119,6 +121,78 @@ def test_true_peak_of_full_scale_is_not_clipped(tmp_path):
     x = _sine(int(FS * 3), 1000, 0.999)
     tp = dsp.true_peak(_write(tmp_path, x))
     assert -0.15 < tp <= 0.1, "实得 %s" % tp
+
+
+# --------------------------------------------- 2026-10-17：真峰值扫描（整轨+逐段共用）
+def test_true_peak_scan_global_matches_independent_oversampling(tmp_path):
+    """★ 合并实现后，整轨读数必须与**另一条路径**（整段一次过采样）互证。
+
+    `true_peak()` 现在只是 `true_peak_scan()` 的一个入口——所以不能拿它自己对自己
+    （那是同义反复）。这里用 `dsp._true_peak_of`（整段过采样、无分块）当独立参照：
+    单块情形下两者必须一致。**两条不同路径互证**才说明"合并没动读数"。
+    """
+    rng = np.random.default_rng(21)
+    x = (rng.standard_normal(int(FS * 20)) * 0.3).astype(np.float32)
+    for i in (300000, 700000, 950000):
+        x[i:i + 64] = _sine(64, FS / 6, 0.95)
+    p = _write(tmp_path, x)
+    big = dsp.true_peak_scan(p, None, chunk=1 << 22)["global"]        # 单块
+    # 参照要拿**从文件读回来的**样本（`_write` 是 PCM_16，量化会动峰值——
+    # 拿原始 float 当参照会得到一个假的 0.5 dB 差）
+    back, _ = sf.read(p, dtype="float32", always_2d=True)
+    ref = 20 * np.log10(dsp._true_peak_of(back) + 1e-12)
+    assert abs(big - ref) < 0.01, "整轨 %.3f vs 独立参照 %.3f" % (big, ref)
+    # 分块数变化不得漂移（借上下文 + 只取中段那套细节）
+    small = dsp.true_peak_scan(p, None, chunk=60000)["global"]
+    assert abs(big - small) < 0.02, "大块 %.3f vs 小块 %.3f" % (big, small)
+
+
+def test_true_peak_scan_spans_locate_hot_region(tmp_path):
+    """各段真峰值必须**定位到该段**：热段 ≥0 dBFS、冷段远低于它。
+
+    这条同时钉住 **帧 → 4× 采样索引的映射**——映射错一位不会报错，
+    只会把热段算成冷段（安静地给错数，本项目最忌讳的失败方式）。
+    """
+    fs = 44100
+    t = np.arange(int(fs * 4)) / fs
+    clean = (0.3 * np.sin(2 * np.pi * 1000 * t)).astype(np.float32)
+    hot = np.clip(np.random.default_rng(7).standard_normal(fs * 4) * 6.0, -1, 1).astype(np.float32)
+    x = np.concatenate([clean, hot])                 # 前 4 秒冷、后 4 秒热
+    p = _write(tmp_path, x, fs)
+    seg = fs
+    spans = [(0, seg), (2 * seg, 3 * seg), (4 * seg, 5 * seg)]     # 冷 / 冷 / 热
+    got = dsp.true_peak_scan(p, spans)["spans"]
+    assert got[0] < -6.0, "冷段（0.3 正弦 ≈ −10.5 dBFS）实得 %s" % got[0]
+    assert got[2] >= 0.0, "热段应顶到上限，实得 %s" % got[2]
+    assert got[0] < got[2]
+
+
+def test_true_peak_scan_reports_truncation(tmp_path):
+    """读不满（截断）⇒ `incomplete=True` + `frames_read` < 头部声称；不许当完好。"""
+    x = _sine(int(FS * 30), 440, 0.2)
+    full = str(tmp_path / "full.flac")
+    sf.write(full, np.column_stack([x, x]).astype(np.float32), FS, subtype="PCM_16")
+    cut = str(tmp_path / "cut.flac")
+    with open(full, "rb") as f, open(cut, "wb") as g:
+        g.write(f.read(int(os.path.getsize(full) * 0.7)))
+    got = dsp.true_peak_scan(cut, [(0, 48000)])
+    assert got["incomplete"] is True
+    assert 0 < got["frames_read"] < sf.info(cut).frames
+    assert got["global"] is not None          # 按已读部分照样给值
+
+
+def test_loudness_honours_explicit_true_peak_sentinel(tmp_path):
+    """★ 哨兵语义：`true_peak_dbfs=None` 是**合法结果**（静音没有真峰值），
+    不许被当成"没传"而重算一遍——"用值域兼表状态"正是本项目踩过的老坑。
+
+    传 `None` ⇒ 结果里**没有** true_peak_dbfs / plr；不传（哨兵）⇒ 自己扫。
+    """
+    x = _sine(int(FS * 6), 1000, 0.5)
+    p = _write(tmp_path, x)
+    n = int(FS * 6)
+    assert "true_peak_dbfs" not in dsp.loudness(p, FS, 2, n, true_peak_dbfs=None)
+    auto = dsp.loudness(p, FS, 2, n)
+    assert auto.get("true_peak_dbfs") is not None, auto
 
 
 # ---------------------------------------------------------------------- DR

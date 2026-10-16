@@ -89,6 +89,36 @@ def test_band_balance_empty_on_zero_signal():
 
 
 # ------------------------------------------- 变异测试填缺（E1.2 存活体，2026-10-16）
+def test_smooth_log_axis_vectorized_matches_pointwise():
+    """★ 向量化必须与**逐点实现**逐点一致（逐点是唯一真源，不是"另一个实现"）。
+
+    为什么值得单列：向量版（`searchsorted` + 前缀和）是本轮把单次 **0.245 s → 0.0007 s**
+    （357×）的改动；而"窗口内 ≥2 点才取均值、否则保持原值"这类语义最容易在改写时丢掉。
+    **两种网格都要过**：对数网格（真实用途）与线性网格（合成语料那条路）。
+    """
+    from audiocheck.core.analyzers.spectrum import (
+        _smooth_log_axis,
+        _smooth_log_axis_pointwise,
+    )
+
+    rng = np.random.default_rng(20261017)
+    for f in (np.geomspace(20.0, 22050.0, 4096),
+              np.linspace(0.0, 22050.0, 8193),
+              np.linspace(0.0, 48000.0, 8193)):
+        for frac in (6.0, 12.0, 3.0):
+            y = rng.standard_normal(f.size) * 40 - 60
+            got = _smooth_log_axis(f, y, frac)
+            ref = _smooth_log_axis_pointwise(f, y, frac)
+            assert np.allclose(got, ref, rtol=0, atol=1e-9), \
+                "向量化与逐点的最大差 %.3e（f=%d 点，fraction=%s）" % (
+                    np.abs(got - ref).max(), f.size, frac)
+    # 非单调频点：必须退回逐点实现（不许给一个"看起来平滑"的结果）
+    f = np.array([0.0, 100.0, 50.0, 200.0, 150.0])
+    y = np.arange(5.0)
+    assert np.array_equal(_smooth_log_axis(f, y, 6.0),
+                          _smooth_log_axis_pointwise(f, y, 6.0))
+
+
 def test_smooth_power_flat_spectrum_returns_the_same_db():
     """功率域平滑的 dB 刻度必须是标准的 **10·log10**（否则"dB"就不是 dB）。
 
