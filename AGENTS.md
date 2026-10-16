@@ -127,6 +127,13 @@ audiocheck/src/audiocheck/
 **基准也会骗人**：`perf_probe.py` 第一版测出"悬停 1.25 ms"，其实是掉进了
 `draw_idle()` 的异步陷阱。写完基准先怀疑自己。
 
+**探针也会骗人（第三次，2026-10-16）**：变异探针的子进程**没有超时**，
+一个让实现**非终止**的变异体（粗搜索 `cur = cand/step` → `cand*step`）把整轮
+**挂死 12 分钟**，而 `--max-seconds` 拦不住——它只在两个变异体**之间**检查。
+同时更正一条旧账：`0.524` 那个分数是 `--max-seconds 300` 的**部分**结果，
+修好量具后跑满全部候选，首个**可复算**的完整基线是 **0.390**。
+⇒ **分数异常低、或一轮跑不完，先怀疑量具**；量具必须能看见进度（逐体 `flush`）。
+
 ---
 
 ## 4. 需求细化协议：把模糊描述变成可执行提示词
@@ -236,6 +243,7 @@ python packaging/palette_report.py         # 对照度报告 + 色卡 PNG
 | **PowerShell 无 heredoc** | `python - <<'EOF'` 报重定向错 | 脚本写成文件再跑 |
 | **`git ls-files` 中文路径** | 输出八进制转义，`Test-Path` 报非法字符 | `-c core.quotepath=false` |
 | **无 `QApplication` 调 `QFontDatabase`** | **进程在 C 层直接终止**，无 traceback，退出码还是 0 | 纯脚本走 `theme.mpl_cjk_font()`；要 QFontDatabase 先建 QApplication |
+| **探针的子进程没有超时** | 变异探针在**同一个** pytest 子进程上挂死（实测 12 min，CPU 一直满）；`--max-seconds` **拦不住**（它只在两个变异体**之间**检查） | `subprocess.run(..., timeout=)`；超时记"被杀"并单列。**任何跑子进程的探针都必须带单体超时** |
 | **离屏截图 `PrintWindow`** | 硬件加速窗口常返回全黑，或抓到重绘中途的帧 | 校验平均亮度，太黑退回 `CopyFromScreen`；视图切换后等 12 s |
 | **图片缩放误判** | 2232×900 截图被缩略显示时**看起来像文字被裁切** | 用 PIL 裁原图 1:1 看。**别拿缩略图下结论** |
 | **`deleteLater()` 的对象不消失** | 探针里"每点一次涨 0.6 MB"的**假泄漏** | `processEvents()` 后补 `sendPostedEvents(None, DeferredDelete)` |

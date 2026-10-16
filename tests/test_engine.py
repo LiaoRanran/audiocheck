@@ -111,3 +111,35 @@ def test_full_bandwidth_cd_is_not_flagged_as_band_limited(audio):
     assert r["level"] == "ok"
     assert "满带宽" in r["verdict"]
     assert r["cutoff_hz"] > 21500, "44.1k 全带宽文件的截止点应接近奈奎斯特，实得 %s" % r["cutoff_hz"]
+
+
+def test_silent_material_is_not_analyzed_as_content(tmp_path):
+    """★ 静音素材没有"带宽"可言——`SpectrumAnalyzer` 的静音守卫必须生效。
+
+    守卫是 `if peak is None or peak < -60.0: return {"silent": True}`。两条都要测：
+      * **极安静素材**（peak ≈ −80 dBFS）⇒ 判静音，且 `cutoff_hz` 为 `None`
+        （不设这道门，相对阈值会把整段静音都当成内容）；
+      * **峰值正好 0.0 dBFS 不算静音**——满刻度是"正常素材"，早期写成
+        `x or -999` 会因 0.0 是假值把它误判成静音（源码注释里记着这个坑）。
+    """
+    import numpy as np
+    import soundfile as sf
+
+    fs = 44100
+    n = int(fs * 3)
+    t = np.arange(n) / fs
+    loud = np.sin(2 * np.pi * 1000 * t).astype(np.float32)                    # 幅度 1.0
+    quiet = (10 ** (-80 / 20) * np.sin(2 * np.pi * 1000 * t)).astype(np.float32)
+
+    def _write(x, name):
+        p = tmp_path / name
+        sf.write(str(p), np.column_stack([x, x]), fs, subtype="FLOAT")
+        return str(p)
+
+    rq = analyze(_write(quiet, "quiet.wav"))
+    assert rq.get("silent") is True, "极安静素材应判静音，实得 %s" % rq.get("silent")
+    assert rq.get("cutoff_hz") is None
+
+    rl = analyze(_write(loud, "loud.wav"))
+    assert not rl.get("silent"), "满刻度（峰值 0.0 dBFS）素材不许被判静音"
+

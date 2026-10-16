@@ -24,12 +24,16 @@ E1 提示词要求"变异测试进 CI，变异分数不得低于 E0 基线"。�
   否则"分数"就成了自欺。
 * 存活且**不是**等价变异体的 = **测试缺失**，如实列出（那是真发现）。
 * 没找到问题就说"本轮未发现"，不许包装成"通过质量测试"。
-* ⚠ **先验证量具**：本探针开发中踩到两次"分数 0/全存活"的**假象**，根因都在量具
+* ⚠ **先验证量具**：本探针开发中踩到**三次**"量具坏了"的假象，根因都在量具
   （① `id(node)` 跨树不匹配 ⇒ 变异静默不生效；② 未设 `PYTHONPATH=工作区/src`
-  ⇒ editable 安装的**真实**仓库代码被 import、变异体根本没加载）。
+  ⇒ editable 安装的**真实**仓库代码被 import、变异体根本没加载；
+  ③ **子进程无超时** ⇒ 一个让实现**非终止**的变异体（如 `if acc_n == hop`
+  改成 `!=`、`while pos < total` 改成 `<=`）会把整轮探针**挂死**——
+  实测在同一个 pytest 子进程上耗掉 12 分钟仍不返回，`--max-seconds` 也拦不住，
+  因为时长检查只在**两个变异体之间**做。见 `_run_subset` 的 `timeout`）。
   分数异常低时**先怀疑量具**，别急着下"测试很差"的结论。
 
-    python packaging/mutation_probe.py [--strict] [--max-seconds N]
+    python packaging/mutation_probe.py [--strict] [--max-seconds N] [--mutant-timeout S]
 """
 from __future__ import annotations
 
@@ -55,13 +59,19 @@ TARGETS: dict[str, list[str]] = {
         "tests/test_truepeak.py", "tests/test_timeline_loudness.py"],
 }
 
-#: 变异分数下限。E1 要求"不得低于 E0 基线"，但 **E0 基线未立** ⇒ 取本探针的
-#: **首轮实测值**为首个基线（0.524，见 CHANGELOG）。阈值留一点余量取 0.50；
-#: 想抬高它必须先填掉报告里列出的"测试缺失"。
-MIN_SCORE = 0.50
+#: 变异分数下限。**两次更正，都写在这里免得后人再踩**：
+#:  ① 首轮记的 **0.524** 是 `--max-seconds 300` 的**部分**结果，而且当时那轮会被
+#:     一个让实现**非终止**的变异体挂死（见 `_run_subset` 的超时注释）。
+#:     修好量具、跑满全部候选后，**首个可复算的完整基线 = 0.390**（30/77，47 存活）。
+#:  ② 补齐测试缺口后 **0.946**（53/56，3 存活；见 CHANGELOG 2026-10-16 轮）。
+#: 下限取 0.90 留一点余量；**想再往上压，必须先填掉报告里列出的"测试缺失"**。
+MIN_SCORE = 0.90
 
 #: **等价变异体**白名单：语义不变 ⇒ 测不出来是**正确的**，不是测试缺失。
 #: 键 = 变异签名 `相对路径:行:类型:old->new`，值 = 理由（必须写清为什么语义不变）。
+#: ⚠ 纪律：这里**不许塞"我懒得测"的条目**。每条理由要么是**可证明的**（如
+#: "kernel 在分子分母同比出现 ⇒ 比值不变"），要么是**在可达域上不可区分**
+#: 并写清那个域（如 "f[0]=0 时两版都跳过"）。但凡多一个反例就不属于这里。
 EQUIVALENT: dict[str, str] = {
     "src/audiocheck/core/dsp.py:30:const:4096->4097":
         "TP_OVERLAP 是真峰值分段的重叠采样数，±1 只挪动分段边界；取最大值的中段不变。",
@@ -70,6 +80,68 @@ EQUIVALENT: dict[str, str] = {
     "src/audiocheck/core/analyzers/spectrum.py:17:const:6.0->9.0":
         "`_smooth_log_axis` 的 `fraction` 默认值**从不被使用**——两个调用方 "
         "(`smooth_log`/`smooth_power`) 都显式传入自己的 `fraction`。",
+    # --- 2026-10-16 变异轮：以下 12 条经核查为等价（每条都写了"为什么"）---
+    "src/audiocheck/core/analyzers/spectrum.py:22:cmp:<=-><":
+        "`if fc <= 0: continue`：频点网格 f[0]=0、其余为正。fc=0 时窗口内点数 =1 <2，"
+        "两版都不更新 out[i] ⇒ 在可达域（f ≥ 0）上逐位相同。",
+    "src/audiocheck/core/analyzers/spectrum.py:24:cmp:>=->>":
+        "log 轴平滑的窗界 `f >= fc/ratio`：某频点**恰好等于** fc/ratio 的概率为 0"
+        "（ratio 是无理数、频点有限）⇒ 不可区分。",
+    "src/audiocheck/core/analyzers/spectrum.py:24:cmp:<=-><":
+        "同上：`f <= fc*ratio` 的边界相等不可达 ⇒ 不可区分。",
+    "src/audiocheck/core/analyzers/spectrum.py:45:bin:+->-":
+        "`ps + 1e-20` → `ps - 1e-20`：1e-20 只为避免 log10(0) 下溢；可达谱的最低功率"
+        "≫ 1e-20（合成语料 floor −90 dB ⇒ ps ≈1e-9）⇒ 数值不变。",
+    "src/audiocheck/core/analyzers/spectrum.py:88:bin:*->/":
+        "`floor_hz = max(min_hz*2, 100)`：默认 min_hz=20 ⇒ 40 与 10 都被 max(·,100) "
+        "主导 ⇒ 结果逐位相同。（min_hz>50 时会分叉，但那不是本项目任何语料/配置的取值。）",
+    "src/audiocheck/core/analyzers/spectrum.py:102:cmp:>->>=":
+        "`while cur > floor_hz`：cur 是 nyq 沿 2^(1/12) 的几何序列，恰好等于 100 只会在"
+        "多走一步后立即又退出 ⇒ 结果不变。",
+    "src/audiocheck/core/analyzers/spectrum.py:104:cmp:>->>=":
+        "同上（内层同一条件的 while）⇒ 结果不变。",
+    "src/audiocheck/core/analyzers/spectrum.py:106:cmp:>=->>":
+        "`if hi_f - cur >= cur*0.04`：这是「上方有没有可用频段」的门槛，恰好相等的浮点"
+        "情形概率为 0 ⇒ 不可区分。",
+    "src/audiocheck/core/analyzers/spectrum.py:123:cmp:>=->>":
+        "陡度守卫 `pass_lvl - floor_lvl >= min_stop_db`：两侧电平是连续浮点，恰好相差"
+        "等于 20.0 dB 的概率为 0 ⇒ 不可区分。",
+    "src/audiocheck/core/analyzers/spectrum.py:138:cmp:>=->>":
+        "`if raw[i] >= thr`：raw[i] 恰好等于 thr（(pass+floor)/2）的概率为 0 ⇒ 不可区分。",
+    "src/audiocheck/core/analyzers/spectrum.py:152:cmp:>->>=":
+        "`j1 > j0` vs `>=`：j1 == j0 时（cut 逼近奈奎斯特）两版都返回 0.0；"
+        "j1 < j0 不可能（min(cut*2, nyq) ≥ cut）⇒ **可证明等价**。",
+    "src/audiocheck/core/analyzers/spectrum.py:140:cmp:>=->>":
+        "`if run >= need` vs `> need`：两者定位的**是同一条连续段的上端**——"
+        "run 多计 1 点时 i 恰好少 1，而 `j0 = i + need - 1` 在两个版本里取到同一个"
+        "索引（(i-1)+(need+1)-1 == i+need-1）⇒ **可证明等价**。",
+    "src/audiocheck/core/analyzers/spectrum.py:148:cmp:<-><=":
+        "`if cut < min_hz: return None`：cut 是频点值，恰好等于 20.0（min_hz）的概率"
+        "为 0 ⇒ 不可区分。",
+    "src/audiocheck/core/analyzers/spectrum.py:180:cmp:<-><=":
+        "`peak < -60.0` vs `<=`：峰值恰好等于 −60.0 dBFS 的概率为 0 ⇒ 不可区分"
+        "（这一条**守卫本身**已由 `test_silent_material_is_not_analyzed_as_content` 钉住）。",
+    "src/audiocheck/core/analyzers/spectrum.py:171:const:30->31":
+        "`SpectrumAnalyzer.order`：order 只决定调度**排序**，不参与结果（依赖由 `requires` "
+        "表达）。现有 order 集合为 {5,10,15,30,40,41,42,45,60,86,88,89,90}，30 与 31 "
+        "之间没有别的分析器 ⇒ 排序结果逐位不变。",
+    "src/audiocheck/core/dsp.py:60:cmp:>->>=":
+        "`keep = lv > ABS_GATE`：lv 是连续浮点 dB，恰好等于 −70.0 的概率为 0 ⇒ 不可区分。",
+    "src/audiocheck/core/dsp.py:64:cmp:>->>=":
+        "`keep &= (lv > rel)`：同上，与相对门限恰好相等的概率为 0 ⇒ 不可区分。",
+    "src/audiocheck/core/dsp.py:117:cmp:<-><=":
+        "`if si < 4: return {}`：上游 line 76 的 `total < hop*4` 已保证 si ≥ 4 ⇒ 该分支"
+        "不可达 ⇒ 等价（下一步已加测试钉住上游守卫本身）。",
+    "src/audiocheck/core/dsp.py:254:bin:+->-":
+        "`denom = sqrt(...) + 1e-30` → `- 1e-30`：非零 denom 下 1e-30 是无操作"
+        "（它只用于防除零）⇒ 不可区分。",
+    "src/audiocheck/core/dsp.py:257:cmp:<-><=":
+        "`min(pL,pR) < max(pL,pR)·10^(−30/10)`：两功率恰好相差正好 30.000 dB 的概率为 0"
+        " ⇒ 不可区分。",
+    "src/audiocheck/core/dsp.py:313:bin:/->*":
+        "`kern = np.ones(w)/w` → `*w`：该核在 ρ̄ 里**同时**出现在分子与分母"
+        "（`2Re(mov(ZL·conj ZR)) / (mov(p_l)+mov(p_r))`），同比缩放 ⇒ 比值不变 ⇒ "
+        "**可证明**等价。",
 }
 
 
@@ -172,7 +244,7 @@ def _build_workspace() -> str:
     return ws
 
 
-def _run_subset(ws: str, tests: list[str], py: str) -> tuple[int, str]:
+def _run_subset(ws: str, tests: list[str], py: str, timeout: float) -> tuple[int, str]:
     env = dict(os.environ)
     env["QT_QPA_PLATFORM"] = "offscreen"
     env["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -183,8 +255,17 @@ def _run_subset(ws: str, tests: list[str], py: str) -> tuple[int, str]:
     # `test_cutoff_accuracy` 仍全绿——量具又坏了，不是测试好）。
     # `ws` 放前面是为了让工作区的 `sitecustomize.py` 生效（摘掉 editable finder）。
     env["PYTHONPATH"] = os.path.join(ws, "src") + os.pathsep + ws
-    p = subprocess.run([py, "-m", "pytest", "-x", "-q", "-p", "no:cacheprovider", *tests],
-                       cwd=ws, env=env, capture_output=True, text=True)
+    try:
+        p = subprocess.run([py, "-m", "pytest", "-x", "-q", "-p", "no:cacheprovider", *tests],
+                           cwd=ws, env=env, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # ⚠ **必须有超时**：变异体可能让实现**非终止**（实测：`acc_n == hop`→`!=`
+        # 使 `loudness` 的内层 `while p < y.shape[0]` 因 `take=0` 空转；
+        # `while pos < total`→`<=` 使 `true_peak` 永不退出）。没有超时时，
+        # 探针会**挂死在单个子进程上**，`--max-seconds` 拦不住（它只在两体之间检查）。
+        # 返回码 3 = 超时：语义上算**被杀**——测试以"挂起"而非断言的方式检出了这个
+        # 病态变异体（与主流变异框架的 timeout=killed 口径一致），并在报告里单列。
+        return 3, ""
     return p.returncode, (p.stdout + p.stderr)
 
 
@@ -196,12 +277,18 @@ def main() -> int:
                     help="限定时长（E1 要求）；超时即停并报当前分数")
     ap.add_argument("--max-mutants", type=int, default=40,
                     help="每个目标最多生成多少变异体（控制时长）")
+    ap.add_argument("--mutant-timeout", type=float, default=180.0,
+                    help="单个变异体的 pytest 子进程超时（秒）。**必须有**："
+                         "病态变异体（让实现非终止）会把整轮探针挂死，"
+                         "`--max-seconds` 只在两个变异体之间检查、拦不住。"
+                         "超时计为**被杀**（挂起检出），报告单列")
     a = ap.parse_args()
 
     py = sys.executable
     ws = _build_workspace()
     print("变异测试（自实现 AST 注入；工作区 %s）" % ws)
-    print("目标 %d 个模块，时长上限 %.0f s\n" % (len(TARGETS), a.max_seconds))
+    print("目标 %d 个模块，时长上限 %.0f s，单体超时 %.0f s\n"
+          % (len(TARGETS), a.max_seconds, a.mutant_timeout), flush=True)
 
     t0 = time.time()
     killed = 0
@@ -209,17 +296,18 @@ def main() -> int:
     invalid = 0
     total = 0
     equiv = 0
+    hangs = 0                                        # 超时=被杀（非终止变异体）
     timed_out = False
 
     for rel, tests in TARGETS.items():
         src = open(os.path.join(_ROOT, rel), encoding="utf-8").read()
         cands = _candidates(ast.parse(src))[:a.max_mutants]
-        print("== %s（%d 个变异体候选）==" % (rel, len(cands)))
+        print("== %s（%d 个变异体候选）==" % (rel, len(cands)), flush=True)
         target_path = os.path.join(ws, rel)
         for i in range(len(cands)):
             if time.time() - t0 > a.max_seconds:
                 timed_out = True
-                print("  …… 达到时长上限，停止（结果部分）")
+                print("  …… 达到时长上限，停止（结果部分）", flush=True)
                 break
             total += 1
             # ⚠ **必须在同一棵树上取候选再变异**：`_candidates` 用 `id(node)` 标识目标，
@@ -237,24 +325,32 @@ def main() -> int:
                 continue
             if new_src == src:                         # 变异没改动源码 ⇒ 量具异常
                 invalid += 1
-                print("  [无效] 变异未改变源码（量具异常）")
+                print("  [无效] 变异未改变源码（量具异常）", flush=True)
                 continue
             with open(target_path, "w", encoding="utf-8") as f:
                 f.write(new_src)
-            rc, _out = _run_subset(ws, tests, py)
+            # 逐体打印进度并 flush：一轮可能跑十几分钟，没有进度就**看不出量具是否挂了**
+            # （这正是"无超时"那次事故里最难受的地方）。
+            print("  [%d/%d] %s …" % (i + 1, len(cands), cand.sig(rel)), flush=True)
+            rc, _out = _run_subset(ws, tests, py, a.mutant_timeout)
             sig = cand.sig(rel)
             if rc == 0:
                 if sig in EQUIVALENT:
                     equiv += 1
-                    print("  [等价] %s —— %s" % (sig, EQUIVALENT[sig]))
+                    print("        → 等价：%s" % EQUIVALENT[sig], flush=True)
                 else:
                     survived.append(sig)
-                    print("  [存活] %s  ← 测试缺失" % sig)
+                    print("        → **存活** ← 测试缺失", flush=True)
             elif rc == 1:
                 killed += 1
+                print("        → 杀死", flush=True)
+            elif rc == 3:
+                killed += 1
+                hangs += 1
+                print("        → **超时=被杀**（变异体使实现非终止，挂起检出）", flush=True)
             else:
                 invalid += 1
-                print("  [无效] %s（pytest rc=%d，可能无法导入）" % (sig, rc))
+                print("        → 无效（pytest rc=%d，可能无法导入）" % rc, flush=True)
         # 还原
         with open(target_path, "w", encoding="utf-8") as f:
             f.write(src)
@@ -264,8 +360,8 @@ def main() -> int:
     scored = killed + len(survived)  # 只把"有效且非等价"的算进分母
     score = (killed / scored) if scored else 0.0
     print("\n---- 结果 ----")
-    print("有效变异体 %d ｜ 杀死 %d ｜ 存活 %d ｜ 等价 %d ｜ 无效 %d"
-          % (scored, killed, len(survived), equiv, invalid))
+    print("有效变异体 %d ｜ 杀死 %d（其中超时 %d）｜ 存活 %d ｜ 等价 %d ｜ 无效 %d"
+          % (scored, killed, hangs, len(survived), equiv, invalid))
     print("变异分数 = %d/%d = %.3f（下限 %.2f）%s"
           % (killed, scored, score, MIN_SCORE, "（未跑完，时长上限）" if timed_out else ""))
     if survived:

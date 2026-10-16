@@ -102,9 +102,14 @@ class TestConstantsMatchStandards(unittest.TestCase):
     def test_offset_value(self):
         self.assertAlmostEqual(D.OFFSET, -0.691, places=6)
 
-    def test_true_peak_oversampling_at_least_4x(self):
-        """BS.1770-4 Annex 2 要求 ≥4 倍过采样。"""
-        self.assertGreaterEqual(D.TP_OS, 4)
+    def test_true_peak_oversampling_is_exactly_4x(self):
+        """BS.1770-4 Annex 2 要求 **≥4** 倍过采样；本项目**取规格下限 4**。
+
+        为什么钉"恰好 4"而不是">=4"：提高倍数**不是免费的，而且会改动读数**——
+        实测 5× 与 4× 的真峰值读差 0.03–0.04 dB（fs/6 正弦 0.040、含瞬态的类音乐
+        噪声 0.030）。所以改这个常数必须是一次有意识的、会动读数的决定。
+        """
+        self.assertEqual(D.TP_OS, 4)
 
 
 class TestLoudnessEndToEnd(unittest.TestCase):

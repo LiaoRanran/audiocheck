@@ -4,7 +4,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from audiocheck.core.analyzers.spectrum import band_balance, detect_cutoff, smooth_log
+from audiocheck.core.analyzers.spectrum import (
+    band_balance,
+    detect_cutoff,
+    smooth_log,
+    smooth_power,
+)
 
 
 def synth_spectrum(fs: int, cutoff_hz: float, n: int = 8193, floor_db: float = -90.0):
@@ -81,3 +86,85 @@ def test_band_balance_sums_to_100():
 def test_band_balance_empty_on_zero_signal():
     f = np.linspace(0, 24000, 100)
     assert band_balance(f, np.zeros_like(f)) == {}
+
+
+# ------------------------------------------- 变异测试填缺（E1.2 存活体，2026-10-16）
+def test_smooth_power_flat_spectrum_returns_the_same_db():
+    """功率域平滑的 dB 刻度必须是标准的 **10·log10**（否则"dB"就不是 dB）。
+
+    平坦谱（处处 −20 dB）平滑后应仍是 −20 dB：`10**(db/10)` 取均值、再
+    `10·log10` 回到同一值。这条此前**完全没被检过**——`slope = s[j0]-s[j1]`
+    的断言是松的（`> 40`），把系数改成 `11/10`、或写错成 `10**(db*10)`、
+    或用 `10**(db/15)`，都能照样通过。变异测试把这个缺口抓出来了。
+    """
+    f = np.linspace(0, 22050, 8193)
+    for db0 in (-20.0, -60.0):
+        s = smooth_power(f, np.full_like(f, db0))
+        assert np.abs(s - db0).max() < 1e-6, \
+            "平坦谱平滑后应逐点回到 %s dB，实得最大偏差 %.4f" % (db0, np.abs(s - db0).max())
+
+
+def test_smooth_wrappers_default_to_one_sixth_octave():
+    """`smooth_log` / `smooth_power` 的默认平滑宽度是 **1/6 倍频程**。
+
+    默认值必须与显式 `6.0` 逐位一致，且真的生效（显式 `12.0` 必须产生**不同**结果，
+    否则"默认值"只是个摆设）。`_smooth_log_axis` 自身的默认值从不被使用
+    （两个包装函数都显式传入），那一条已登记为等价变异体。
+    """
+    f, db = synth_spectrum(44100, 16000.0)
+    for fn in (smooth_log, smooth_power):
+        assert np.array_equal(fn(f, db), fn(f, db, 6.0)), \
+            "%s 的默认平滑宽度不是 6.0（调用点与文档都按 1/6 倍频程讲）" % fn.__name__
+        assert not np.array_equal(fn(f, db), fn(f, db, 12.0)), \
+            "%s 的 fraction 形参没起作用" % fn.__name__
+
+
+def test_detect_cutoff_rejects_degenerate_input():
+    """`detect_cutoff` 的输入守卫：`None` 与过短输入都必须显式返回 `(None, 0.0)`。
+
+    往下走不会拿到"没检出"，而是拿到一个 TypeError（再被别处吞掉）。长度下界是
+    **16**：15 与 16 是边界，必须分别落在"拒绝 / 可处理"两侧——这正是
+    `if f is None or db is None or len(f) < 16` 这条守卫的语义。
+    """
+    f, db = synth_spectrum(44100, 16000.0)
+    assert detect_cutoff(None, db) == (None, 0.0)
+    assert detect_cutoff(f, None) == (None, 0.0)
+    assert detect_cutoff(f[:15], db[:15]) == (None, 0.0)
+    got, _ = detect_cutoff(f[:16], db[:16])
+    assert got is not None, "长度 16 属于可处理下界，不该被守卫拦下"
+
+
+def test_cutoff_detected_near_search_floor():
+    """搜索下界是 **100 Hz**（`floor_hz = max(min_hz*2, 100)`）。
+
+    90 / 110 / 130 Hz 的砖墙都必须被检出，而不是报"直达奈奎斯特"。低频带限
+    （电话带宽 / 窄带母带 / 高通滤过的素材）恰恰是本工具该报出来的一类内容。
+
+    为什么三个点都要：下界抬到 150 Hz 时 **110 与 90 会漏**，而 **130 不会**
+    （粗搜索的候选窗口是 ±1.6×，130 Hz 的候选落在 160 Hz > 150）——只测 130
+    会得到一个"这条判据有牙齿"的错觉。这是变异测试实测出来的。
+    """
+    f = synth_spectrum(44100, 130.0)[0]
+    for cut in (90.0, 110.0, 130.0):
+        db = np.where(f <= cut, 0.0, -90.0)
+        db[0] = -120.0
+        got, _ = detect_cutoff(f, db)
+        assert got is not None and cut * 0.85 < got < 150.0, \
+            "%.0f Hz 砖墙漏检，实得 %s" % (cut, got)
+
+
+def test_cutoff_accuracy_on_log_spaced_grid():
+    """**对数**频点网格上的定位精度 ≤2%。
+
+    为什么单列这一条：`synth_spectrum` 用的是**线性**网格（`np.linspace`），
+    高端一个 bin 只有 0.017% —— "边缘定位偏一个 bin"这类错误（例如把
+    "连续 `need` 点越过阈值"写成 `> need`）在线性网格上完全看不出来；
+    而对数网格上一个 1/12 倍频程 bin 是 5.9%，藏不住。
+    """
+    f = np.geomspace(20.0, 22050.0, 4096)
+    for cut in (8000.0, 16000.0, 19000.0):
+        db = np.where(f <= cut, 0.0, -90.0)
+        got, _ = detect_cutoff(f, db)
+        assert got is not None and abs(got - cut) / cut < 0.02, \
+            "对数网格上 cut=%.0f 定位到 %s" % (cut, got)
+

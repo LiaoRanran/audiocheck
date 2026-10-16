@@ -157,8 +157,11 @@ def test_anti_phase_scan_correlated_stereo_is_clean():
 
 
 def test_anti_phase_coherence_window_is_positive():
-    """相干估计的时间窗必须 > 0（为 0 就退化成单帧 ρ，见上一条的教训）。"""
-    assert dsp.ANTI_COH_SEC > 0.0
+    """相干估计的时间窗必须 **> 0**（为 0 就退化成单帧 ρ，见上一条的教训），
+    且**恰好 0.5 s**——docstring 里写明这是"太短消不掉随机符号、太长会把只反相
+    一小段抹平"之间实测出来的折中。改它必须是一次有意识的、会动读数的决定。
+    """
+    assert dsp.ANTI_COH_SEC == 0.5
     assert dsp.ANTI_RHO < 0.0
 
 
@@ -174,3 +177,111 @@ def test_phase_field_matches_anti_phase_scan_implementation():
     src = inspect.getsource(views.stereo_field)
     assert "dsp.phase_field" in src, "views.stereo_field 没有复用 dsp.phase_field"
     assert "signal.stft" not in src, "views.stereo_field 里又写了一份 STFT"
+
+
+# ------------------------------------------- 变异测试填缺（E1.2 存活体，2026-10-16）
+def test_phase_field_is_actually_exercised():
+    """`phase_field` 是视图层与判定层共用的**唯一**实现——此前只有一条
+    "源码里复用了它"的断言，**从没真的调用过它**（缺一个声道时内部会 TypeError）。
+
+    同时钉住 **STFT 窗口径**：默认 `nperseg=4096` ⇒ fs=44100 下频点间距必须是
+    fs/4096（2049 个频点）。4096 与 4097 的频点数**都是 2049**，所以只有间距
+    能把它区分开。全带反相时 ρ 应接近 −1（这是 ρ 的定义本身）。
+    """
+    import inspect
+
+    fs = 44100
+    n = fs
+    t = np.arange(n) / fs
+    x = (0.3 * np.sin(2 * np.pi * 1000 * t)).astype(np.float32)
+    f, _tt, rho = dsp.phase_field(np.column_stack([x, -x]), fs)
+    assert len(f) == 2049
+    assert abs((f[1] - f[0]) - fs / 4096.0) < 1e-9, "默认 STFT 窗不是 4096 点"
+    band = (f > 900.0) & (f < 1100.0)
+    assert np.all(rho[band, :] < -0.9), "全带反相时 ρ 应接近 −1"
+    # 两个入口的窗口径必须同一个（视图层与判定层共用一套数学）
+    for fn in (dsp.phase_field, dsp.anti_phase_scan):
+        assert inspect.signature(fn).parameters["nperseg"].default == 4096, \
+            "%s 的默认窗口径漂了（频谱图/相位场必须同一个 4096）" % fn.__name__
+
+
+def test_phase_field_marks_weak_side_undefined():
+    """某格上**弱侧比强侧低过 `PHASE_UNDEF_DB`（30 dB）时 ρ 无定义**，必须置 0。
+
+    ρ = Re(L·conj(R)) / (|L|·|R|)：若某频点上只有一个声道有能量，分母趋近 0，
+    剩下的是数值噪声（实测会被推到 ±1.00）⇒ 会报出"这里完全反相"的假结论。
+    门限放宽到 45 dB，这个 −35 dB 的格就会被当成"有定义"而生成假反相。
+    """
+    fs = 44100
+    t = np.arange(fs) / fs
+    left = (0.5 * np.sin(2 * np.pi * 1000 * t)).astype(np.float32)
+    right = (0.5 * 10 ** (-35 / 20) * np.sin(2 * np.pi * 1000 * t)).astype(np.float32)
+    f, _tt, rho = dsp.phase_field(np.column_stack([left, right]), fs)
+    band = (f > 900.0) & (f < 1100.0)
+    assert np.all(rho[band, :] == 0.0), \
+        "弱侧低 35 dB（超过 30 dB 判据）的格应判『ρ 无定义』并置 0"
+
+
+def test_anti_phase_scan_ignores_below_floor_energy():
+    """`ANTI_FLOOR_DB`（40 dB）：只统计高于本帧峰值 40 dB 以内的格。
+
+    构造：主内容同相（响），另有一个**低 45 dB 的反相音**。低 45 dB 的格落在
+    40 dB 门限之外 ⇒ 不该计入反相能量（读数应是"无"，`anti_energy_db` 远低于 −100）。
+    门限放宽到 60 dB 就会把它算进来，读数从"无"跳到约 −45 dB。
+    """
+    fs = 44100
+    n = fs * 3
+    t = np.arange(n) / fs
+    main = (0.5 * np.sin(2 * np.pi * 1000 * t)).astype(np.float32)
+    quiet_rev = (0.5 * 10 ** (-45 / 20) * np.sin(2 * np.pi * 6000 * t)).astype(np.float32)
+    r = dsp.anti_phase_scan(main + quiet_rev, main - quiet_rev, fs)
+    assert r["anti_energy_db"] < -100.0, \
+        "低于 40 dB 门限的反相内容不该计入（实得 %s dB）" % r["anti_energy_db"]
+    assert r["anti_scope"] == "无"
+
+
+def test_spectral_features_empty_on_zero_power():
+    """全零功率谱（整段静音的 STFT）应返回 `{}`，不是一堆 nan。
+
+    `tot <= 0` 是这类输入的守卫；改成 `<` 会放行 ⇒ 质心/滚降全变 nan
+    还会污染下游判定。
+    """
+    f = np.linspace(0, 22050, 8193)
+    assert dsp.spectral_features(f, np.full_like(f, -4000.0)) == {}
+
+
+def test_stereo_features_rejects_missing_channel():
+    """缺一个声道时必须显式返回 `{}`（`left is None or right is None` 的守卫）。"""
+    x = np.zeros(2048)
+    assert dsp.stereo_features(x, None) == {}
+    assert dsp.stereo_features(None, x) == {}
+
+
+def test_stereo_features_minimum_length_is_1024():
+    """最短 1024 采样（`lc.size < 1024` 的边界）：1024 可处理，1023 拒绝。"""
+    x = np.random.default_rng(3).standard_normal(1024)
+    assert "corr" in dsp.stereo_features(x, x)
+    assert dsp.stereo_features(x[:1023], x[:1023]) == {}
+
+
+def test_loudness_rejects_degenerate_sample_rate():
+    """`hop = int(0.1·fs)` 取整为 0（fs<10）时必须直接返回 `{}`，不许往下走。
+
+    守卫是 `if hop < 1 or total < hop*4: return {}`；放行会在
+    `nsteps = total // hop` 处 ZeroDivisionError。
+    """
+    assert dsp.loudness("does-not-matter.wav", 4, 2, 1000) == {}
+
+
+def test_short_term_extremes_are_on_the_loudness_scale(audio):
+    """LRA 的短时块核必须是**均值**（`np.ones(w)/w`）。
+
+    写成 `*w`（各元素 0.1 ⇒ 合计 0.3）会把短时响度整体压低 10·log10(0.3) ≈ −5.2 dB。
+    LRA 是**极差**、对常数平移不敏感（所以 `lra` 抓不到），只有 `st_max` / `st_min`
+    能抓——稳态正弦的短时极大值应与整轨响度一致。
+    """
+    r = dsp.loudness(audio["tone_50"], 48000, 2, int(48000 * 6))
+    assert r["st_max"] is not None and r["lufs"] is not None
+    assert abs(r["st_max"] - r["lufs"]) < 0.5, \
+        "稳态正弦的 st_max 应与整轨响度一致（实得 %s vs %s）" % (r["st_max"], r["lufs"])
+
