@@ -126,6 +126,30 @@
   其余分散在画布重绘与表格重建。本批次新增第 8 张画布使 p95 +44 ms（噪声级）。
   ⇒ 修复需独立批次（QSS 作用域或样式缓存），**不动阈值**（阈值是判据不是旋钮）。
 
+### 新增（E3 无障碍第一轮：五方面三态表 + 可访问名 + 焦点可见）
+
+> 判据见 `tests/test_ui_a11y.py`；审计见 `packaging/a11y_report.py`；
+> 三态表与登记见 `docs/accessibility.md`。
+
+- **可访问名补齐**：8 张画布逐个 `setAccessibleName` + 文字替代描述
+  （数值权威出口指向元数据页 KV 表）；搜索框 / 筛选框 / 文件表补名。
+- **焦点可见（两条判据）**：① 对比度——`palette.CHECKS` 新增焦点环
+  `border_focus` 对 surface/bg ≥3:1（实测 4.62–5.97:1，两主题达标）；
+  ② 像素——`BaseCanvas.paintEvent` 补焦点环（自绘控件 QSS 管不到，
+  用同一 `border_focus` 令牌），测试实测"聚焦前后 render 基线噪声 0、
+  聚焦后边框带 3880 像素差异"（离屏 repaint 异步，等落定）。
+- **诚实登记（KNOWN_GAPS）**：输入描边 1.18–1.33:1 不达标（改它 = 动
+  B 块视觉语言，属 B 块决定，按 1.0 登记且报告显示实测值）；
+  声音与语音**不适用**（音频分析工具，播报污染听音环境）；
+  图表逐点朗读未做（Qt 无原生图表无障碍 API）。
+- **纪律**：**不宣称"符合 WCAG"**——只做"按 Qt 五方面自查"，三态表见文档。
+- `packaging/a11y_report.py`：离屏审计脚本（`--strict` 守未登记缺口）。
+- 改动文件：`ui/charts.py`（焦点环）、`ui/window.py`（可访问名 ×11）、
+  `ui/palette.py`（CHECKS +4）、`docs/accessibility.md`（新）、
+  `packaging/a11y_report.py`（新）、`tests/test_ui_a11y.py`（新 7 条）。
+- 验证：全量 **592 passed** + ruff 全树绿；palette/mem 探针全过；
+  a11y_report --strict 退出 0。
+
 ### 口径变更（C4 判定颗粒度）
 
 > 逐行 CLI diff 留档：`out/_before_demo{1,2,3}*.txt`（改前，`f5bb3b6` worktree）

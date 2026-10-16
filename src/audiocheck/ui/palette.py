@@ -399,6 +399,16 @@ CHECKS: tuple[tuple[str, str, str, float], ...] = (
     ("关闭按钮白字 / danger", "#ffffff", "danger", 4.5),
     ("图表刻度 text_faint / plot_bg", "text_faint", "plot_bg", 4.5),
     ("卡片描边 border_hi / surface（装饰性，仅记录）", "border_hi", "surface", 1.0),
+    # ---- E3 无障碍：非文字对比度（WCAG 1.4.11）----
+    # 焦点环（border_focus 由 primary 派生）——键盘用户靠它定位"现在在哪"。
+    # 实测 dark 4.62:1 / light 5.97:1（vs surface）、4.86 / 5.30（vs bg），达标。
+    ("焦点环 border_focus / surface（键盘定位）", "border_focus", "surface", 3.0),
+    ("焦点环 border_focus / bg（键盘定位）", "border_focus", "bg", 3.0),
+    # 输入描边实测 1.18–1.33:1——**不达标**。按"诚实登记"记 1.0（与上面的卡片
+    # 描边同处理）：抬高全边框对比度 = 改 B 块七轮定下的视觉语言，属 B 块的
+    # 决定；E3 的职责是把它量出来、写进三态表（部分支持），不是偷偷改设计。
+    ("输入描边 border / surface（实测≈1.2:1，登记缺口）", "border", "surface", 1.0),
+    ("输入描边 border / bg（实测≈1.2:1，登记缺口）", "border", "bg", 1.0),
 )
 
 

@@ -255,6 +255,15 @@ class BaseCanvas(FigureCanvasQTAgg):
         # y=0 那条线：Qt 的 1px 线在 y=0 会有一半落在控件外，但截图里
         # 第 0 行确实被点亮（判据量的是 grab() 的第 0 行），所以照画。
         pr.drawLine(0, 0, self.width() - 1, 0)
+        # E3：焦点环。画布是自绘控件，QSS 的 `:focus` 只改 border-color——
+        # 画布没有 border 可改，键盘用户 Tab 进来时若没有任何视觉变化，
+        # "焦点可见"就是空话。用与 QSS 焦点环**同一个令牌**（border_focus），
+        # 对比度判据在 palette.CHECKS 里（实测 4.6–6.0:1 ≥ 3:1）。
+        if self.hasFocus():
+            fcol = p.get("border_focus") or p.get("border_hi")
+            if fcol:
+                pr.setPen(QPen(QColor(fcol), 2.0))
+                pr.drawRect(1, 1, self.width() - 3, self.height() - 3)
         pr.end()
 
     # 内容已变但当前不可见 → 标脏，等 showEvent 再画。

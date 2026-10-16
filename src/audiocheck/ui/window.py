@@ -355,12 +355,15 @@ class MainWindow(FramelessWindow):
         h.addStretch(1)
         self.ed_search = QLineEdit()
         self.ed_search.setPlaceholderText("搜索文件名")
+        # E3：输入框的可访问名（QLineEdit 的 text() 空时读不出名字）
+        self.ed_search.setAccessibleName("搜索文件名")
         self.ed_search.setClearButtonEnabled(True)
         self.ed_search.setMaximumWidth(180)
         self.ed_search.textChanged.connect(self.refresh_table)
         h.addWidget(self.ed_search)
         self.cb_filter = QComboBox()
         self.cb_filter.addItems(["全部", "仅不达标", "仅有疑", "仅合格", "仅未分析"])
+        self.cb_filter.setAccessibleName("结论筛选")
         # 112 = 4×28，上栅格。原 110 是随手写的，与筛选框内的文字宽度也无关系。
         self.cb_filter.setMaximumWidth(112)
         self.cb_filter.currentIndexChanged.connect(self.refresh_table)
@@ -490,6 +493,8 @@ class MainWindow(FramelessWindow):
 
         self.table = QTableWidget(0, len(self.COLS))
         self.table.setHorizontalHeaderLabels(self.COLS)
+        # E3：屏幕阅读器读表格时先报名字（否则只有"表格"两个字）
+        self.table.setAccessibleName("文件列表")
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -589,6 +594,23 @@ class MainWindow(FramelessWindow):
         self.cv_timeline = TimelineCanvas()
         self.cv_cmp = CompareCanvas()
         self.cv_ovw = OverviewCanvas()
+        # E3：画布是自绘控件，屏幕阅读器默认什么也读不到（Qt 只自动暴露
+        # 标准控件的语义）。逐个给**可访问名 + 文字替代指向**——图形是
+        # "看"的通道，数值的权威出口在元数据页的 KV 表（与"图表有文字
+        # 替代"的判据对齐）。
+        for cv, nm, desc in (
+            (self.cv_spec, "频谱曲线", "整轨频谱曲线；逐项数值见元数据页「全部测量指标」"),
+            (self.cv_spectro, "频谱图", "时频谱图；逐项数值见元数据页「全部测量指标」"),
+            (self.cv_wfall, "瀑布图", "三维瀑布频谱；逐项数值见元数据页「全部测量指标」"),
+            (self.cv_phase, "相位场", "立体声相位场；逐项数值见元数据页「全部测量指标」"),
+            (self.cv_band, "频段能量", "频段能量占比；逐项数值见元数据页「全部测量指标」"),
+            (self.cv_timeline, "时间定位", "逐段\u00a0LUFS/真峰值/削波率曲线；口径见元数据页"
+                                          "「时间定位口径」"),
+            (self.cv_cmp, "对比", "多文件频谱叠加对比"),
+            (self.cv_ovw, "批次概览", "批次结果概览"),
+        ):
+            cv.setAccessibleName(nm)
+            cv.setAccessibleDescription(desc)
         for cv in (self.cv_spec, self.cv_spectro, self.cv_wfall, self.cv_phase, self.cv_band,
                    self.cv_timeline, self.cv_cmp, self.cv_ovw):
             self.stack.addWidget(cv)
