@@ -78,6 +78,30 @@ class TestEveryThresholdDiscriminates(unittest.TestCase):
                          "Thresholds 里有字段没进普查映射（判定阈值要进，"
                          "算法参数要显式标 None）：%s" % sorted(missing))
 
+    def test_negative_controls_prove_the_check_has_teeth(self):
+        """**检验的检验**：这把尺子必须能报出明显的单侧/无样本。
+
+        背景：本检查此前**从未命中过**——因为语料是按"跨每个阈值两侧"手工造的，
+        "有区分力"这个结论由构造保证 ⇒ 检查无失败模式。`NEGATIVE_CONTROLS`
+        用两条**不可能有区分力**的规格补上失败模式；它们若报不出来，
+        说明检查恒真，"全部字段有区分力"就是空话。
+        """
+        self.assertIn("负面对照", self.out)
+        self.assertIn("有牙齿", self.out, "负面对照没跑或没通过")
+        self.assertNotIn("负面对照未通过", self.out, "尺子坏了：报不出单侧")
+        self.assertEqual(self.rc, 0, "负面对照失败时应返回 1")
+
+    def test_negative_control_specs_are_really_one_sided(self):
+        """直接量 `_split`：对照规格在语料上确实只能落一侧（不是靠运气）。"""
+        rows = []
+        # 造两条最小样本，只测分流逻辑本身
+        for v in (16.0, 19.0):
+            rows.append({"_obs": {"cutoff_khz": v}})
+        hi, lo, n = self.S._split("cutoff_khz", ">=", 999.0, rows)
+        self.assertEqual((hi, n), (0, 2), "不可能达到的阈值却有人触发")
+        hi2, lo2, n2 = self.S._split("__missing__", ">=", 0.0, rows)
+        self.assertEqual(n2, 0, "不存在的观测量应给出 0 个有效样本")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

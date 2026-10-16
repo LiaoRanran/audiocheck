@@ -209,13 +209,28 @@ def axis_dynamics(r: dict, th) -> tuple[str, str]:
 
 # ============================================================ 轴五：声道
 def axis_channels(r: dict, th) -> tuple[str, str]:
-    """声道宽度。影响"能不能测声场"。"""
+    """声道宽度 + **局部反相**。影响"能不能测声场"。
+
+    ⚠ 2026-10-16：`anti_scope` 此前**只算不判**——`dsp.anti_phase_scan` 的
+    docstring 写着"给判定用"，但判定层从没读过它（实测 grep：只出现在
+    stereo.py 的指标注册与 dsp.py 的计算里）。这条轴现在消费它。
+    反相**不是成因**（它不说明文件从哪来），而是**现象层的立体声缺陷**：
+    错线、反相叠加、处理链极性翻转都会留下"只在某频段/某时段反相"。
+    """
+    msgs, lv = [], "ok"
     wd = r.get("width_db")
-    if wd is None:
-        return "ok", ""
-    if wd < th.width_narrow_db:
-        return "warn", "声道宽度 %.1f dB（近乎单声道）" % wd
-    return "ok", ""
+    if wd is not None and wd < th.width_narrow_db:
+        lv = "warn"
+        msgs.append("声道宽度 %.1f dB（近乎单声道）" % wd)
+    scope = r.get("anti_scope")
+    if scope in ("明显", "严重"):
+        lv = _worst(lv, "warn")
+        pct = r.get("anti_energy_pct")
+        band = r.get("anti_band_khz")
+        msgs.append("局部反相 %s（反相能量 %s%%%s）"
+                    % (scope, "%.3f" % pct if pct is not None else "?",
+                       "，集中在 %.2fkHz" % band if band is not None else ""))
+    return lv, "；".join(msgs)
 
 
 # ============================================================ 交叉核对

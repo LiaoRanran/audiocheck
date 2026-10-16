@@ -111,6 +111,13 @@ class Thresholds:
     #: 声道相关 ≥ 此值 **且** 宽度 ≤ 下一条 ⇒ 假立体声（单声道上混）候选。
     fake_stereo_corr: float = 0.98
     fake_stereo_width_db: float = -30.0
+    #: **局部反相**（`dsp.anti_phase_scan`）的分档门限：反相能量占比低于此值记"无"。
+    #: ⚠ C0-3 同型：这三档原先**硬编码在 dsp.anti_phase_scan 里**，
+    #: 用户在设置里改不到、也没进普查；现在按"调用点显式传 `ctx.thresholds`"收编。
+    #: 分档只决定**文案档位与声道轴是否告警**，不参与成因候选。
+    anti_scope_minor: float = 0.01
+    anti_scope_major: float = 0.10
+    anti_scope_severe: float = 0.50
     # --- C4 时间定位（**算法参数**，不是判定阈值；见 analyzers/timeline.py）---
     seg_seconds: float = 10.0      # 分段窗长（秒）
     seg_overlap: float = 0.5       # 分段重叠比例
@@ -311,6 +318,9 @@ PROVENANCE: dict[str, tuple[str, str]] = {
                          "假立体声（单声道上混）的声道相关门限；**无外部出处**"),
     "fake_stereo_width_db": ("工程估计",
                              "假立体声的侧向能量（M/S 宽度）门限；**无外部出处**"),
+    "anti_scope_minor": ("工程估计", "反相能量占比 < 1% 记'无'；**无外部出处**"),
+    "anti_scope_major": ("工程估计", "反相能量占比 ≥ 10% 记'明显'；**无外部出处**"),
+    "anti_scope_severe": ("工程估计", "反相能量占比 ≥ 50% 记'严重'；**无外部出处**"),
 
     # --- C4 时间定位（算法参数，不出结论）---
     "seg_seconds": ("工程估计", "时间定位分段窗长（算法参数，不影响判定）；**无外部出处**"),

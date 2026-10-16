@@ -210,6 +210,53 @@ def test_channels_wide_is_ok():
     assert axis_channels({"width_db": -3.0}, TH)[0] == "ok"
 
 
+def test_channels_warns_on_severe_anti_phase():
+    """**anti_scope 接入判定**（2026-10-16）：此前只算不判。
+
+    `dsp.anti_phase_scan` 的 docstring 写着"给判定用"，但判定层从没读过它。
+    现在声道轴消费它——反相是**真实的立体声缺陷**（错线 / 反相叠加 /
+    处理链极性翻转），且声道轴属**可用性轴**（不驱动等级，只提示）。
+    """
+    lv, txt = axis_channels({"width_db": -3.0, "anti_scope": "严重",
+                             "anti_energy_pct": 99.9, "anti_band_khz": 12.5}, TH)
+    assert lv == "warn" and "局部反相" in txt and "严重" in txt
+
+
+def test_channels_warns_on_obvious_anti_phase():
+    lv, txt = axis_channels({"width_db": -3.0, "anti_scope": "明显",
+                             "anti_energy_pct": 30.0, "anti_band_khz": None}, TH)
+    assert lv == "warn" and "局部反相" in txt
+    assert "kHz" not in txt.split("局部反相")[1].split("）")[0] or "集中在" not in txt, \
+        "band 缺失时不得显示'集中在'"
+
+
+def test_channels_mild_anti_phase_does_not_warn():
+    """分档门限之下（轻微/无）不告警——门限在 config.Thresholds，可被设置改。"""
+    assert axis_channels({"width_db": -3.0, "anti_scope": "轻微"}, TH)[0] == "ok"
+    assert axis_channels({"width_db": -3.0, "anti_scope": "无"}, TH)[0] == "ok"
+
+
+def test_channels_anti_phase_thresholds_are_overridable():
+    """门限收编进 config（C0 口径）：改设置必须真的改变行为。"""
+    import numpy as np
+
+    from audiocheck.core import dsp
+    fs, n = 44100, 44100 * 3
+    rng = np.random.default_rng(1)
+    base = rng.standard_normal(n).astype(np.float32)
+    # 反相能量占比被抬到刚好跨过默认"轻微"线（1%）之上：默认档是"轻微"，
+    # 把 minor 门限抬到 0.5 之后就应变成"无"——证明门限真被读。
+    x = np.stack([base, -base], axis=1).astype(np.float32)
+    r1 = dsp.anti_phase_scan(x[:, 0], x[:, 1], fs,
+                             scope_bands=(0.01, 0.10, 0.50))
+    r2 = dsp.anti_phase_scan(x[:, 0], x[:, 1], fs,
+                             scope_bands=(1.5, 1.6, 1.7))
+    assert r1["anti_scope"] == "严重" and r2["anti_scope"] == "无", \
+        "分档门限没有生效：%s vs %s" % (r1, r2)
+    # 门限只改**档位文案**，不改测量本身 ⇒ 两次的能量占比必须逐位一致
+    assert r1["anti_energy_pct"] == r2["anti_energy_pct"]
+
+
 # ============================================================ 交叉核对
 def test_cross_check_detects_bit_depth_fraud():
     r = {"bits": "PCM_24", "bit_padded": True, "bit_origin": 16}

@@ -124,6 +124,44 @@ def test_anti_phase_scan_locates_the_band():
         "反相集中频段报成了 %s（应为 ~3 kHz）" % r["anti_band_khz"]
 
 
+def test_anti_phase_scan_uncorrelated_stereo_is_not_flagged():
+    """★ **口径纠错回归（第二次）**：左右**不相关**的正常立体声不许被判"反相"。
+
+    实测教训：单帧 ρ 对不相关内容是**重尾**的——左右完全独立的正常立体声
+    有 **33%** 的能量落在 ρ<−0.5（−0.9 时 14%、−0.98 时仍 6.3%），
+    于是 GUI 把正常立体声标成"反相范围：明显"，而**真缺陷**只报 0.76% 被漏掉。
+    改用**跨帧相干** ρ̄ 后：独立立体声 0.07%、全带反相 100%（实测）。
+    """
+    fs = 44100
+    n = fs * 3
+    rng = np.random.default_rng(20261016)
+    left = rng.standard_normal(n).astype(np.float32)
+    right = rng.standard_normal(n).astype(np.float32)
+    r = dsp.anti_phase_scan(left, right, fs)
+    assert r["anti_energy_pct"] < 1.0, \
+        "左右独立的正常立体声被报成反相（%.3f%%）——又退回单帧 ρ 了？" % r["anti_energy_pct"]
+    assert r["anti_scope"] == "无"
+
+
+def test_anti_phase_scan_correlated_stereo_is_clean():
+    """相关 0.5 + 各自细节的"真音乐样"也不许被报成反相。"""
+    fs = 44100
+    n = fs * 3
+    rng = np.random.default_rng(7)
+    common = rng.standard_normal(n).astype(np.float32)
+    left = common
+    right = (0.5 * common + 0.8 * rng.standard_normal(n)).astype(np.float32)
+    r = dsp.anti_phase_scan(left, right, fs)
+    assert r["anti_energy_pct"] < 1.0, "真音乐样被报成反相（%.3f%%）" % r["anti_energy_pct"]
+    assert r["anti_scope"] == "无"
+
+
+def test_anti_phase_coherence_window_is_positive():
+    """相干估计的时间窗必须 > 0（为 0 就退化成单帧 ρ，见上一条的教训）。"""
+    assert dsp.ANTI_COH_SEC > 0.0
+    assert dsp.ANTI_RHO < 0.0
+
+
 def test_anti_phase_scan_short_input_is_empty():
     assert dsp.anti_phase_scan(np.zeros(10, "float32"), np.zeros(10, "float32"), 44100) == {}
 

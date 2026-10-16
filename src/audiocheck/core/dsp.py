@@ -210,8 +210,20 @@ def stereo_features(left: np.ndarray, right: np.ndarray) -> dict:
 #: 30 dB 是"弱侧已进入本底"的常用判据（与频谱分析里"信号高于本底"同量级）。
 PHASE_UNDEF_DB = 30.0
 
-#: 判"反相格"的相关系数门限：ρ < −0.5 ⇒ 相位差超过 120°，已经是明确反相。
-ANTI_RHO = -0.5
+#: 判"反相"的**相干**门限：ρ̄ < −0.9 ⇒ 该频段左右几乎完全反向。
+#:
+#: ⚠ 2026-10-16 口径修正（实测纠错）：这里判的**不是**单帧 ρ，而是**跨帧相干**
+#: ρ̄（见 `anti_phase_scan`）。原来的 −0.5 是拿单帧 ρ 用的，而单帧 ρ 对不相关
+#: 内容是**重尾**的：实测左右完全独立的**正常立体声**有 **33%** 的能量落在
+#: ρ < −0.5（−0.9 时 14%、−0.98 时仍有 6.3%）⇒ 换任何单帧门限都压不下去，
+#: GUI 会把正常立体声标成"反相范围：明显"，而**真正的缺陷**（某频段反相）
+#: 只报 0.76% 被漏掉。改用跨帧相干后，同一批素材实测：
+#: 独立立体声 **0.07%** ／ 真音乐样（相关 0.5）**0.01%** ／ 全带反相 **100%**。
+ANTI_RHO = -0.9
+
+#: 相干估计的**时间窗**（秒）：跨多少秒的帧做平均。太短消不掉随机符号
+#: （不相关内容仍偏负），太长会把"只反相一小段"抹平。0.5 s 是实测折中。
+ANTI_COH_SEC = 0.5
 
 #: 判"有能量"的门限（相对本帧峰值的 dB）。低于此的格不参与反相统计——
 #: 安静处的相位没有意义（且 ρ 不可靠）。
@@ -247,7 +259,8 @@ def phase_field(x2d: np.ndarray, fs: int, nperseg: int = 4096, hop: int | None =
 
 
 def anti_phase_scan(left: np.ndarray, right: np.ndarray, fs: int,
-                    nperseg: int = 4096) -> dict:
+                    nperseg: int = 4096,
+                    scope_bands: tuple[float, float, float] = (0.01, 0.10, 0.50)) -> dict:
     """**局部化反相检测**（自研）：全局相关度看不见的"只在某频段/某时段反相"。
 
     ## 为什么需要它（`stereo_features` 的 `corr` 不够）
@@ -260,33 +273,48 @@ def anti_phase_scan(left: np.ndarray, right: np.ndarray, fs: int,
 
     * 只在**有能量**的格上统计（高于本帧峰值下 `ANTI_FLOOR_DB`）——
       安静处的相位没有意义；
-    * "反相格" = ρ < `ANTI_RHO`（−0.5，即相位差 > 120°）；
-    * ⚠ **判据用能量占比，不用格数占比**。这一条是**实测纠出来的**：
-      格数占比会被"边缘格"主导——实测真立体声（L=1 kHz / R=3 kHz，完全正常的
-      素材）格数占比报 **18%**，而反相**能量**只占 **0.02%**（−36.9 dB）。
-      那些格是泄漏裙边（一侧只有噪声，另一侧有信号，但失衡不足 30 dB 所以 ρ 仍被保留）。
-      **格数会说谎，能量不会**——所以对外只报能量口径，格数不再输出。
+    * "反相" = **跨帧相干** ρ̄ < `ANTI_RHO`（−0.9）。ρ̄ 定义：
+      `2·Re⟨L·conj(R)⟩_t / (⟨|L|²⟩_t + ⟨|R|²⟩_t)`，时间平均窗 `ANTI_COH_SEC`。
+    * ⚠ **为什么是跨帧相干，不是单帧 ρ**（2026-10-16 实测纠错，两次踩坑）：
+      ① 第一版用**格数占比**：真立体声（L=1k / R=3k）报 18%——那些格是泄漏裙边。
+         改用**能量占比**后降到 0.02%。**格数会说谎，能量不会**。
+      ② 但单帧 ρ 的能量口径**同样是错的**：单帧 ρ 对不相关内容**重尾**，实测
+         左右完全独立的正常立体声有 **33%** 能量落在 ρ<−0.5（−0.98 时仍 6.3%）
+         ⇒ 正常立体声被标"明显反相"，而真缺陷（某频段反相）只报 0.76% 被漏掉。
+         跨帧平均把随机符号消掉后：独立立体声 **0.07%**、全带反相 **100%**。
+    * ⚠ 视图层（`views.stereo_field`）画的是**单帧 ρ 的相位场**——那是给人看的
+      原始量，**不是**这里判定的 ρ̄。两者刻意不同（一个要看细节、一个要抗噪），
+      所以"图上发红但没告警"是可能的，反之亦然。
 
     ## 返回
 
-      * `anti_energy_db`  反相格里的能量占**有能量格**总能量的比例（dB，越低越少）
+      * `anti_energy_db`  反相能量占**有能量格**总能量的比例（dB，越低越少）
       * `anti_energy_pct` 同一件事的线性百分比（给人看）
       * `anti_band_khz`   反相能量最集中的频点
-      * `anti_scope`      "无 / 轻微 / 明显 / 严重" —— 按能量占比分档，给判定用
+      * `anti_scope`      "无 / 轻微 / 明显 / 严重" —— 按能量占比分档。**给声道轴
+        判定用**（`verdict.axis_channels` 对"明显/严重"告警）；分档门限由调用方
+        从 `config.Thresholds` 传（`scope_bands`），函数签名里的默认值只是
+        **直接调用时的兜底**——与 `detect_cutoff` 同一套口径（C0-3）。
     """
     if left is None or right is None or len(left) < nperseg * 2:
         return {}
     x = np.stack([np.asarray(left, dtype=np.float32), np.asarray(right, dtype=np.float32)],
                  axis=1)
     hop = max(1, int(nperseg * 3 // 4))
-    f, _t, rho = phase_field(x, fs, nperseg=nperseg, hop=hop)
-    if rho.size == 0:
+    f, _t, ZL = signal.stft(x[:, 0], fs=fs, nperseg=nperseg,
+                            noverlap=max(0, nperseg - hop), window="hann")
+    _f2, _t2, ZR = signal.stft(x[:, 1], fs=fs, nperseg=nperseg,
+                               noverlap=max(0, nperseg - hop), window="hann")
+    if ZL.size == 0:
         return {}
-    _f2, _t2, ZL = signal.stft(x[:, 0], fs=fs, nperseg=nperseg,
-                               noverlap=max(0, nperseg - hop), window="hann")
-    _f3, _t3, ZR = signal.stft(x[:, 1], fs=fs, nperseg=nperseg,
-                               noverlap=max(0, nperseg - hop), window="hann")
-    power = (np.abs(ZL) ** 2 + np.abs(ZR) ** 2).astype(np.float64)
+    p_l, p_r = np.abs(ZL) ** 2, np.abs(ZR) ** 2
+    # 跨帧相干（因果滑窗；边缘瞬态不影响结论——反相是"整段"性质）
+    w = max(1, int(round(ANTI_COH_SEC * fs / hop)))
+    kern = np.ones(w) / w
+    mov = lambda a: signal.lfilter(kern, [1.0], a, axis=1)      # noqa: E731
+    rho = (2.0 * np.real(mov(ZL * np.conj(ZR)))
+           / (mov(p_l) + mov(p_r) + 1e-30))
+    power = (p_l + p_r).astype(np.float64)
     frame_peak = power.max(axis=0, keepdims=True) + 1e-30
     active = power > frame_peak * (10.0 ** (-ANTI_FLOOR_DB / 10.0))
     if not active.any():
@@ -301,10 +329,12 @@ def anti_phase_scan(left: np.ndarray, right: np.ndarray, fs: int,
     if anti.any():
         per_bin = (power * anti).sum(axis=1)
         band = float(f[int(np.argmax(per_bin))] / 1000.0)
-    # 分档**只看能量占比**（格数不可靠，见 docstring）
-    scope = ("无" if share < 0.01 else
-             "轻微" if share < 0.10 else
-             "明显" if share < 0.50 else "严重")
+    # 分档**只看能量占比**（格数不可靠，见 docstring）。门限由调用方传
+    # （`config.Thresholds.anti_scope_*`），默认值是直接调用时的兜底。
+    minor, major, severe = scope_bands
+    scope = ("无" if share < minor else
+             "轻微" if share < major else
+             "明显" if share < severe else "严重")
     return {
         "anti_energy_db": round(float(edb), 1),
         "anti_energy_pct": round(100.0 * share, 3),

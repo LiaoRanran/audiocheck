@@ -4,6 +4,34 @@
 
 ## [未发布]
 
+### 口径变更（**局部反相指标纠错** + `anti_scope` 接入判定）
+
+> 两次实测纠错，都是"指标说一套、现实另一套"。第一条直接改了**用户可见的错**。
+
+- ★ **发现并修复**：`dsp.anti_phase_scan` 把**左右不相关的正常立体声**判成
+  "反相明显"——实测独立双声道噪声的反相能量占比 **32.9%**，而**真缺陷**
+  （某频段反相）只报 **0.76%** 被漏掉。根因：单帧 ρ 对不相关内容是**重尾**
+  （ρ<−0.5 占 ~33%，−0.98 时仍 6.3%）⇒ 换任何单帧门限都压不下去。
+  **修法**：改用**跨帧相干** ρ̄ = `2·Re⟨L·conj(R)⟩_t/(⟨|L|²⟩_t+⟨|R|²⟩_t)`
+  （`ANTI_COH_SEC=0.5s`），随机符号被平均消掉：不相关 → 0，真反相 → −1。
+  实测：独立立体声 **0.07%**、真音乐样（相关 0.5）**0.01%**、全带反相 **100%**。
+  `ANTI_RHO` −0.5 → **−0.9**（相干口径）。**GUI 此前会把正常立体声标成
+  "反相范围：明显"——这是用户可见的错误结论，本轮修正。**
+- **`anti_scope` 从"只算不判"接入判定**：`dsp.anti_phase_scan` 的 docstring
+  写着"给判定用"，但判定层从没读过它（grep 实证）。现在
+  `verdict.axis_channels` 对"明显/严重"告警（**可用性轴**，不驱动等级）。
+  反相是**现象层的立体声缺陷**（错线/反相叠加/极性翻转），不是成因，
+  所以不进 `causes` 候选集。
+- **C0-3 同型收编**：三个分档门限原硬编码在 dsp 里（设置里改不到、也没进普查）
+  ⇒ 新增 `anti_scope_minor/major/severe`（0.01/0.10/0.50），调用点显式传
+  `ctx.thresholds`；登记 `PROVENANCE` + 普查 `FIELD_MAP`（实测三档两侧都有样本：
+  36/7、35/8、1/42）。`stereo.py` 的 `except: pass` 改为**写进 errors**
+  （不再静默）。
+- 回归：`test_anti_phase_scan_uncorrelated_stereo_is_not_flagged`（钉 33% 教训）、
+  `test_anti_phase_scan_correlated_stereo_is_clean`、
+  `test_channels_warns_on_severe_anti_phase` 等 8 条新增。
+- 验证：全量 **654 passed**；普查 `--strict` 过；ruff 全树绿。
+
 ### 修复（E2.1 **不可信输入的显式错误路径**：CLI 曾对非音频文件打 traceback）
 
 - **发现**：`analyze()` 在打开/解析容器失败时**抛 `LibsndfileError`**，批量路径

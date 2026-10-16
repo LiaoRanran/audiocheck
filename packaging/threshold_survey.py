@@ -197,6 +197,10 @@ FIELD_MAP: dict[str, tuple | None] = {
     "noise_like_flatness": ("flatness", ">=", "比例", "类噪守卫：占比证据的前提"),
     "fake_stereo_corr": ("corr", ">=", "比例", "假立体声候选：声道相关"),
     "fake_stereo_width_db": ("width_db", "<=", "dB", "假立体声候选：侧向能量"),
+    # 局部反相分档（2026-10-16 接入判定：verdict.axis_channels 对明显/严重告警）
+    "anti_scope_minor": ("anti_share", ">=", "比例", "反相分档：轻微起"),
+    "anti_scope_major": ("anti_share", ">=", "比例", "反相分档：明显起（声道轴告警线）"),
+    "anti_scope_severe": ("anti_share", ">=", "比例", "反相分档：严重"),
     # 算法参数：不定义判定，只影响"能不能检出"
     "min_drop_db": None, "min_stop_db": None, "cutoff_min_hz": None, "cutoff_need": None,
     "conf_slope_span": None,
@@ -242,7 +246,40 @@ def _observe(r: dict) -> dict:
         # C4 成因候选的观测量（黑胶隆隆 / 广播低切 / 类噪守卫 / 假立体声）
         "flatness": r.get("flatness"),
         "corr": r.get("corr"),
+        # 局部反相分档门限（`anti_scope_*`）：dsp 报的是百分比，门限是比例
+        "anti_share": (r.get("anti_energy_pct") / 100.0)
+        if r.get("anti_energy_pct") is not None else None,
     }
+
+
+def _split(key: str, op: str, val: float, rows: list[dict]) -> tuple[int, int, int]:
+    """把样本按 `op val` 分成两侧，返回 (触发侧, 另一侧, 有效样本数)。"""
+    hi = lo = 0
+    for r in rows:
+        v = r["_obs"].get(key)
+        if v is None:
+            continue
+        hit = (v >= val) if op == ">=" else (v > val) if op == ">" else \
+              (v <= val) if op == "<=" else (v < val)
+        if hit:
+            hi += 1
+        else:
+            lo += 1
+    return hi, lo, hi + lo
+
+
+#: **负面对照**（E 块"反面参照"惯例，同 colormap 的 jet、变异的等价体）：
+#: 故意造**不可能有区分力**的字段规格。它测的不是阈值，而是**这把尺子本身**——
+#: 若连这种一眼单侧/全缺的输入都报不出"无区分力"，那"全部字段有区分力"
+#: 就是空话（检查恒真 = 没有信息量）。
+#: ⚠ 本检查此前**从未命中过**（零命中）：因为语料是按"跨每个阈值两侧"手工造的，
+#: 结论由构造保证 ⇒ 无失败模式。负面对照补上这个失败模式。
+NEGATIVE_CONTROLS: list[tuple[str, tuple]] = [
+    ("__neg_impossible__",
+     ("cutoff_khz", ">=", 999.0, "kHz", "负面对照：不可能达到的截止点（应报无区分力）")),
+    ("__neg_all_missing__",
+     ("__no_such_observable__", ">=", 0.0, "", "负面对照：观测量全缺（应报无样本）")),
+]
 
 
 def main() -> int:
@@ -283,18 +320,7 @@ def main() -> int:
                   % (fname, val, "—", "—", "—", note))
             continue
         key, op, unit, desc = spec
-        hi = lo = 0
-        for r in rows:
-            v = r["_obs"].get(key)
-            if v is None:
-                continue
-            hit = (v >= val) if op == ">=" else (v > val) if op == ">" else \
-                  (v <= val) if op == "<=" else (v < val)
-            if hit:
-                hi += 1
-            else:
-                lo += 1
-        n = hi + lo
+        hi, lo, n = _split(key, op, val, rows)
         if n == 0:
             verdict = "**无样本**（观测量全缺）"
         elif hi == 0 or lo == 0:
@@ -307,6 +333,29 @@ def main() -> int:
         print("%-24s %8s %10d %10d %8d   %s"
               % (fname, val, hi, lo, n, verdict))
     print("=" * 100)
+
+    # ---- 负面对照：证明这把尺子**有牙齿**（能报出单侧/无样本）----
+    neg_fail: list[str] = []
+    print("\n负面对照（检验的检验）：")
+    for name, spec in NEGATIVE_CONTROLS:
+        key, op, val, unit, desc = spec
+        hi, lo, n = _split(key, op, val, rows)
+        flagged = (n == 0) or (hi == 0 or lo == 0)
+        if not flagged:
+            neg_fail.append(name)
+        print("  %-20s 触发 %d / 另一侧 %d / 有效 %d ⇒ %s  %s"
+              % (name, hi, lo, n,
+                 "**未报出（尺子坏了）**" if not flagged else "正确报出（单侧 / 无样本）",
+                 "← **失败**" if not flagged else ""))
+        report[name] = {"threshold": val, "unit": unit, "op": op, "desc": desc,
+                        "triggered": hi, "other": lo, "n": n,
+                        "verdict": "无样本" if n == 0 else ("无区分力" if flagged else "有区分力"),
+                        "negative_control": True}
+    if neg_fail:
+        print("\n**负面对照未通过**：本检查连明显单侧都报不出来 ⇒ "
+              "'全部字段有区分力'的结论**不可信**（尺子坏了）。")
+        return 1
+    print("  两例均被正确报出 ⇒ 本检查**有牙齿**（不是恒真）。")
 
     # ---- 检出率（算法参数 + 总体）----
     det = sum(1 for r in rows if r.get("cutoff_hz"))
@@ -323,7 +372,13 @@ def main() -> int:
         print("  ① 语料没覆盖到该阈值的另一侧 ⇒ **补语料**（这是最常见的原因，先查这个）；")
         print("  ② 语料覆盖了但仍单侧 ⇒ 阈值对现实音源没有区分力，记账并考虑降级为'工程估计'。")
     else:
-        print("\n全部字段**两侧都有样本** ⇒ 阈值在本语料上有区分力。")
+        # ⚠ **措辞纪律**："两侧都有样本"只说明**语料覆盖了两侧**，不等于
+        # "该阈值在真实音源上有区分力"——语料是手工按跨阈值两侧造的，
+        # 这条结论由构造保证。真实音源上的区分力**仍需外部曲库验证**。
+        print("\n全部字段**两侧都有样本** ⇒ 语料覆盖了两侧；"
+              "负面对照已证明本检查能报出单侧（有牙齿）。")
+        print("  ⚠ 但这**不等于**『阈值对真实音源有区分力』——语料是手工按跨阈值"
+              "两侧造的，本结论由构造保证；真实曲库上的区分力**未验证**。")
 
     if a.json:
         with open(a.json, "w", encoding="utf-8") as f:

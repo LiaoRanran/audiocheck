@@ -110,7 +110,8 @@ _ALLOWED: dict[str, dict[str, str]] = {
         "16": "1/16 倍频程", "30": "Hz（低频起点）", "60.0": "秒（取样时长）",
         "100.0": "Hz 常数",
     },
-    "stereo.py": {"42": "调度 order", "60.0": "秒（取样时长）"},
+    "stereo.py": {"42": "调度 order", "60.0": "秒（取样时长）",
+                  "120": "错误信息截断长度（非阈值；写进 errors 用）"},
     # C0 收编后，verdict 里只剩结构性数字（判据阈值全部在 config.Thresholds）
     "verdict.py": {"90": "调度 order（不是阈值）", "99": "_RANK_UNKNOWN：未知等级按最差"},
     # C3：假 Hi-Res 盲检测（默认关闭，见 fakehires.py 顶部的判定）。

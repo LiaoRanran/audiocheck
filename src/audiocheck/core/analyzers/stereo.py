@@ -23,10 +23,18 @@ class StereoAnalyzer(Analyzer):
             # 只要有一半时间是正常立体声它就可能是正的——而"某段人声被反相加倍"
             # "某频段被极性反转"这类缺陷会被平均值吃掉。这里按**频率 × 时间**
             # 分开看相位，报出反相格占比/能量占比/最集中的频段。
+            # 分档门限**显式传** `ctx.thresholds`（C0-3 口径：不显式传，用户在
+            # 设置里改它们就"设了没反应"）。
+            th = ctx.thresholds
             try:
-                out.update(dsp.anti_phase_scan(seg[:, 0], seg[:, 1], ctx.fs))
-            except Exception:                                  # noqa: BLE001
-                pass            # 相位扫描失败不该拖垮立体声分析（其余字段仍有效）
+                out.update(dsp.anti_phase_scan(
+                    seg[:, 0], seg[:, 1], ctx.fs,
+                    scope_bands=(th.anti_scope_minor, th.anti_scope_major,
+                                 th.anti_scope_severe)))
+            except Exception as e:                             # noqa: BLE001
+                # 相位扫描失败不该拖垮立体声分析（其余字段仍有效），
+                # 但**不许静默**——写进 errors，CLI/JSON 的告警与退出码才看得见。
+                ctx.result["errors"].append("stereo/anti_phase: %s" % str(e)[:120])
         if out.get("corr") is None and ctx.result.get("_corr") is not None:
             out["corr"] = round(float(ctx.result["_corr"]), 3)
         # 声明显示元信息（GUI 指标卡按这个渲染；不声明就走默认）
