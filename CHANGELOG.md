@@ -39,6 +39,23 @@
 - `tests/test_views_coverage.py`：覆盖矩阵 ↔ 代码断言（镜像 B6 手法）+
   `_adaptive_vmin` 四条纪律判据 + rows>bins 回归。
 
+### 新增（C7 双分辨率 STFT：低频根治）
+
+> 评估见 `packaging/lowfreq_eval.py`；判据见 `tests/test_views_dualres.py`。
+
+- **频谱图低频段（<546Hz）用 16384 窗重算并并入**，拼成「低频细、高频粗」的
+  非均匀频率轴返回。`charts._resample_rows` 用 `searchsorted(f, …)` 对任意单调
+  f 都正确 ⇒ 低频真实细节进图（可分辨间距 30→10Hz，3×），不再被插值抹平。
+- **只动视图 STFT**：判定曲线走 `context.spectrum()` 的 16384 锁死口径，与本处
+  两套独立参数、互不影响；改视图窗不会动结论（不撞"结论可复算"）。
+- **默认开、可关**：`config.dual_resolution_stft=True`；`ViewWorker` 读
+  `TH.dual_resolution_stft`。`nperseg ≥ 16384` 时自动退化为单分辨率。
+- **代价 ≈2× 视图成本**（低频段多一遍 16384 窗；同重叠比下 16384 窗本身 ≈1×
+  主窗耗时），可接受（视图算一次即缓存）。
+- 改动文件：`core/views.py`（`_dual_res_spectrogram` / `_align_time` / 常量 /
+  `spectrogram` 签名）、`config.py`（字段 + 出处登记）、`ui/window.py`
+  （`ViewWorker` 透传标志）、`docs/views_coverage.md`、`tests/test_views_dualres.py`。
+
 ### 口径变更（C4 判定颗粒度）
 
 > 逐行 CLI diff 留档：`out/_before_demo{1,2,3}*.txt`（改前，`f5bb3b6` worktree）

@@ -119,15 +119,23 @@ class ViewWorker(QThread):
 
     ready = Signal(str, str, int, object, object, object)
 
-    def __init__(self, path, kind="spec", nperseg=views.DEFAULT_VIEW_NPERSEG):
+    def __init__(self, path, kind="spec", nperseg=views.DEFAULT_VIEW_NPERSEG,
+                 dual_resolution=None):
         super().__init__()
         self.path, self.kind, self.nperseg = path, kind, int(nperseg)
+        self.dual_resolution = dual_resolution
 
     def run(self):
         try:
-            fn = {"spec": view_spectrogram, "wfall": view_waterfall,
-                  "phase": view_stereo}[self.kind]
-            t, f, S = fn(self.path, nperseg=self.nperseg)
+            # 双分辨率只作用于频谱图（瀑布/相位场暂无此需求，且签名不接收该参数）
+            dr = (self.dual_resolution if self.dual_resolution is not None
+                  else TH.dual_resolution_stft)
+            if self.kind == "spec":
+                t, f, S = view_spectrogram(self.path, nperseg=self.nperseg,
+                                           dual_resolution=dr)
+            else:
+                fn = {"wfall": view_waterfall, "phase": view_stereo}[self.kind]
+                t, f, S = fn(self.path, nperseg=self.nperseg)
             self.ready.emit(self.path, self.kind, self.nperseg, t, f, S)
         except Exception:                                          # noqa: BLE001
             self.ready.emit(self.path, self.kind, self.nperseg, None, None, None)

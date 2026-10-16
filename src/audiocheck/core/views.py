@@ -91,6 +91,17 @@ VIEW_NPERSEG_CHOICES = (2048, 4096, 8192)
 #: 默认窗长 = 经典权衡点。
 DEFAULT_VIEW_NPERSEG = 4096
 
+#: **双分辨率 STFT（C7，2026-10-16 实现）**：根治"低频糊"。
+#: 默认 4096 窗在 <546Hz 是"行距细过 bin"（Δf 10.77Hz 比显示行距粗），
+#: 低频细节被插值抹平（E1 实测 50Hz 占行 360/720 不变——加行数治不了）。
+#: 16384 窗 Δf 2.69Hz，可分辨间距 30→10Hz（3×）。**只动视图 STFT**：
+#: 判定曲线走 `context.spectrum()` 的 16384 锁死口径，与这里两套独立参数
+#: （早已解耦），改视图窗不会动结论（不撞"结论可复算"宪法）。
+DUAL_RES_NPERSEG = 16384
+#: 双分辨率只覆盖"主窗在该频段比显示行距粗"的低频带。546Hz = 4096 窗的
+#: 显示插值边界（docs/views_coverage.md）；高于它主窗已足够细，不必多算。
+DUAL_RES_CUTOFF_HZ = 546.0
+
 
 def _hop_for(nperseg: int) -> int:
     """75% 重叠（`hop = 3/4 · nperseg`）——时频分析的惯例重叠量。
@@ -101,17 +112,75 @@ def _hop_for(nperseg: int) -> int:
     return max(1, int(nperseg * 3 // 4))
 
 
+def _align_time(S: np.ndarray, t_src: np.ndarray, t_dst: np.ndarray) -> np.ndarray:
+    """把 (n_f, n_t_src) 矩阵沿时间轴**最近邻**重采样到 (n_f, n_t_dst)。
+
+    双分辨率两段 STFT 的 hop 不同 ⇒ 时间帧数不同（16384 窗帧少、4096 窗帧多）。
+    两者覆盖同一整曲，最近邻映射即可：本项目的纪律是"**不制造假插值分辨率**"，
+    最近邻是诚实选择；且时间对齐精度远粗于显示列宽（200ms），不影响判读。
+    """
+    t_src = np.asarray(t_src, dtype=float)
+    t_dst = np.asarray(t_dst, dtype=float)
+    idx = np.clip(np.searchsorted(t_src, t_dst), 0, len(t_src) - 1)
+    return S[:, idx]
+
+
+def _dual_res_spectrogram(x2d, fs, nperseg, hop, max_cols, cutoff_hz):
+    """双分辨率合并：低频段（< cutoff）用 `DUAL_RES_NPERSEG` 窗重算，拼成
+    「低频细、高频粗」的**非均匀**频率轴，返回 `(f, t, S_power)`。
+
+    ## 为什么返回非均匀轴也对
+
+    下游 `charts._resample_rows` 用 `searchsorted(f, …)` 把**任意单调 f** 重采样
+    到对数显示网格——低频细轴自然铺满更多显示行，高频粗轴占少行。**真实低频
+    细节**（可分辨间距 3×）因此进图，而不是被插值抹平。
+
+    ## 代价
+
+    低频段多跑一遍 16384 窗 ≈ 一次额外 pass。实测同重叠比下 16384 窗本身
+    ≈1× 主窗耗时，所以总视图成本 ≈2×（可接受：视图算一次即缓存）。
+    """
+    # 主分辨率（用户选的窗）：低频段也先有一份粗值打底
+    f_hi, t_hi, S_hi = _stft_power(x2d, fs, nperseg, hop or _hop_for(nperseg))
+    # 低频超分辨率：固定 16384 窗（Δf 2.69Hz）
+    f_lo, t_lo, S_lo = _stft_power(x2d, fs, DUAL_RES_NPERSEG, _hop_for(DUAL_RES_NPERSEG))
+
+    keep_lo = f_lo < cutoff_hz
+    keep_hi = f_hi >= cutoff_hz
+    # 保底：cutoff 越界不应发生；退化为单分辨率（仍是正确结果，不静默降级）
+    if not keep_lo.any() or not keep_hi.any():
+        return f_hi, t_hi, S_hi
+
+    # 细轴时间对齐到粗轴帧（最近邻），再按频率拼成单调非均匀轴
+    S_lo_kept = _align_time(S_lo[keep_lo], t_lo, t_hi)
+    f = np.concatenate([f_lo[keep_lo], f_hi[keep_hi]])
+    S = np.concatenate([S_lo_kept, S_hi[keep_hi]], axis=0)
+    # 列数峰值保持抽稀（与主流程同一约定）
+    S, t_hi = _peak_hold(S, t_hi, max_cols)
+    return f, t_hi, S
+
+
 def spectrogram(path: str, nperseg: int = DEFAULT_VIEW_NPERSEG, hop: int | None = None,
-                max_cols: int = 900, max_seconds: float | None = None):
+                max_cols: int = 900, max_seconds: float | None = None,
+                dual_resolution: bool = True,
+                dual_cutoff_hz: float = DUAL_RES_CUTOFF_HZ):
     """整曲 STFT，返回 (t, f, S_db)。列数超限时**峰值保持**抽稀。
 
     `nperseg` 见 `VIEW_NPERSEG_CHOICES`（只影响出图，不影响判定）。
+
+    `dual_resolution=True`（默认）：低频段（< `dual_cutoff_hz`）用 16384 窗
+    重算并并入，根治"低频糊"（见 `DUAL_RES_*` 常量与 `_dual_res_spectrogram`）。
+    **只动视图 STFT**：判定曲线（16384 锁死）走 `context.spectrum()`，与本处
+    两套独立参数、互不影响。
     """
     info = sf.info(path)
     fs, total = info.samplerate, info.frames
     x = _read(path, fs, total, nperseg, max_seconds)
-    f, t, S = _stft_power(x, fs, nperseg, hop or _hop_for(nperseg))
-    S, t = _peak_hold(S, t, max_cols)
+    if dual_resolution and int(nperseg) < DUAL_RES_NPERSEG:
+        f, t, S = _dual_res_spectrogram(x, fs, nperseg, hop, max_cols, dual_cutoff_hz)
+    else:
+        f, t, S = _stft_power(x, fs, nperseg, hop or _hop_for(nperseg))
+        S, t = _peak_hold(S, t, max_cols)
     return t, f, _to_db(S)
 
 
