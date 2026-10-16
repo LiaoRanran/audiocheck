@@ -94,3 +94,58 @@ def test_16bit_file_is_skipped(tmp_path):
 def test_missing_file_is_graceful():
     out = bit_depth_origin("/no/such/file.flac", "PCM_24")
     assert out["bit_padded"] is False
+
+
+# ------------------------------------------------- 2026-10-16：真实曲库暴露的缺陷
+def test_bit_depth_padding_detected_in_stereo(tmp_path):
+    """★ 回归：24bit **立体声** 文件上的升位检测曾**整个失效**。
+
+    根因：`np.bitwise_or.reduce(x)` 默认**只沿 axis 0** 归约，立体声读成 [n, 2]
+    时返回**每声道一个值**（1-D 数组）⇒ `int()` 抛
+    `TypeError: only 0-dimensional arrays can be converted to Python scalars`，
+    被引擎吞成"分析器告警"，于是**位深升位检测在 24bit 立体声上永远跑不出来**——
+    而那正是伪 Hi-Res 的主要形态。
+
+    为什么此前没抓到：本文件所有位深用例写的都是**单声道**（1-D ⇒ 默认 axis=0
+    恰好等于全归约）。是**真实曲库**（88.2k/24bit 立体声）把它顶出来的。
+    """
+    fs = 44100
+    rng = np.random.default_rng(7)
+    vl = rng.standard_normal(fs)
+    vr = rng.standard_normal(fs)
+    vl, vr = vl / np.abs(vl).max(), vr / np.abs(vr).max()
+    ints = np.column_stack([(vl * 32760).astype(np.int32) << 16,
+                            (vr * 32760).astype(np.int32) << 16])       # 16bit 内容装 24bit
+    p = str(tmp_path / "padded_stereo.wav")
+    sf.write(p, ints, fs, subtype="PCM_24")
+    out = bit_depth_origin(p, "PCM_24")
+    assert out["bit_padded"] is True, out
+    assert out["bit_origin"] == 16, out
+
+
+def test_bit_depth_origin_reduces_across_channels(tmp_path):
+    """归约必须**跨所有声道**：右声道是数字静音时也要能判左声道的升位。"""
+    fs = 44100
+    rng = np.random.default_rng(8)
+    v = rng.standard_normal(fs)
+    v = v / np.abs(v).max()
+    ints = np.column_stack([(v * 32760).astype(np.int32) << 16, np.zeros(fs, np.int32)])
+    p = str(tmp_path / "one_silent.wav")
+    sf.write(p, ints, fs, subtype="PCM_24")
+    out = bit_depth_origin(p, "PCM_24")
+    assert out["bit_padded"] is True and out["bit_origin"] == 16, out
+
+
+def test_real_24bit_stereo_is_not_flagged(tmp_path):
+    """真 24bit 立体声（低位有内容）不许被判升位——立体声路径的另一半。"""
+    fs = 44100
+    rng = np.random.default_rng(11)
+    vl = rng.standard_normal(fs)
+    vr = rng.standard_normal(fs)
+    vl, vr = vl / np.abs(vl).max(), vr / np.abs(vr).max()
+    ints = np.column_stack([(vl * 8380000).astype(np.int32) << 8,
+                            (vr * 8380000).astype(np.int32) << 8])
+    p = str(tmp_path / "real24_stereo.wav")
+    sf.write(p, ints, fs, subtype="PCM_24")
+    out = bit_depth_origin(p, "PCM_24")
+    assert out["bit_padded"] is False and out["bit_origin"] == 24, out

@@ -80,7 +80,13 @@ def bit_depth_origin(path: str, bits: str) -> dict:
     x = np.abs(np.asarray(x, dtype=np.int64))
     if x.size == 0:
         return out
-    acc = int(np.bitwise_or.reduce(x))
+    # ⚠ `axis=None` 不能省：`np.bitwise_or.reduce(x)` 默认**只沿 axis 0** 归约，
+    # 于是立体声（读成 [n, 2]）会返回**每声道一个值**（1-D 数组），`int()` 直接
+    # 抛 `TypeError: only 0-dimensional arrays can be converted to Python scalars`
+    # ⇒ **整个"位深升位检测"在 24bit 立体声上失效**——而那正是伪 Hi-Res 的主要形态。
+    # 这个缺陷只在**真实曲库**上暴露：此前所有测试写的都是**单声道**文件
+    # （1-D ⇒ 默认 axis=0 恰好等于全归约），24bit 分支从没跑到过立体声。
+    acc = int(np.bitwise_or.reduce(x, axis=None))
     if acc == 0:                                            # 数字静音，无从判断
         return out
     # libsndfile 把整数 PCM 读成 int32 时会**左移对齐**：24bit 内容读到 int32 是

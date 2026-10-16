@@ -32,12 +32,24 @@ class BasicAnalyzer(Analyzer):
         block_rms: list[float] = []
         corr_num = corr_l = corr_r = 0.0
         mean_l = mean_r = 0.0
+        frames_read = 0
+        read_error: Exception | None = None
 
         with sf.SoundFile(ctx.path) as f:
             while True:
-                b = f.read(BLOCK, dtype="float32", always_2d=True)
+                # ⚠ 截断的文件**能打开**（容器头部的 STREAMINFO 还在、帧数照旧声称），
+                # 读到一半才失败（实测 libsndfile 给 "flac decoder lost sync" 或
+                # "Internal psf_fseek() failed."）。**真实曲库**里就有 3 个这样的文件。
+                # 早先不接这个异常 ⇒ 只有一句 libsndfile 英文错误被引擎记进 errors，
+                # 用户看不出"文件被截断了"，而结论是拿**部分内容**算出来的。
+                try:
+                    b = f.read(BLOCK, dtype="float32", always_2d=True)
+                except Exception as exc:                          # noqa: BLE001
+                    read_error = exc
+                    break
                 if not len(b):
                     break
+                frames_read += b.shape[0]
                 peak = max(peak, float(np.abs(b).max()))
                 bf = b.astype(np.float64)
                 sumsq += float((bf ** 2).sum())
@@ -91,4 +103,18 @@ class BasicAnalyzer(Analyzer):
             out["lr_level_diff_db"] = round(
                 abs(20 * np.log10((mean_l + 1e-9) / (mean_r + 1e-9))), 2)
             out["_corr"] = corr_num / float(np.sqrt(corr_l * corr_r))
+
+        # 截断：**显式说出来**（E2.1 的规矩——"读不满"与"读完了"必须可区分）。
+        # 为什么不直接判 level=error：可读部分（这里 ≥99.8%）的统计是**有效**的，
+        # 判 error 会把整条结论丢掉；代价是用户可能没注意——所以文案必须显眼。
+        if read_error is not None:
+            claimed = int(ctx.frames or 0)
+            pct = (100.0 * frames_read / claimed) if claimed else 0.0
+            ctx.result.setdefault("errors", []).append(
+                "basic: **文件疑似截断**——容器头部声称 %d 帧，实际只读到 %d 帧（%.1f%%）；"
+                "以下结论只覆盖可读部分（libsndfile: %s）"
+                % (claimed, frames_read, pct, read_error))
+            out["read_incomplete"] = True
+            out["read_frames"] = frames_read
+            out["read_frames_claimed"] = claimed
         return out

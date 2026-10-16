@@ -109,6 +109,78 @@ def test_cli_exit_code_4_marks_unreadable_input(corpus_dir):
     assert p.returncode == 4, "不可读输入的退出码应为 4，实得 %d" % p.returncode
 
 
+def _write_wav(path, seconds=1.0):
+    import numpy as np
+    import soundfile as sf
+
+    n = int(44100 * seconds)
+    sf.write(str(path), np.column_stack([np.zeros(n, dtype="float32")] * 2),
+             44100, subtype="PCM_16")
+    return str(path)
+
+
+def test_cli_warns_when_explicit_target_is_dropped(tmp_path):
+    """★ 回归（真实曲库暴露）：显式给出的目标**没被收录**时必须说出来。
+
+    不许静默少分析——真实踩到过两种成因：清单带 UTF-8 **BOM**（第一行路径作废）；
+    路径超过 Windows **MAX_PATH**（260 字符）⇒ `isfile` 为 False。两种都会让文件
+    从结果里**无声消失**，而汇总看不出少了什么。
+    """
+    good = _write_wav(tmp_path / "ok.wav")
+    missing = str(tmp_path / "nope.wav")                    # 不存在
+    p = subprocess.run([sys.executable, "-m", "audiocheck", "--quiet", good, missing],
+                       capture_output=True, text=True)
+    blob = p.stdout + p.stderr
+    assert "个显式目标" in blob, blob
+    assert "nope.wav" in blob, blob
+    assert p.returncode == 0, "少一个目标不该改变退出码（保持向后兼容）"
+
+
+def test_cli_list_accepts_utf8_bom(tmp_path):
+    """★ 回归：`--list` 清单带 UTF-8 BOM 时，**第一行**路径不许被丢掉
+    （PowerShell 的 `Out-File -Encoding utf8` 默认带 BOM；实测踩到）。"""
+    wav = _write_wav(tmp_path / "a.wav")
+    lst = tmp_path / "list.txt"
+    lst.write_text("\ufeff" + wav + "\n", encoding="utf-8")   # 主动写入 BOM
+    p = subprocess.run([sys.executable, "-m", "audiocheck", "--quiet", "--list", str(lst)],
+                       capture_output=True, text=True)
+    blob = p.stdout + p.stderr
+    assert "待检测 1 个文件" in blob, blob
+    assert "个显式目标" not in blob, blob
+
+
+def test_truncated_but_openable_file_is_reported_explicitly(tmp_path):
+    """★ 回归（**真实曲库**暴露）：截断的文件**能打开**——容器头部的 STREAMINFO 还在、
+    帧数照旧声称满长——读到一半才失败（libsndfile 报 "flac decoder lost sync" /
+    "Internal psf_fseek() failed."）。库里就有 3 个这样的文件（下载没下全）。
+
+    早先不接这个异常，用户只会看到一句 libsndfile 英文错误，**看不出"文件被截断了"**，
+    而结论是拿部分内容算的。现在要求：`read_incomplete` 为真、errors 里有可读的
+    "截断"说明、并给出实读帧数。
+
+    这是本文件里**唯一**一个"能打开但要报错"的语料——前 12 条都在打开阶段就失败。
+    """
+    import numpy as np
+    import soundfile as sf
+
+    fs = 48000
+    x = (0.2 * np.sin(2 * np.pi * 440 * np.arange(fs * 30) / fs)).astype(np.float32)
+    full = str(tmp_path / "full.flac")
+    sf.write(full, np.column_stack([x, x]), fs, subtype="PCM_16")
+    size = os.path.getsize(full)
+    cut = str(tmp_path / "cut.flac")
+    with open(full, "rb") as f, open(cut, "wb") as g:
+        g.write(f.read(int(size * 0.7)))
+    assert sf.info(cut).frames == fs * 30, "前提自检：截断后头部仍声称满长"   # 否则验的不是这件事
+
+    r = analyze(cut, only=["basic"])
+    assert r.get("read_incomplete") is True, r.get("errors")
+    assert any("截断" in e for e in r["errors"]), r["errors"]
+    assert r["read_frames"] < fs * 30
+    # 可读部分仍在（不是被判 error 整条丢掉）
+    assert r.get("peak_dbfs") is not None and r["read_frames"] > 0
+
+
 def test_random_mutation_does_not_crash():
     """有界随机变异（固定种子、可复现）：任何未捕获异常都算失败。
 

@@ -9,9 +9,10 @@ E2 要求：畸形文件必须全部走"**明确错误**"路径（有错误码 +
 
 ## 两部分
 
-1. **畸形语料**（确定性，`CORPUS`）：空文件 / 纯文本 / 截断 RIFF / 半截 WAV /
+1. **畸形语料**（确定性，`CORPUS`，13 条）：空文件 / 纯文本 / 截断 RIFF / 半截 WAV /
    只有头部 / 全零 / 伪造巨大长度 / 错扩展名（把文本命名成 .flac）/
-   只有 ID3 标签 …… 每个都必须给出**显式结果**（错误或正常判定），且
+   只有 ID3 标签，以及**能打开但读不满**的截断 FLAC（真实曲库暴露的形态，见
+   `_truncated_flac_bytes`）…… 每个都必须给出**显式结果**（错误或正常判定），且
    **真实 CLI 子进程的输出里不许出现 `Traceback`**。
 2. **随机变异 fuzz**（有界时长）：对一份正常 WAV 做随机字节改写，跑 `analyze`；
    任何**未捕获异常**都是崩溃样本 ⇒ 写进 `tests/robustness_corpus/`（语料即回归资产）。
@@ -53,6 +54,27 @@ def _valid_wav_bytes() -> bytes:
         return f.read()
 
 
+def _truncated_flac_bytes() -> bytes:
+    """一个**能打开、但读不满**的 FLAC（截到 70%）。
+
+    真实曲库（2026-10-16）暴露的形态：下载没下全的文件，容器头部的 STREAMINFO
+    照旧声称满长、`sf.info()` 也返回满长帧数，**读到一半才失败**
+    （libsndfile 给 "flac decoder lost sync" / "Internal psf_fseek() failed."）。
+    这条语料与前 12 条的差别：那 12 条在**打开阶段**就失败，这条**能打开**。
+    """
+    import numpy as np
+    import soundfile as sf
+
+    d = tempfile.mkdtemp(prefix="ac_rob_flac_")
+    fs = 48000
+    x = (0.2 * np.sin(2 * np.pi * 440 * np.arange(fs * 10) / fs)).astype(np.float32)
+    full = os.path.join(d, "full.flac")
+    sf.write(full, np.column_stack([x, x]), fs, subtype="PCM_16")
+    with open(full, "rb") as f:
+        raw = f.read()
+    return raw[: int(len(raw) * 0.7)]
+
+
 def corpus() -> dict[str, bytes]:
     """畸形语料（确定性）。每条都注明**期望**行为。"""
     raw = _valid_wav_bytes()
@@ -69,6 +91,7 @@ def corpus() -> dict[str, bytes]:
         "flac_trunc": b"fLaC" + b"\x00" * 40,
         "ogg_trunc": b"OggS" + b"\x00" * 30,
         "mp3_header": b"\xff\xfb\x90\x00" + b"\x00" * 400,
+        "flac_openable_trunc": _truncated_flac_bytes(),
     }
 
 

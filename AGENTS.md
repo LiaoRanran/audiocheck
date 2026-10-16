@@ -249,6 +249,10 @@ python packaging/palette_report.py         # 对照度报告 + 色卡 PNG
 | **`deleteLater()` 的对象不消失** | 探针里"每点一次涨 0.6 MB"的**假泄漏** | `processEvents()` 后补 `sendPostedEvents(None, DeferredDelete)` |
 | **自由线程解释器** | `sys._is_gil_enabled()` 为 False，纯 Python 慢 ~70% | 性能基准绝对值必须标环境 |
 | **`FindChildren` 找不到卡片** | 指标卡只在有分析结果后才创建 | 离屏诊断先喂数据跑一遍分析 |
+| **`--list` 清单带 UTF-8 BOM** | PowerShell `Out-File -Encoding utf8` 默认写 BOM ⇒ BOM 留在**第一行**路径上 ⇒ 该文件**静默消失**（实测：6 个文件只分析出 5 个） | CLI 已改 `utf-8-sig`；造清单用 `[IO.File]::WriteAllLines()`（无 BOM） |
+| **路径超过 Windows MAX_PATH（260）** | 日文长专辑名 + 长曲名很容易超；`os.path.isfile` 为 False ⇒ 文件**静默消失**（库里实测 2 个 268 字符的 wav） | CLI 的 `_warn_uncollected()` 会把这类目标**打印出来**。修 MAX_PATH 本身需 `\\?\` 贯穿（**未做**，libsndfile 是否接受未验证） |
+| **PowerShell 的 `[` `]` 是通配符** | `Get-ChildItem -Include/-Filter` 会**静默漏掉**名字里带方括号的目录/文件（实测：405 个 flac 只找到 2 个） | 用 `-LiteralPath` + `Where-Object { $_.Extension -in ... }` 过滤扩展名 |
+| **截断的音频"能打开"** | 下载没下全的 FLAC：头部 STREAMINFO 照旧声称满长、`sf.info()` 也返回满长，**读到一半才失败**；结论会拿部分内容算 | `basic` 已产出 `read_incomplete` + 可读的"疑似截断"说明；**别**只看 `sf.info()` 判断文件是否完好 |
 | **打包"成功"但 exe 一启动就退** | 相对导入 / spec excludes / hiddenimports 列错 | 见 `../接手提示词.md` §4 第 5/6/7 条；**构建后必须真启动一次** |
 
 ---

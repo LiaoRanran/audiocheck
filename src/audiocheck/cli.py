@@ -7,11 +7,43 @@ import os
 import sys
 
 from . import __version__
-from .config import Thresholds, provenance_summary
+from .config import AUDIO_EXTS, Thresholds, provenance_summary
 from .core.engine import analyze, collect_files, list_analyzers
 from .core.pipeline import ResultCache, analyze_many
 
 ICON = {"ok": "[OK] ", "warn": "[!]  ", "bad": "[X]  "}
+
+
+def _warn_uncollected(targets, files) -> None:
+    """**不许静默少分析**：显式给出的目标若没被收进来，必须说出来。
+
+    真实踩到过两种（2026-10-16，真实曲库）：
+      ① `--list` 清单带了 **UTF-8 BOM** ⇒ 第一行路径整体作废被丢掉；
+      ② 路径超过 Windows **MAX_PATH**（260 字符；日文长专辑名常见）⇒ `isfile` 为 False。
+    两种都会让文件**静默消失**——用户以为全分析过了，而汇总里少的那几个不报任何错。
+    这与 C0-5 的规矩同源："查不到"与"没问题"必须可区分。
+    """
+    got = {os.path.abspath(p) for p in files}
+    missing = []
+    for t in targets:
+        if os.path.isdir(t):
+            continue                     # 目录扫描按扩展名收录，不逐个追
+        if os.path.abspath(t) in got:
+            continue
+        if not t.lower().endswith(AUDIO_EXTS):
+            why = "扩展名不在支持列表里"
+        elif not os.path.exists(t):
+            why = "路径不存在或不可达（超过 260 字符的 Windows 路径会这样）"
+        else:
+            why = "未收录"
+        missing.append((t, why))
+    if missing:
+        print("⚠ 有 %d 个显式目标**没有**被分析（这不是「文件没问题」，是没收录）：" % len(missing),
+              file=sys.stderr)
+        for t, why in missing[:10]:
+            print("   - %s   ← %s" % (t, why), file=sys.stderr)
+        if len(missing) > 10:
+            print("   …（另有 %d 个）" % (len(missing) - 10), file=sys.stderr)
 
 
 def _bar(frac: float, width: int = 28) -> str:
@@ -175,12 +207,16 @@ def main(argv=None) -> int:
 
     targets = list(args.targets)
     if args.listfile:
-        with open(args.listfile, encoding="utf-8") as f:
+        # utf-8-sig：**存 BOM 的清单也要能吃**。PowerShell 的 `Out-File -Encoding utf8`
+        # 默认带 BOM，用 `utf-8` 读会把 BOM 留在**第一行**路径上 ⇒ 那个文件被静默丢掉
+        # （实测踩到：6 个文件的清单只分析出 5 个）。`utf-8-sig` 对无 BOM 的文件同样正确。
+        with open(args.listfile, encoding="utf-8-sig") as f:
             targets += [ln.strip() for ln in f if ln.strip() and not ln.startswith("#")]
     files = collect_files(targets)
     if not files:
         print("没找到可分析的音频文件", file=sys.stderr)
         return 2
+    _warn_uncollected(targets, files)
 
     # 配置错误必须**在分析之前**报出来并退出。
     # 早期 Thresholds.load 会吞掉一切异常，坏配置退化成"悄悄用默认值"，
