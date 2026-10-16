@@ -60,10 +60,16 @@ Python API：
 import audiocheck
 
 r = audiocheck.analyze("song.flac")
-print(r["verdict"])      # '伪 Hi-Res（容器 96.0kHz，内容仅到 19.0kHz）｜砖墙 86dB/oct'
+print(r["verdict"])      # '伪 Hi-Res（容器 96.0kHz，内容仅到 19.0kHz）'（C4 起分隔符是"；"）
+print(r["causes"])       # C4 成因候选：[{key: '升频', strength, evidence[], ...}]
+print(r["usability"]["频响延伸/空气感"])   # {'level': '不可用', 'reason': '…'}
 print(r["lufs"], r["lra"], r["true_peak_dbfs"])
 print(r["meta"]["fields"]["label"])   # 出版商 / 厂牌
 ```
+
+> C4（2026-10-15）起判定分三层：现象 `verdict`/`phenomena` → 成因 `causes`
+> （候选并列，不硬判）→ 用途 `usability`（每格带依据）+ `timeline`（问题段）
+> + `boundaries`（效力边界）。完整口径见 `docs/theory.md` §11。
 
 ---
 
