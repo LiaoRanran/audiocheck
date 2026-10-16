@@ -603,6 +603,11 @@ QMainWindow, QDialog {{ background:{bg}; }}
 QToolTip {{ background:{surface_raised}; color:{text}; border:1px solid {border_hi};
             border-top:1px solid {top_light};
             padding:{xs}px {sm}px; border-radius:{r_md}px; }}
+/* 瀑布图游标读数（B14 补强⑦）：跟随光标的浮层，读"这一点的
+   时间/频率/电平"。与 QToolTip 同族（浮层语义），但常显、更紧凑。 */
+#CursorReadout {{ background:{surface_raised}; color:{text}; border:1px solid {border_hi};
+            border-top:1px solid {top_light};
+            padding:{xs}px {sm}px; border-radius:{r_md}px; }}
 
 /* ===== 标题栏（无边框窗口自绘） ===== */
 /* 光的方向：窗口自上而下变亮一档，读起来像"光从上面来"。

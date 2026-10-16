@@ -13,6 +13,7 @@ matplotlib.use("QtAgg")
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg  # noqa: E402
 from matplotlib.figure import Figure  # noqa: E402
 from matplotlib.gridspec import GridSpec  # noqa: E402
+from mpl_toolkits.mplot3d import proj3d  # noqa: E402
 from PySide6.QtCore import QRectF, Qt, QTimer  # noqa: E402
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QPixmap  # noqa: E402
 from PySide6.QtWidgets import (  # noqa: E402
@@ -1480,6 +1481,47 @@ class BandCanvas(BaseCanvas):
 
 
 # --------------------------------------------------------------------- 时间定位
+
+#: 瀑布图游标读数的屏幕距离上限（像素）。光标离表面网格点的屏幕距离
+#: 超过它 ⇒ 判"光标不在表面上"，读数隐藏（查不到就不显示——与
+#: "unknown 是正式取值"同一条纪律）。
+READOUT_MAX_PX = 80.0
+
+
+def _nearest_surface(surf, M, trans, px, py, max_px=READOUT_MAX_PX):
+    """把瀑布表面网格点全部投影到屏幕，取离 (px, py) 最近的点。
+
+    纯函数（不碰 self，可单测）：`surf = (fl, db, ys, times)`——`fl` 是
+    对数频点、`db` 是 [n_freq, n_slice] 的 dB 矩阵、`ys` 是各片的
+    **3D y 坐标**（画出来的片号，不一定是 0..n-1——step 抽样时会跳）、
+    `times` 是各片的时间（秒）。返回 `(time_s, freq_hz, level_db, dist_px)`，
+    超距返回 None。
+
+    ⚠ 这是 3D 拾取的**最近邻近似**：屏幕上的一个点在 3D 里对应一条
+    射线，与离散表面的最近网格点即读数来源——不是射线-表面求交。
+    读数都是**真实数据值**（取自 S 矩阵的网格点），只是"哪一点"
+    由屏幕距离决定。
+    """
+    fl, db, ys, times = surf
+    fl = np.asarray(fl, dtype=float)
+    db = np.asarray(db, dtype=float)
+    ys = np.asarray(ys, dtype=float)
+    nf, ns = db.shape
+    # 3D 坐标：x=对数频率、y=片号（add_collection3d 的 zs=idxs）、z=dB
+    X, Y = np.meshgrid(fl, ys, indexing="ij")                 # X/Y: [nf, ns]
+    # ⚠ proj_transform 只接**一维**向量（内部 np.dot(M, (4,N))），
+    # 二维网格必须先 ravel（C 序：k = j*ns + i，与下面的 divmod 对齐）。
+    xs, ys2, _ = proj3d.proj_transform(X.ravel(), Y.ravel(), db.ravel(), M)
+    disp = trans.transform(np.column_stack([xs, ys2]))
+    d2 = (disp[:, 0] - px) ** 2 + (disp[:, 1] - py) ** 2
+    k = int(np.argmin(d2))
+    if d2[k] > max_px ** 2:
+        return None
+    j, i = divmod(k, ns)
+    return (float(times[i]), float(10.0 ** fl[j]), float(db[j, i]),
+            float(math.sqrt(d2[k])))
+
+
 class TimelineCanvas(BaseCanvas):
     """时间定位：逐段 LUFS / 真峰值 / 削波率随时间的变化。
 
@@ -1643,6 +1685,15 @@ class WaterfallCanvas(BaseCanvas):
         self._x_timer.timeout.connect(self.redraw)
         self.mpl_connect("button_press_event", self._on_press)
         self.mpl_connect("motion_notify_event", self._on_drag)
+        # B14 补强⑦：游标读数——悬停时读"这一点的 时间/频率/电平"。
+        # 用 **Qt 子 QLabel** 而不是画进 matplotlib：3D 整帧重绘实测
+        # ~370ms，一个读数不值得每次鼠标移动都重画一遍；标签只改
+        # 文字与位置，零重绘。拾取见 `_nearest_surface`（纯函数）。
+        self._ro = QLabel(self)
+        self._ro.setObjectName("CursorReadout")
+        self._ro.hide()
+        self._surf = None                       # redraw 时缓存（fl, db, times）
+        self.mpl_connect("motion_notify_event", self._on_hover)
 
     def set_crosshair(self, hz: float) -> None:
         """B14 补强⑤：**别处**指到了某个频率。
@@ -1691,6 +1742,36 @@ class WaterfallCanvas(BaseCanvas):
             self.redraw()
             self._drag_timer.start()
 
+    def _on_hover(self, ev):
+        """悬停读数（B14 补强⑦）：光标下的表面点 → 时间/频率/电平浮层。
+
+        旋转拖拽中隐藏（视角在变，读数会乱跳）；无数据/不在轴区内隐藏。
+        与 `set_crosshair`（别处指频率）互不干扰——那是参考线，这是读数。
+        """
+        if self._drag is not None or not self.data or ev.inaxes is not self.ax \
+                or ev.x is None or self._surf is None:
+            self._ro.hide()
+            return
+        hit = _nearest_surface(self._surf, self.ax.get_proj(), self.ax.transData,
+                               ev.x, ev.y)
+        if hit is None:
+            self._ro.hide()
+            return
+        t_s, hz, level, _dist = hit
+        khz = hz / 1000.0
+        fq = ("%.2fk" % khz) if khz >= 1.0 else ("%.0f" % hz)
+        self._ro.setText("%s · %sHz · %.0fdB"
+                         % ("%d:%02d" % (int(t_s) // 60, int(t_s) % 60), fq, level))
+        self._ro.adjustSize()
+        self._ro.move(min(max(ev.x + 14, 0), self.width() - self._ro.width()),
+                      min(max(ev.y + 14, 0), self.height() - self._ro.height()))
+        self._ro.show()
+        self._ro.raise_()
+
+    def leaveEvent(self, ev):        # noqa: N802
+        self._ro.hide()              # 游标读数：离开画布就收
+        super().leaveEvent(ev)
+
     def _release(self, ev):
         self._drag = None
 
@@ -1732,6 +1813,8 @@ class WaterfallCanvas(BaseCanvas):
         ax.clear()
         ax.set_facecolor(p["surface"])
         if not self.data:
+            self._surf = None
+            self._ro.hide()
             ax.set_axis_off()
             ax.text2D(.5, .5, self._msg, ha="center", va="center", transform=ax.transAxes,
                       color=p["text_faint"], fontsize=p['fs_caption'])
@@ -1830,6 +1913,12 @@ class WaterfallCanvas(BaseCanvas):
             for z in (self._vmin, 0.0):
                 ax.plot([lx, lx], [0, n], [z, z], color=p["accent"], lw=REF_LINE_W,
                         alpha=.55, zorder=6)
+        # 游标读数缓存：表面网格（**对数**频点 × 各片 dB × 片号 × 片时间）
+        # ——只缓存**真正画出来的片**（idxs），与屏幕上的一致。
+        # ⚠ 频轴存的是 lf（log10）而不是 fl：3D 图的 x 坐标就是 lf
+        # （xlim 是 1.3–4.3），存线性 Hz 会把投影点全甩出画布。
+        self._surf = (lf, db[:, idxs], np.asarray(idxs, dtype=float),
+                      np.asarray(t)[idxs])
         self.draw()
 
 
