@@ -20,8 +20,6 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
 import numpy as np  # noqa: E402
 from matplotlib.backend_bases import MouseEvent  # noqa: E402
 from mpl_toolkits.mplot3d import proj3d  # noqa: E402

@@ -19,8 +19,6 @@ import os
 import sys
 import unittest
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
 _SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)

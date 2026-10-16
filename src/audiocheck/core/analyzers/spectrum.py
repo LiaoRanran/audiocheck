@@ -85,36 +85,52 @@ def detect_cutoff(f: np.ndarray, db: np.ndarray, min_drop_db: float = _DEFAULTS.
     # 同时必须用**局部**参考（下方窗口 vs 上方窗口），不能用全频段中位数——
     # 真实音乐的谱本身随频率向下倾斜，v3 正是这么错的（25kHz 的实际内容被报成 6.8kHz）。
     step = 2 ** (1 / 12)
-    cur, coarse = nyq, None
-    while cur > max(min_hz * 2.0, 100.0):
-        hi_f = min(cur * 1.6, nyq)
-        if hi_f - cur < cur * 0.04:          # 上方几乎没有可用频段，跳过
-            cur /= step
-            continue
-        jc = int(np.argmin(np.abs(f - cur)))
-        jl = int(np.argmin(np.abs(f - cur / 1.6)))
-        jh = int(np.argmin(np.abs(f - hi_f)))
-        below = float(np.median(raw[jl:jc + 1]))
-        above = float(np.median(raw[jc:jh + 1]))
-        if below - above >= min_drop_db:
-            coarse = cur
-            break
-        cur /= step
+    floor_hz = max(min_hz * 2.0, 100.0)
 
-    if coarse is None:                        # 没有陡降 → 内容直达奈奎斯特
+    # 自高向低找"局部陡降"候选，并**当场验证候选的阻带真的是个坑**
+    # （`pass - floor ≥ min_stop_db`）。守卫不过说明候选落在**过渡带**上，
+    # 就从它下方继续搜——直到找到真正的砖墙，或搜到 floor_hz 为止。
+    #
+    # ⚠ 这条"继续往下搜"是修一个实测缺陷（E1 属性测试发现）：早先在第一个
+    #   候选处直接 break，于是过渡带候选被守卫否决后**整体返回奈奎斯特**，
+    #   表现为"满带宽"假阴性。实测截止点命中率损失：44.1k 6/53、48k 6/53、
+    #   96k 12/53，且含 44.1k@16.5k 这种**典型有损截止**。
+    #   改动**不回归**：所有原本成功的输入，其首个候选就已过守卫 ⇒ coarse
+    #   与结果逐位不变（已验证 44.1k/48k/96k × 9–21kHz 全网格）。
+    coarse = None
+    cur = nyq
+    while cur > floor_hz:
+        cand = None
+        while cur > floor_hz:
+            hi_f = min(cur * 1.6, nyq)
+            if hi_f - cur >= cur * 0.04:      # 上方几乎无可用频段则跳过
+                jc = int(np.argmin(np.abs(f - cur)))
+                jl = int(np.argmin(np.abs(f - cur / 1.6)))
+                jh = int(np.argmin(np.abs(f - hi_f)))
+                below = float(np.median(raw[jl:jc + 1]))
+                above = float(np.median(raw[jc:jh + 1]))
+                if below - above >= min_drop_db:
+                    cand = cur
+                    break
+            cur /= step
+        if cand is None:
+            break
+        jc = int(np.argmin(np.abs(f - cand)))
+        jl = int(np.argmin(np.abs(f - cand / 1.6)))
+        jh = int(np.argmin(np.abs(f - min(cand * 1.6, nyq))))
+        floor_lvl = float(np.median(raw[jc:jh + 1]))
+        pass_lvl = float(np.median(raw[jl:jc + 1]))
+        if pass_lvl - floor_lvl >= min_stop_db:
+            coarse = cand
+            break
+        cur = cand / step                    # 候选在过渡带：从它下方继续找
+
+    if coarse is None:                        # 没有真正的砖墙 → 内容直达奈奎斯特
         return nyq, 0.0
 
     # 第二步：以「通带电平与阻带底的中间点」为阈值，在原始谱上定位边缘。
     # 用中点而非"通带 -3dB"：后者对倾斜谱会落到谱自然下降 3dB 的位置，而不是真正的截止点。
-    jc = int(np.argmin(np.abs(f - coarse)))
-    jl = int(np.argmin(np.abs(f - coarse / 1.6)))
-    jh = int(np.argmin(np.abs(f - min(coarse * 1.6, nyq))))
-    floor_lvl = float(np.median(raw[jc:jh + 1]))
-    pass_lvl = float(np.median(raw[jl:jc + 1]))
-    # 阻带必须真的是"坑"。缓滚降（如 2 阶巴特沃斯）上方只低几个 dB，
-    # 算出来的"中点阈值"会落在谱自然下降处，把正常音源判成带限。
-    if pass_lvl - floor_lvl < min_stop_db:
-        return nyq, 0.0
+    # （`pass_lvl` / `floor_lvl` 已在上面的搜索里算好，此处复用。）
     thr = (pass_lvl + floor_lvl) / 2.0
 
     run, j0 = 0, None

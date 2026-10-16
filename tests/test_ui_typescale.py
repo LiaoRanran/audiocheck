@@ -18,7 +18,6 @@ import os
 import sys
 import unittest
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 for _p in (os.path.join(_ROOT, "src"),):
     if _p not in sys.path:

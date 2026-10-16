@@ -19,10 +19,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
-from PySide6.QtCore import QPoint  # noqa: E402
-from PySide6.QtGui import QPainter, QPixmap  # noqa: E402
+from PySide6.QtGui import QPaintEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 APP = QApplication.instance() or QApplication([])
@@ -163,44 +160,35 @@ class TestTimelineCanvas(unittest.TestCase):
         `update()`；真正重建图元发生在下一帧的 `paintEvent`（_stale 钩子）。
         换肤同步重绘可见画布实测 ~190ms（频谱图重建全部图元）。
 
-        ⚠ 离屏平台不通过 processEvents 投递 `update()` 的 paint
-        （实测 6 轮 0 次）——真实平台由窗口系统的事件循环投递（标准
-        Qt 行为）。这里用 `render()` 同步触发一次 paint 来验证机制，
-        与 test_ui_a11y 的像素判据同手法。
+        ⚠ 两个坑（都是实测踩出来的，故本条如此写）：
+          ① 离屏平台**不保证**通过事件循环投递 `update()` 的 paint（实测 6 轮 0 次，
+             全量负载下更不稳）⇒ **显式调用 `paintEvent`**（钩子就在它开头）。
+          ② **不能依赖 `MainWindow` 的初始配色**：`_restore()` 会从 QSettings 读上次
+             主题，别的测试改过就变浅色，于是"深→浅"换肤根本没换色 ⇒ 偶发失败。
+             故用**独立画布**并从**显式深色**出发（自检前提）。
         """
-        w = W.MainWindow()
-        w.show()
-        APP.processEvents()
-        w._navigate("timeline")
-        APP.processEvents()
-        cv = w.cv_timeline
-        r = {"timeline": [_row(0, 10, -12.0, -1.0), _row(10, 20, -12.0, -1.0)]}
-        cv.set_data(r)
+        cv = TimelineCanvas()
+        cv.resize(720, 430)
+        dark, light = _pal(light=False), _pal(light=True)
+        cv.apply_theme(dark)
+        cv.set_data({"timeline": [_row(0, 10, -12.0, -1.0), _row(10, 20, -12.0, -1.0)]})
         cv.redraw()                       # 首帧同步画（数据到达路径不变）
         old_accent = cv.ax1.lines[0].get_color()
+        self.assertEqual(to_rgb(old_accent), to_rgb(dark["accent"]),
+                         "前提不成立：首帧不是深色 accent")   # 自检，防口径漂移
 
-        new = _pal(light=True)
-        cv.apply_theme(new)
+        cv.apply_theme(light)
         self.assertTrue(cv._stale,
                         "换肤后画布应立即标脏（延迟重绘），而不是同步重建")
 
-        # 离屏下 update() 的 paint 投递有怪癖：先 render() 冲刷 + 若干
-        # 事件轮次才落定（实测 render 后第 3 轮清除 stale；真实平台由
-        # 窗口系统事件循环直接投递，无此中间态）。
-        pm = QPixmap(cv.size())
-        pr = QPainter(pm)
-        cv.render(pr, QPoint(0, 0))
-        pr.end()
-        for _ in range(12):
-            APP.processEvents()
-            if not cv._stale:
-                break
-        self.assertFalse(cv._stale, "paint 投递后画布应已重建")
-        from matplotlib.colors import to_rgb
+        # 完成那一帧：paintEvent 的 _stale 钩子 → redraw()（用新主题重建图元）。
+        cv.paintEvent(QPaintEvent(cv.rect()))
+        self.assertFalse(cv._stale, "paint 后画布应已重建")
         lu = [ln for ln in cv.ax1.lines if to_rgb(ln.get_color()) == to_rgb(old_accent)]
         self.assertEqual(lu, [], "LUFS 线仍是旧主题颜色：延迟重绘没生效")
-        acc = [ln for ln in cv.ax1.lines if to_rgb(ln.get_color()) == to_rgb(new["accent"])]
+        acc = [ln for ln in cv.ax1.lines if to_rgb(ln.get_color()) == to_rgb(light["accent"])]
         self.assertTrue(acc, "画完后没有新主题 accent 的线")
+        cv.deleteLater()
 
     def test_theme_apply_without_data_only_stores_palette(self):
         """构造期 MainWindow 对每张画布 apply_theme——无数据时必须只存色板。"""

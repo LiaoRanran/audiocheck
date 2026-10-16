@@ -723,7 +723,10 @@ class SpectrumCanvas(BaseCanvas):
         self._view_dirty = False
         self._pan_from = None          # 拖拽起点 (xdata, ydata)
         self._view_timer = None        # 重画合并计时器
-        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        # StrongFocus（含 TabFocus）：**必须**。早先是 ClickFocus，于是频谱曲线
+        # 画布 Tab 不可达——键盘用户到不了本视图的主图（E1 键盘主流程测试抓到）。
+        # 与其余 6 张画布一致；画布自身在 paintEvent 里画焦点环（E3）。
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.mpl_connect("motion_notify_event", self._on_move)
         self.mpl_connect("axes_leave_event", lambda e: self._set_hover(None))
         self.mpl_connect("scroll_event", self._on_scroll)
@@ -1948,7 +1951,9 @@ class CompareCanvas(BaseCanvas):
         self._view_dirty = False
         self._pan_from = None
         self._view_timer = None
-        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
+        # StrongFocus（含 TabFocus）——理由同 SpectrumCanvas：ClickFocus 会让
+        # 本画布 Tab 不可达（E1 键盘主流程测试抓到）。与其余画布一致。
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.mpl_connect("scroll_event", self._on_scroll)
         self.mpl_connect("button_press_event", self._on_press)
         self.mpl_connect("button_release_event", self._on_release)

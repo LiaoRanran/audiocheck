@@ -216,6 +216,16 @@ class MainWindow(FramelessWindow):
     VIEW_KEYS = ["overview", "spectrum", "spectro", "waterfall", "phase", "bands",
                  "timeline", "compare", "batch", "meta"]
 
+    #: 视图 key → 显示名（**唯一真源**）。命令面板的"跳转到 X"由它派生——
+    #: 曾经命令面板手写跳转列表，B14 加了「相位场」却漏登记，于是**键盘到不了**
+    #: 那个视图（E1 的键盘主流程测试实测抓到）。派生后这类漂移不可能再发生。
+    VIEW_LABELS = {
+        "overview": "总览", "spectrum": "频谱曲线", "spectro": "频谱图",
+        "waterfall": "瀑布图", "phase": "相位场", "bands": "频段能量",
+        "timeline": "时间定位", "compare": "对比", "batch": "批次概览",
+        "meta": "元数据",
+    }
+
     def __init__(self):
         # 高 DPI：必须在创建 QApplication 之后、创建窗口之前设置
         from PySide6.QtWidgets import QApplication
@@ -758,15 +768,14 @@ class MainWindow(FramelessWindow):
             ("切换配色风格（克制 / 缤纷）", "Ctrl+M", self.toggle_vibe),
             ("换个种子色（生成整套配色）", "Ctrl+G", self.pick_seed),
             ("阈值设置", "Ctrl+T", self.open_settings),
-            ("跳转到 总览", "", lambda: self._navigate("overview")),
-            ("跳转到 频谱曲线", "", lambda: self._navigate("spectrum")),
-            ("跳转到 频谱图", "", lambda: self._navigate("spectro")),
-            ("跳转到 瀑布图", "", lambda: self._navigate("waterfall")),
-            ("跳转到 频段能量", "", lambda: self._navigate("bands")),
-            ("跳转到 时间定位", "", lambda: self._navigate("timeline")),
-            ("跳转到 元数据", "", lambda: self._navigate("meta")),
-            ("跳转到 批次概览", "", lambda: self._navigate("batch")),
         ]
+        # 视图跳转**从 VIEW_KEYS 派生**（唯一真源）——手写列表曾漏掉 phase/compare，
+        # 导致这两个视图在命令面板里不存在（键盘不可达）。闭包必须默认参数绑定 key，
+        # 否则所有条目都会跳到最后那个视图。
+        for _key in self.VIEW_KEYS:
+            self._cmds.append(
+                ("跳转到 " + self.VIEW_LABELS[_key], "",
+                 lambda k=_key: self._navigate(k)))
         for seq, fn in (("Ctrl+O", self.add_files), ("Ctrl+Shift+O", self.add_dir),
                         ("F5", self.start), ("Ctrl+R", self.start), ("Esc", self.stop),
                         ("Ctrl+E", self.export), ("Ctrl+L", self.clear),

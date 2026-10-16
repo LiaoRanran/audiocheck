@@ -6,10 +6,22 @@
 """
 from __future__ import annotations
 
-import numpy as np
-import pytest
-import soundfile as sf
-from scipy import signal
+import os
+
+# 全部 UI 测试走**离屏平台**：不弹窗，且能在无 DISPLAY 的 CI 上跑。
+# 这段设置**必须早于任何 Qt 模块的导入**——offline 模式下 Qt 会去连显示器，
+# 没有就硬崩（实测：进程直接 abort，连 traceback 都打不全）。
+#
+# 历史上 21 个 `test_ui_*.py` 各自重复了这一行；收进 conftest 只留一处。
+# pytest 会**先加载 conftest** 再导入测试模块，所以这里设置一定早于
+# 测试模块里的 `from PySide6...`。`setdefault` 保留"仅当未设置时"的语义：
+# 调用方显式指定别的平台（如真机截图）不会被覆盖。
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+import numpy as np  # noqa: E402
+import pytest  # noqa: E402
+import soundfile as sf  # noqa: E402
+from scipy import signal  # noqa: E402
 
 RNG_SEED = 20261011
 

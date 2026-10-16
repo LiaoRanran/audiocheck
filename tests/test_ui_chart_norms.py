@@ -22,8 +22,6 @@ import re
 import sys
 import unittest
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SRC = os.path.join(_ROOT, "src")
 for _p in (_SRC, os.path.join(_ROOT, "packaging")):

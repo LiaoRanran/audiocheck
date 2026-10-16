@@ -26,10 +26,6 @@ import re
 import sys
 import unittest
 
-# 必须在导入任何 Qt 模块**之前**设好。offline 模式下 Qt 会去连显示器，
-# 没有就硬崩（实测：进程直接 abort，连 traceback 都打不全）。
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
 _SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src")
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)

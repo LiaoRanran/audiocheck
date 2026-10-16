@@ -75,21 +75,24 @@ def _name(w) -> str:
 
 
 def inventory(w) -> list[tuple[str, str, str]]:
-    """主控件清单：(显示名, 可访问名, 焦点策略)。"""
+    """主控件清单：(显示名, 可访问名, **Tab 可达**)。
+
+    第三列判的是 `TabFocus` 而**不是** `!= NoFocus`——后者会把 `ClickFocus`
+    （鼠标可点、键盘到不了）也算"可达"，掩盖真实的键盘缺口
+    （实测抓到频谱曲线 / 对比画布曾是这个状态）。
+    """
+    def _tab(widget) -> str:
+        return "是" if (widget.focusPolicy() & Qt.FocusPolicy.TabFocus) else "**否**"
+
     out = []
     for key, b in w.act.items():
-        out.append(("工具条按钮 %s" % key, _name(b),
-                    b.focusPolicy() != Qt.FocusPolicy.NoFocus))
-    out.append(("搜索框", _name(w.ed_search),
-                w.ed_search.focusPolicy() != Qt.FocusPolicy.NoFocus))
-    out.append(("筛选框", _name(w.cb_filter),
-                w.cb_filter.focusPolicy() != Qt.FocusPolicy.NoFocus))
-    out.append(("文件表", _name(w.table) or "文件表",
-                w.table.focusPolicy() != Qt.FocusPolicy.NoFocus))
+        out.append(("工具条按钮 %s" % key, _name(b), _tab(b)))
+    out.append(("搜索框", _name(w.ed_search), _tab(w.ed_search)))
+    out.append(("筛选框", _name(w.cb_filter), _tab(w.cb_filter)))
+    out.append(("文件表", _name(w.table) or "文件表", _tab(w.table)))
     for cv in (w.cv_spec, w.cv_spectro, w.cv_wfall, w.cv_phase,
                w.cv_band, w.cv_timeline, w.cv_cmp, w.cv_ovw):
-        out.append(("画布 %s" % cv.accessibleName(), _name(cv),
-                    cv.focusPolicy() != Qt.FocusPolicy.NoFocus))
+        out.append(("画布 %s" % cv.accessibleName(), _name(cv), _tab(cv)))
     return out
 
 
@@ -149,11 +152,11 @@ def main() -> int:
     # ---------------------------------------------------------- 可访问名
     print("\n[辅助工具] 可访问名与焦点策略：")
     missing = []
-    for disp, nm, focusable in inventory(w):
+    for disp, nm, tab_ok in inventory(w):
         ok = bool(nm.strip()) and nm != type(w).__name__
         if not ok:
             missing.append(disp)
-        print("    %-22s 名=%s 可聚焦=%s" % (disp, nm[:18], focusable))
+        print("    %-22s 名=%s Tab可达=%s" % (disp, nm[:18], tab_ok))
     print("    缺可访问名：%s" % (missing or "无"))
 
     # ---------------------------------------------------------- 对比度

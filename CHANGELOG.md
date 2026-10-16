@@ -4,6 +4,67 @@
 
 ## [未发布]
 
+### 修复（E1 属性测试发现的**核心判定缺陷**：截止点漏检 ⇒ "满带宽"假阴性）
+
+- `core/analyzers/spectrum.py::detect_cutoff` 的粗搜索自高向低取**第一个**满足
+  `min_drop_db` 的点；当截止点约为奈奎斯特 10–25% 时，该候选会落在**过渡带**上，
+  随后被 `min_stop_db` 守卫否决并**整体返回奈奎斯特** ⇒ 内容被判"满带宽"。
+  实测命中率损失（250 Hz 步长扫 9–21 kHz）：**44.1k 6/53、48k 6/53、96k 12/53**，
+  含 **44.1k@16.5 kHz** 这种典型有损截止。
+- 修法：守卫不过就**从候选下方继续搜**，直到找到真正的砖墙或搜到下限。
+  **可证明不回归**：原本成功的输入其首个候选即过守卫 ⇒ `coarse` 与结果逐位不变
+  （实测 44.1k 矩阵 9 个点全部逐位一致；48k@6k、96k@10k/12k 由"未检出"变为
+  6416 / 10852 / 12797 Hz，误差 6.6–8.5%）。修复后三档采样率的漏检密度 **18 → 0**。
+- 回归：`tests/test_props.py::test_low_cutoff_is_not_reported_as_nyquist`（9 个
+  参数点）+ `test_cutoff_consistent_across_sample_rates`（属性，容差按实测标定）。
+- 纪律：C1 阈值普查 **44/44 检出率不变**、全部字段仍有区分力；全量测试绿。
+
+### 新增（E1 测试有效性：属性测试 + 键盘 UI 自动化 + offscreen 收编）
+
+> 依据 E 块提示词 E1。**不引入新依赖**：属性测试用已装的 `hypothesis`，
+> UI 自动化用随 PySide6 一起的 `PySide6.QtTest`（未引 pytest-qt）。
+
+1. **属性测试** `tests/test_props.py`（15 条）——把四条**物理/数学必然**的不变量
+   从"手挑几个点"扩展到随机输入（Hypothesis 生成 + shrink）：
+   * **幅度单调**：任意频率/幅度的正弦，幅度减半 ⇒ LUFS 降 6.0206 LU
+     （容差 0.15 是 `loudness` 的 `round(...,1)` 显示口径；另有一条直接量
+     `_gated_loudness` 的**精确** 20·log10(2)）。
+   * **采样率不变性**：同一带限内容在 44.1k/48k/96k 下检出一致——**容差按实测标定**
+     （250 Hz 步长扫 [12000,21000] × 三档率，最大偏差 10.8% ⇒ 取 15%）；
+     并如实登记 9–12 kHz 段偏差可达 15%、精度判据**未立**。
+   * **窗长权衡**：窗越长 Δf 越小、Δt 越大（量 `views._stft_power` 真实现的轴间距）。
+   * **位深单调**：量化 SNR ≈ 6.02·B + 1.76 dB 且随 B 递增；另有"内容量化到 q bit
+     装进 24bit 容器 ⇒ 检出有效位 = q"（写入须走 int32 左移对齐——实测 `sf.write`
+     直接喂 float 会因 libsndfile 的 `2²³−1` 缩放把低位填满）。
+2. **键盘主流程 UI 自动化** `tests/test_ui_keyboard_flow.py`（6 条 + 15 子测试）：
+   命令面板键盘执行、**每张画布 Tab 可达**、快捷键不抛异常、载入文件后端到端切遍
+   10 个视图。**抓到 3 个真实缺陷**（见下）。
+3. **offscreen 收编**：21 个 `test_ui_*.py` 各自的
+   `os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")` 收进 `tests/conftest.py`
+   一处（保留"仅当未设置时"语义；pytest 先加载 conftest，故仍早于任何 PySide6 导入）。
+
+### 修复（E1 UI 自动化抓到的两个键盘可达性缺陷）
+
+- **命令面板缺视图**：跳转列表手写，B14 加了「相位场」却漏登记、`compare` 也从没进过
+  ⇒ 键盘到不了这两个视图。改为**从 `VIEW_KEYS` 派生**（唯一真源，闭包用默认参数绑定），
+  并加守卫 `test_command_palette_lists_every_view`。
+- **两张画布 Tab 不可达**：`SpectrumCanvas` / `CompareCanvas` 是 `ClickFocus`
+  （鼠标可点、Tab 到不了），与其余 6 张 `StrongFocus` 不一致。改为 `StrongFocus`；
+  a11y 测试由"`!= NoFocus`"**收紧为"含 `TabFocus`"**（原判据放过了 ClickFocus），
+  `a11y_report` 的清单列同步改为**Tab 可达**。
+
+### 修复（P7 那条延迟重绘测试的偶发）
+
+- `test_ui_timeline.py::test_theme_change_defers_canvas_redraw_then_completes` 依赖
+  `MainWindow` 的初始配色，而 `_restore()` 会从 **QSettings** 读上次主题
+  （被别的测试改过就变浅色）⇒ "深→浅"换肤没换色 ⇒ 全量下偶发失败。
+  改为**独立画布 + 显式深色起点 + 前提自检**，并用**显式 `paintEvent`**
+  触发延迟帧（离屏下事件循环不保证投递 `update()` 的 paint）。连跑 3 次稳定。
+
+> **E1 未完成项（如实登记）**：E1.2 **变异测试**（本机无 `cosmic-ray`/`mutmut`，
+> 离线装不了；自带实现属独立批次）与 E1.3 **视觉回归**（无 `pixelmatch`，
+> 需先定基线图与容差口径）留待后续。
+
 ### 口径变更（B11-B 细腻级：720 行 + 色窗自适应）
 
 > 依据全在 `docs/views_coverage.md`（E1 先量后改的实测矩阵与基线）。

@@ -21,8 +21,6 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-
 from PySide6.QtCore import QPoint, Qt  # noqa: E402
 from PySide6.QtGui import QPainter, QPixmap  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
@@ -68,10 +66,18 @@ class TestAccessibleNames(unittest.TestCase):
             self.assertTrue(_name(w).strip(), "%s 无可访问名（回落也读不出）" % disp)
 
     def test_interactive_widgets_are_focusable(self):
-        for w in (self.w.ed_search, self.w.cb_filter, self.w.table,
-                  *self.w.act.values(), *self.w.sidebar._items.values()):
-            self.assertNotEqual(w.focusPolicy(), Qt.FocusPolicy.NoFocus,
-                                "%s 焦点策略是 NoFocus" % _name(w))
+        """**Tab 可达**（不只是"可聚焦"）：键盘用户要能 Tab 到它。
+
+        ⚠ 只判 `!= NoFocus` 太弱——`ClickFocus` 能过，但**键盘到不了**
+        （实测抓到频谱曲线 / 对比画布曾是这个状态）。故要求含 `TabFocus`。
+        """
+        widgets = [self.w.ed_search, self.w.cb_filter, self.w.table,
+                   *self.w.act.values(), *self.w.sidebar._items.values(),
+                   self.w.cv_spec, self.w.cv_spectro, self.w.cv_wfall, self.w.cv_phase,
+                   self.w.cv_band, self.w.cv_timeline, self.w.cv_cmp, self.w.cv_ovw]
+        for w in widgets:
+            self.assertTrue(w.focusPolicy() & Qt.FocusPolicy.TabFocus,
+                            "%s 不含 TabFocus（键盘不可达）" % _name(w))
 
 
 class TestKeyboardNavigation(unittest.TestCase):
