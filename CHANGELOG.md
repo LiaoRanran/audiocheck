@@ -56,6 +56,41 @@
   `spectrogram` 签名）、`config.py`（字段 + 出处登记）、`ui/window.py`
   （`ViewWorker` 透传标志）、`docs/views_coverage.md`、`tests/test_views_dualres.py`。
 
+### 新增（timeline 逐段响度维度：LUFS / 真峰值）
+
+> 判据见 `tests/test_timeline_loudness.py`。
+
+- **时间定位补上响度轴**：每个分段在削波/峰值/RMS 之外增加 ITU-R BS.1770 的
+  集成响度（LUFS）与真峰值（4× 过采样）——响度战争/压限/局部削峰因此有**段级**
+  证据，不再只有整轨一个数。输出新键 `timeline` 行内 `lufs`/`true_peak_dbfs`
+  （缺数据为 None，不静默 0）。
+- **口径与整轨同一套数学**：`segment_loudness` 复用 `dsp.k_weighting` /
+  `dsp._gated_loudness` / `dsp.true_peak` 与 `dsp.loudness` 完全一致的分块
+  （100ms 步 / 400ms 块门限积分）。**硬证据**：整轨喂进 `segment_loudness`
+  与 `dsp.loudness` 逐位相等（tone 与噪声各测一次，测试 1 条钉住）。
+  dsp.py 是核心资产，本次**零改动**。
+- **只报数值不判级**：note 保留"逐段频谱未做"老规矩，并如实标出响度维度
+  "只报数值"。段内门限是段级独立的：段 LUFS 可与相邻段比较，**不能**与
+  整轨 LUFS 相加/平均（门限窗口不同，docstring 已写清）。
+- **新问题清单**：真峰值 ≥ 0 dBFS（数字满刻度硬上限，事实性判据）的段进
+  `timeline_loudness_problems`，文案带"疑似"（顶到上限是事实，削峰是推断）；
+  CLI 以"响度"前缀并列展示（与"时段"削波段同格式）。
+- 性能：每段多一次 4× 过采样真峰值（段经临时 FLOAT wav 复用 `dsp.true_peak`
+  标准实现，不另写过采样数学）；40s 双声道文件全量分析耗时增加可忽略。
+- 改动文件：`core/analyzers/timeline.py`（`segment_loudness` / `_tp_of` /
+  `run` 循环 / 口径 docstring）、`cli.py`（渲染）、`docs/thresholds.md`、
+  `tests/test_timeline_loudness.py`（9 条）。
+
+### 修复（C7 遗留：阈值普查字段覆盖与文档同步）
+
+- `packaging/threshold_survey.py` 的 `FIELD_MAP` 漏登记 `dual_resolution_stft`
+  ⇒ C1 覆盖测试红（C7 提交时未跑 C1，属漏检，现补）。
+- 普查脚本区分**三类** None 字段标签：算法参数（影响检出率）/ **视图渲染选项**
+  （不影响判定也不影响检出率）——后者贴错标签等于谎报它参与检出。
+- `docs/thresholds.md` 同步到机器输出：普查表补 C4 成因候选 5 个字段 +
+  seg_* + dual_resolution_stft；出处总账 33→42 字段（41 工程估计 + 1 一手文档，
+  数字由 `config.provenance_summary()` 实取）；§2.1 补三分类说明。
+
 ### 口径变更（C4 判定颗粒度）
 
 > 逐行 CLI diff 留档：`out/_before_demo{1,2,3}*.txt`（改前，`f5bb3b6` worktree）

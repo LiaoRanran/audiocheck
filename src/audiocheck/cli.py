@@ -91,6 +91,12 @@ def show(r: dict, quiet: bool = False) -> None:
         print("      时段  %s" % _p["text"])
     if len(_probs) > 6:
         print("      时段  ……另有 %d 段异常" % (len(_probs) - 6))
+    # C4.3 逐段响度问题（真峰值顶到 0 dBFS 的段）：只报事实不判级
+    _loud = r.get("timeline_loudness_problems") or []
+    for _p in _loud[:6]:
+        print("      响度  %s" % _p["text"])
+    if len(_loud) > 6:
+        print("      响度  ……另有 %d 段真峰值顶到上限" % (len(_loud) - 6))
     if r.get("advice"):
         print("      建议  %s" % r["advice"])
     for e in r.get("errors") or []:

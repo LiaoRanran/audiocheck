@@ -201,7 +201,13 @@ FIELD_MAP: dict[str, tuple | None] = {
     "min_drop_db": None, "min_stop_db": None, "cutoff_min_hz": None, "cutoff_need": None,
     "conf_slope_span": None,
     "seg_seconds": None, "seg_overlap": None, "seg_min_count": None,
+    # 视图渲染选项（C7）：只影响频谱图画质，不影响任何判定
+    "dual_resolution_stft": None,
 }
+
+#: 视图渲染选项（与"算法参数"并列但性质不同）：算法参数决定**能不能检出**，
+#: 视图选项连检出率都不影响——标签不能混用（"只报检出率"对它不成立）。
+VIEW_OPTIONS = {"dual_resolution_stft"}
 
 
 def _observe(r: dict) -> dict:
@@ -271,8 +277,10 @@ def main() -> int:
     for fname, spec in FIELD_MAP.items():
         val = getattr(th, fname)
         if spec is None:
-            print("%-24s %8s %10s %10s %8s   算法参数（不定义判定，只报检出率）"
-                  % (fname, val, "—", "—", "—"))
+            note = ("视图渲染选项（不影响判定与检出率）" if fname in VIEW_OPTIONS
+                    else "算法参数（不定义判定，只报检出率）")
+            print("%-24s %8s %10s %10s %8s   %s"
+                  % (fname, val, "—", "—", "—", note))
             continue
         key, op, unit, desc = spec
         hi = lo = 0
