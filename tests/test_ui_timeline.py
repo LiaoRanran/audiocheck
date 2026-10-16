@@ -21,6 +21,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import QPoint  # noqa: E402
+from PySide6.QtGui import QPainter, QPixmap  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 APP = QApplication.instance() or QApplication([])
@@ -152,6 +154,53 @@ class TestTimelineCanvas(unittest.TestCase):
         cv.set_data(r)
         cv.redraw()
         self.assertEqual(len(cv.ax1.lines), 3)
+
+    def test_theme_change_defers_canvas_redraw_then_completes(self):
+        """换肤后画布重绘**延迟一帧**（P7 攻坚）：同步路径不重绘，
+        paint 时用**新主题**重建——量图元颜色，不是"应该会画"。
+
+        机制：`BaseCanvas.apply_theme`（有数据时）只置 `_stale` +
+        `update()`；真正重建图元发生在下一帧的 `paintEvent`（_stale 钩子）。
+        换肤同步重绘可见画布实测 ~190ms（频谱图重建全部图元）。
+
+        ⚠ 离屏平台不通过 processEvents 投递 `update()` 的 paint
+        （实测 6 轮 0 次）——真实平台由窗口系统的事件循环投递（标准
+        Qt 行为）。这里用 `render()` 同步触发一次 paint 来验证机制，
+        与 test_ui_a11y 的像素判据同手法。
+        """
+        w = W.MainWindow()
+        w.show()
+        APP.processEvents()
+        w._navigate("timeline")
+        APP.processEvents()
+        cv = w.cv_timeline
+        r = {"timeline": [_row(0, 10, -12.0, -1.0), _row(10, 20, -12.0, -1.0)]}
+        cv.set_data(r)
+        cv.redraw()                       # 首帧同步画（数据到达路径不变）
+        old_accent = cv.ax1.lines[0].get_color()
+
+        new = _pal(light=True)
+        cv.apply_theme(new)
+        self.assertTrue(cv._stale,
+                        "换肤后画布应立即标脏（延迟重绘），而不是同步重建")
+
+        # 离屏下 update() 的 paint 投递有怪癖：先 render() 冲刷 + 若干
+        # 事件轮次才落定（实测 render 后第 3 轮清除 stale；真实平台由
+        # 窗口系统事件循环直接投递，无此中间态）。
+        pm = QPixmap(cv.size())
+        pr = QPainter(pm)
+        cv.render(pr, QPoint(0, 0))
+        pr.end()
+        for _ in range(12):
+            APP.processEvents()
+            if not cv._stale:
+                break
+        self.assertFalse(cv._stale, "paint 投递后画布应已重建")
+        from matplotlib.colors import to_rgb
+        lu = [ln for ln in cv.ax1.lines if to_rgb(ln.get_color()) == to_rgb(old_accent)]
+        self.assertEqual(lu, [], "LUFS 线仍是旧主题颜色：延迟重绘没生效")
+        acc = [ln for ln in cv.ax1.lines if to_rgb(ln.get_color()) == to_rgb(new["accent"])]
+        self.assertTrue(acc, "画完后没有新主题 accent 的线")
 
     def test_theme_apply_without_data_only_stores_palette(self):
         """构造期 MainWindow 对每张画布 apply_theme——无数据时必须只存色板。"""

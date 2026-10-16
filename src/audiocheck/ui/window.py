@@ -678,10 +678,15 @@ class MainWindow(FramelessWindow):
     def apply_theme(self, t: T.Theme):
         t = T.theme_for_width(t, self._screen_w())    # B14 字排版：所有设主题的点都在这里缩字阶
         self.theme = t
-        from PySide6.QtWidgets import QApplication
-        app = QApplication.instance()
-        if app is not None:
-            app.setStyleSheet(T.qss(t))
+        # E3 附带的性能修复（P7 换肤攻坚）：样式表挂在**窗口**上而不是
+        # QApplication 上。实测（packaging/perf_probe P7 插桩）：应用级
+        # setStyleSheet 交替换肤 227–776 ms，窗口级 54 ms——**4.2×**。
+        # 原因：应用级会强制整个 app 的样式对象重建（QStyle 重初始化 +
+        # 全量 repolish），窗口级只 repolish 本窗口子树。
+        # 视觉等价的前提（已逐个核实）：所有需要样式的控件都是窗口后代——
+        # CommandPalette / SeedDialog / SettingsDialog 都 parent=self；
+        # FullscreenView 是无父全屏窗但自带完整样式表（黑底，不依赖本条）。
+        self.setStyleSheet(T.qss(t))
         self.sidebar.apply_theme(t)
         self.delegate.apply_theme(T.plot_palette(t.p, t), t)   # 委托仍按旧字典键取值
         pp = T.plot_palette(t.p, t)

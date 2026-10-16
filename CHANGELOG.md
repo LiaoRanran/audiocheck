@@ -118,13 +118,39 @@
   **深/浅两主题各渲染一帧人工看过**（前半正常后半削波素材：LUFS 阶梯、
   真峰值贴 0、遮罩与红柱位置正确）。
 
-### 已知欠账（非本批次引入，探针实测留档）
+### 已知欠账（探针实测留档；P7 已关闭）
 
-- `perf_probe` P7 换肤 apply_theme **p95 ≈ 1950 ms > 1500 ms 阈值，在 HEAD
-  （本批次之前）即红**。cProfile 定位：约一半是 `QApplication.setStyleSheet`
-  （13 KB QSS 全局 repolish，**裸 app 即 225 ms**——Qt 解析成本的地板），
-  其余分散在画布重绘与表格重建。本批次新增第 8 张画布使 p95 +44 ms（噪声级）。
-  ⇒ 修复需独立批次（QSS 作用域或样式缓存），**不动阈值**（阈值是判据不是旋钮）。
+- ~~`perf_probe` P7 换肤 apply_theme p95 ≈ 1950 ms > 1500 ms 阈值~~ **已修复**
+  （见下方"修复（P7 换肤性能）"：样式表挂窗口 + 画布重绘延迟一帧，p95
+  1949 → 266–319ms，`--strict` 退出 0）。当时的诊断留档：约一半成本在
+  `QApplication.setStyleSheet`（13 KB QSS 全局 repolish，裸 app 即 225ms
+  ——Qt 解析成本的地板），其余在画布同步重绘与表格重建。
+- `test_ui_material` 的 toast 连发回收在特定执行顺序（views 在 material
+  之前）下偶发不过 720ms 窗口——**既有问题，HEAD 同样复现**（按字母序的
+  全量套件不受影响），疑似存话期短于淡入时长时动画失靶的已知时序坑，
+  留待专项（不在本发布块解决范围）。
+
+### 修复（P7 换肤性能：p95 1949 → ~300ms，探针全绿）
+
+- **样式表挂窗口不挂 QApplication**（`window.py::apply_theme`）。实测交替换肤：
+  应用级 `setStyleSheet` 227–776 ms，窗口级 54 ms——**4.2×**。原因：应用级
+  强制整个 app 的样式对象重建（QStyle 重初始化 + 全量 repolish）。视觉等价
+  前提已逐个核实：CommandPalette / SeedDialog / SettingsDialog 都 parent=self；
+  FullscreenView 无父但自带完整样式表（黑底，不依赖本条）。
+- **画布重绘延迟一帧**（`charts.py::BaseCanvas`）：`apply_theme`（有数据时）
+  只置 `_stale` + `update()`，图元重建移到下一帧 `paintEvent`（_stale 钩子），
+  与其他 deferred repaint 同批完成——同步重绘可见画布实测 ~190ms
+  （频谱图重建全部图元）。数据到达路径（`set_data`）仍同步重绘。
+- 判据：`perf_probe` P7 p95 **1949 → 266–319ms**（6.5×），`--strict` 退出 0；
+  回归测试钉住机制（换肤后标脏、paint 后以新主题重建，量图元颜色）。
+- 探针口径更新：`test_ui_theme_consistency` 的 QSS 探针从 `APP.styleSheet()`
+  改为 `w.styleSheet()`——不变量（self.theme 与生效 QSS 同源）没变，
+  读取位置随架构口径更新（判明是口径变了而非实现回归，同 B11 先例）。
+- 已知欠账更新：P7 **已修复**（此前登记的 perf_probe 欠账关闭）。
+- 顺带发现（既有，非本批次引入）：`test_ui_material` 的 toast 连发回收在
+  "views 在 material 之前"的执行顺序下偶发不过 720ms 窗口（HEAD 同样复现，
+  按字母序的全量套件不受影响——views 在 material 之后）。疑似存话期短于
+  淡入时长时动画失靶的已知时序坑（见该测试自身 docstring），留待专项。
 
 ### 新增（E3 无障碍第一轮：五方面三态表 + 可访问名 + 焦点可见）
 

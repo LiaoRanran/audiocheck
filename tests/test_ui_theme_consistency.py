@@ -1,18 +1,24 @@
-"""主题一致性：全局 QSS 与 `self.theme` 必须始终指同一个主题。
+"""主题一致性：生效的 QSS 与 `self.theme` 必须始终指同一个主题。
 
 ## 为什么需要
 
 `_restore()` 曾经直接 `self.theme = T.THEMES[n]` 而不调 `apply_theme()`。
 `__init__` 的顺序是 `apply_theme(DARK)` → `_restore()`，于是：
 
-    QApplication 的 QSS  = 深色（apply_theme(DARK) 设的）
-    self.theme           = 浅色（_restore() 改的）
+    生效的 QSS   = 深色（apply_theme(DARK) 设的）
+    self.theme   = 浅色（_restore() 改的）
 
 之后 `_cards()` 里 `StatCard(self.theme)` 拿**浅色**配色画在**深色**背景上：
 数值渲成 `#141a26`（浅色主题的 text），背景 `#12151c` —— 几乎不可见。
 
 用户直接可见，而且很难查：**界面能开、不报错、只是数字看不清**。
 这份测试把"两个主题指示器必须一致"钉死，防止再有人直接赋值。
+
+> P7 换肤攻坚（2026-10-16）后，QSS 的承载从 QApplication 移到
+> MainWindow 窗口（实测窗口级 setStyleSheet 54ms vs 应用级
+> 227–776ms——应用级会强制整个 app 的样式对象重建）。本文件的探针
+> 随之从 `APP.styleSheet()` 改为 `w.styleSheet()`：不变量不变，
+> 读取位置随架构口径更新。
 """
 from __future__ import annotations
 
@@ -45,9 +51,14 @@ class TestThemeConsistency(unittest.TestCase):
 
         判据：把 `self.theme` 的 text 色拿去 QSS 里查，必须出现。
         早先 `_restore()` 直接赋值时会失败——QSS 是深色、self.theme 是浅色。
+
+        ⚠ P7 换肤攻坚后**探针从应用级改到窗口级**：样式表挂在 MainWindow
+        上（实测窗口级 54ms vs 应用级 227–776ms），生效的 QSS 是
+        `w.styleSheet()` 而不是 `APP.styleSheet()`。不变量本身没变，
+        变的是承载位置（口径变更，非实现回归）。
         """
         w = self.w
-        qss = APP.styleSheet()
+        qss = w.styleSheet()
         self.assertIn(w.theme.p.text, qss,
                       "self.theme 的 text 色 %s 不在生效的 QSS 里 → "
                       "两个主题指示器不一致（_restore 直接赋值的老毛病）"
@@ -59,8 +70,8 @@ class TestThemeConsistency(unittest.TestCase):
         for name in ("dark", "light"):
             w.apply_theme(T.THEMES[name])
             self.assertEqual(w.theme.name, name)
-            self.assertIn(w.theme.p.text, APP.styleSheet(),
-                          "切到 %s 后 QSS 没跟上" % name)
+            self.assertIn(w.theme.p.text, w.styleSheet(),
+                          "切到 %s 后窗口 QSS 没跟上" % name)
         w.apply_theme(T.DARK)          # 复位，避免影响其它测试
 
     def test_themes_are_distinguishable(self):

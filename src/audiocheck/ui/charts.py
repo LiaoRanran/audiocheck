@@ -242,7 +242,15 @@ class BaseCanvas(FigureCanvasQTAgg):
         色图、网格）由 matplotlib 画，而这条边是**帧层**的东西——它不属于
         任何一组数据，也不该随坐标轴缩放而移动。分层是判据"特效只碰帧层"
         的实现方式：帧层改错了，数据墨一点不受影响。
+
+        P7 攻坚：`_stale` 的画布在**首个 paint** 时才重建图元——换肤时
+        同步重绘可见画布要 ~190ms（频谱图重建全部图元），延迟一帧后与
+        其他 deferred repaint 同批完成，换肤的事件处理器不再被堵住。
+        图元重建与 Agg→Qt 拷贝仍走同一条路（先 redraw 后 super），
+        只是**时机**从"换肤调用里"挪到"下一帧绘制时"。
         """
+        if getattr(self, "_stale", False) and self._has_data():
+            self.redraw()          # 内部置 _stale=False + Agg 重渲染
         super().paintEvent(ev)
         p = getattr(self, "p", None)
         if not p:
@@ -357,7 +365,15 @@ class BaseCanvas(FigureCanvasQTAgg):
             # 没有数据也要让背景色立刻跟上，否则深/浅主题切换时会闪一下旧底色
             self.draw_idle()
         else:
-            self.redraw_if_visible()
+            # P7 攻坚：**只请求重绘**，图元重建推迟到下一帧的 paintEvent
+            # （见 paintEvent 的 _stale 钩子）。同步重绘可见画布实测
+            # ~190ms（频谱图重建全部图元），而它可以与其他 deferred
+            # repaint 同批完成——换肤的事件处理器不再被堵住。
+            # 不可见的画布：update() 不产生 paint，_stale 留着，
+            # 等 showEvent（首次可见）时重建——语义与旧
+            # redraw_if_visible 一致，只是时机推迟一帧。
+            self._stale = True
+            self.update()
 
     def showEvent(self, e):
         super().showEvent(e)
