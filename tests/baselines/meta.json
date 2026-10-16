@@ -1,0 +1,17 @@
+{
+ "matplotlib": "3.11.2",
+ "platform": "win32",
+ "dpi": 100,
+ "size": [
+  720,
+  430
+ ],
+ "theme": "dark",
+ "pixel_tol": 12,
+ "diff_frac_tol": 0.005,
+ "files": {
+  "spectrum": "693a739509865c22a5eecab94b7f93a3a00ac2b4f0032e16e93387eecd3c0549",
+  "spectrogram": "03b23b4f708fe2c1f13718298d5bc14e3ef291b9eddaf43125fdda6f9a425bae",
+  "timeline": "76fc15f09372f0d3bd6f41fff93a32421c58b28c80d34257806590a61132bf40"
+ }
+}
