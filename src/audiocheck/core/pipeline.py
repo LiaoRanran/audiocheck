@@ -30,7 +30,13 @@ def _job(payload):
     """进程池里的执行单元。必须是模块级函数（要能 pickle）。"""
     path, deep, th_dict, keep_curve = payload
     th = Thresholds.from_dict(th_dict) if th_dict else None
-    r = analyze(path, deep=deep, thresholds=th)
+    try:
+        r = analyze(path, deep=deep, thresholds=th)
+    except Exception as e:                                   # noqa: BLE001
+        # 兜底：`analyze` 已把"读不了"变成显式错误结果，这里再挡一层
+        # （E2.1：批量路径也**不许**把异常冒泡成 traceback）。
+        from .engine import _unreadable
+        r = _unreadable(path, e, deep)
     if not keep_curve:
         r.pop("curve", None)
     return r

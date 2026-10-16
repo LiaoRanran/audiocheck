@@ -64,6 +64,27 @@ jobs:
       - name: 配色对照度（文字/非文字/焦点环 ≥ 阈值）
         run: python packaging/palette_report.py --strict
 
+  supply-chain:
+    # E2：不可信输入健壮性（畸形语料 + 有界 fuzz）+ SBOM 生成。
+    name: 健壮性与供应链
+    runs-on: ubuntu-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e ".[dev,gui]"
+      - name: 不可信输入健壮性（畸形语料 + fuzz）
+        run: python packaging/robustness_probe.py --strict --max-seconds 300
+      - name: SBOM 生成
+        run: python packaging/sbom.py --out out/sbom.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: out/sbom.json
+
   mutation:
     # E1.2 变异测试（自实现 AST 注入，不引 cosmic-ray）：限定时长跑核心模块，
     # 分数低于 MIN_SCORE 即红。存活变异体作为**发现**列出（不是失败）。

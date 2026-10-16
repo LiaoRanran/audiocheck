@@ -49,6 +49,12 @@ def _fmt(v, unit=""):
 
 def show(r: dict, quiet: bool = False) -> None:
     print("%s%s" % (ICON.get(r.get("level"), "     "), r["file"]))
+    if r.get("level") == "error" or r.get("sr") is None:
+        # E2.1：不可读文件的显式错误行——**只打一行可读信息，不打 traceback**。
+        print("      错误  %s" % (r.get("verdict") or "无法读取"))
+        for e in (r.get("errors") or [])[:3]:
+            print("            %s" % e)
+        return
     print("      容器  %s %.1fkHz/%s  %d:%02d  %.2fMB  %d声道%s" % (
         r["format"], r["sr"] / 1000, r["bits"], r["seconds"] // 60, r["seconds"] % 60,
         r["size_mb"], r["channels"], "" if not r.get("kbps") else "  ≈%d kbps" % r["kbps"]))
@@ -272,7 +278,15 @@ def main(argv=None) -> int:
     # 实测场景：配置里一个阈值类型写错，判定器抛 TypeError 被引擎吞成
     # "分析器告警"，而退出码仍是 0 —— 一个静默的错误结果。
     #
-    # 0 = 全部正常 ｜ 2 = 输入/配置有问题（含"没找到文件"）｜ 3 = 分析已完成但有告警
+    # 0 = 全部正常 ｜ 2 = 输入/配置有问题（含"没找到文件"）｜
+    # 3 = 分析已完成但有告警 ｜ 4 = 有文件**读不了**（E2.1 不可信输入的显式错误码）
+    unreadable = [r for r in rows if r.get("level") == "error"]
+    if unreadable:
+        print("\n[X] %d 个文件无法读取：" % len(unreadable), file=sys.stderr)
+        for r in unreadable[:5]:
+            print("      %-34s %s" % (r["file"][:34], (r.get("verdict") or "")[:80]),
+                  file=sys.stderr)
+        return 4
     errs = [r for r in rows if r.get("errors")]
     if errs:
         print("\n[X] %d 个文件有分析器告警，结果可能不完整：" % len(errs),

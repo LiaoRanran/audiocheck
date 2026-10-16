@@ -4,6 +4,41 @@
 
 ## [未发布]
 
+### 修复（E2.1 **不可信输入的显式错误路径**：CLI 曾对非音频文件打 traceback）
+
+- **发现**：`analyze()` 在打开/解析容器失败时**抛 `LibsndfileError`**，批量路径
+  `pipeline._job` 不接、`cli` 主路径也不接 ⇒ 用户拿到**整条 Python traceback**，
+  退出码 1。规格明确要求"有错误码 + 可读信息，不许 traceback"。
+  （GUI 侧本来就接了 `AnalyzeWorker.fail`，所以只有 CLI/批量暴露。）
+- **修法（在引擎层，CLI/GUI/JSON 三处一并受益）**：`engine._unreadable()`
+  产出与正常结果**同构**的显式错误结果（`level="error"`、
+  `verdict="**无法读取**：<原因>"`、`errors=[...]`、缺的字段给 None），
+  `analyze()` 不再抛异常；`pipeline._job` 再兜一层。
+- **退出码**：新增 **4 = 有文件读不了**（与 3 = 分析告警 区分）；
+  `cli.show()` 对错误结果只打**一行可读信息**。
+- 实测：非音频/空文件/伪造头部 ⇒ `level=error` + 可读 verdict + **rc=4**；
+  好文件仍 rc=0；JSON 导出带错误结果。
+
+### 新增（E2 健壮性与安全：畸形语料 + fuzz + SBOM + 可复现构建结论）
+
+- `packaging/robustness_probe.py` + `tests/test_robustness.py`（18 条）：
+  **12 条确定性畸形语料**（空 / 纯文本 / 截断 RIFF / 半截 WAV / 只有头部 /
+  全零 / 伪造巨大长度 / 只有 ID3 / 截断 FLAC/Ogg / 伪 MP3 头）+ **有界随机变异**
+  （固定种子，可复现）。三层判据：不抛异常 / `level` 只能取四值之一（防静默通过）/
+  **真实 CLI 子进程输出里不许有 `Traceback`**。
+  **实测：12/12 全部走显式路径；fuzz 34 个变异体未发现崩溃**
+  （如实报告：不是"通过安全测试"，是这次没撞上）。
+- `packaging/sbom.py`：**离线** SBOM（CycloneDX 1.5 风格），从已安装分发元数据
+  沿 `Requires-Dist` 递归收传递依赖（实测 16 个组件）。审计状态**如实写进产物**。
+- `docs/supply_chain.md`：SBOM / 审计 / 可复现构建的实测记录与**未做项**。
+- **可复现构建（E2.3）实测结论**：默认构建**不可**逐字节复现——两次 wheel
+  大小相同、逐条目内容与顺序完全一致，差异仅 **12 字节**，全在 zip 局部文件头的
+  **mtime**，且只出现在构建期复制生成的 `dist-info/licenses/LICENSE`；
+  设 `SOURCE_DATE_EPOCH` 后**逐字节一致**（实测 sha256 相同）。
+  只给结论与差异来源，**未**改默认构建流程（属发布批次决定）。
+- CI 新增 `supply-chain` job（健壮性 `--strict` + SBOM 上传为 artifact）。
+- **未做（如实登记）**：`pip-audit` 依赖审计需联网，本机离线 ⇒ 未做。
+
 ### 修复（E1 属性测试发现的**核心判定缺陷**：截止点漏检 ⇒ "满带宽"假阴性）
 
 - `core/analyzers/spectrum.py::detect_cutoff` 的粗搜索自高向低取**第一个**满足

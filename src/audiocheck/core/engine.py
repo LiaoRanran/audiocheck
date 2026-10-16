@@ -24,6 +24,33 @@ def collect_files(targets) -> list[str]:
     return sorted(dict.fromkeys(out))
 
 
+def _unreadable(path: str, err: Exception, deep: bool) -> dict:
+    """**不可读文件**的显式错误结果（E2.1：不可信输入走"明确错误"路径）。
+
+    本工具的核心动作是**读别人给的音频**——这正是攻击面。非音频 / 截断 /
+    伪造头部的文件必须走**可读的错误**，不许抛 traceback、不许崩溃、
+    也不许静默当成"无有效内容"通过。
+
+    形状与正常结果**同构**（缺的字段给 None），这样 CLI/GUI/JSON 三处
+    消费方无需特判字段是否存在，只需看 `level == "error"`。
+    """
+    reason = str(err).strip() or type(err).__name__
+    size = os.path.getsize(path) if os.path.exists(path) else 0
+    res = {
+        "file": os.path.basename(path),
+        "path": os.path.abspath(path),
+        "sr": None, "bits": None, "channels": None, "format": None,
+        "seconds": None, "size_mb": round(size / 1e6, 1), "kbps": None,
+        "deep": deep,
+        "level": "error",
+        "verdict": "**无法读取**：%s" % reason[:200],
+        "errors": ["open: %s" % reason[:200]],
+    }
+    res["metrics"] = {}
+    res["analyzers"] = [a.key for a in all_analyzers()]
+    return res
+
+
 def analyze(path: str, *, deep: bool = True, thresholds: Thresholds | None = None,
             only: list[str] | None = None) -> dict:
     """分析单个文件。
@@ -38,13 +65,19 @@ def analyze(path: str, *, deep: bool = True, thresholds: Thresholds | None = Non
     返回
     ----
     扁平 dict：容器字段 + 各分析器输出 + `metrics`（指标元信息）+ `errors`。
+    **读不了的文件不抛异常**，返回 `level == "error"` 的显式错误结果
+    （见 `_unreadable`）——不可信输入是常态，不是异常。
     """
     th = thresholds or Thresholds()
     ctx = AnalysisContext(path=path, thresholds=th, deep=deep)
     ctx.seed_metrics()
     ctx.result["errors"] = []
 
-    info = ctx.info
+    try:
+        info = ctx.info
+    except Exception as e:                                   # noqa: BLE001
+        # E2.1：打开/解析容器失败（非音频、截断、伪造头部……）⇒ 显式错误结果。
+        return _unreadable(path, e, deep)
     ctx.result.update({
         "file": os.path.basename(path),
         "path": os.path.abspath(path),
