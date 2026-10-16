@@ -169,6 +169,12 @@ true_peak_dbfs = 20·log₁₀(max|x_oversampled|)
 - 母带本身可能就带限，与编码无关；
 - 因此本项目只输出**"疑似"候选**，且在界面上标注"线索，非证据"。
 
+**一手来源（2026-10-17 补查）**：本表原为工程整理；现查到两个**第一方**来源可佐证量级——
+① LAME 项目官方 GPSYCHO 页（`lame.sourceforge.io/gpsycho.php`）：128 kbps 低通约 15.5 kHz、
+256 kbps 不做低通；② FFmpeg 源码宏 `AAC_CUTOFF_FROM_BITRATE`（`libavcodec/psymodel.h`）：
+AAC 立体声 192/256/320 kbps ≈ 18.0/20.0/22.0 kHz。两者与本表**同量级**，
+但具体值仍随版本/预设变化，故本表**只作线索**。（阈值出处账见 `docs/thresholds.md` §3.2。）
+
 表按 44.1k 整理，其它采样率按奈奎斯特比例缩放。
 
 ---

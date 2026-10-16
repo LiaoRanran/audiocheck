@@ -4,6 +4,38 @@
 
 ## [未发布]
 
+### 修复（Windows **MAX_PATH**：>260 字符的路径曾被**静默丢弃**，现可收录并分析）
+
+- **现象**：用户曲库里 2 个 **268 字符**的 `.wav`（日文长专辑名）被 `os.path.isfile`
+  判 False ⇒ `collect_files` **无声漏掉**（第一轮结果 448/450，少的就是它们）。
+- **实测支持面**（`out/_maxpath*.py`，2026-10-17）：`\\?\` 前缀被 **libsndfile
+  （`sf.read`/`info`/`write`）、内建 `open`、`mutagen.File`、`os.walk`/`isfile`/`getsize`
+  全部接受**；普通长路径则在 libsndfile 处直接 `System error`。
+- **修法**：新增 `context.io_path()`（Windows 上补 `\\?\`、UNC 走 `\\?\UNC\`）与
+  `display_path()`（剥前缀）。`collect_files` 用 `io_path` 探测/遍历、返回**剥净的普通
+  路径**；`analyze`/`AnalysisContext` 只在**真正读文件时**换成 `io_path`；`views.py`
+  的三个读点同步。⇒ 收录数 **450/450**，且结果里的 `path` 仍是干净路径。
+- 新增 `tests/test_paths.py`（7 条，含 Windows 真造 >260 路径的端到端）。
+- 非 Windows 零影响（`io_path` 原样返回）。
+
+### 修复（matplotlib **PendingDeprecationWarning**：`set_constrained_layout_pads`）
+
+- `ui/charts.py` 每次建画布都触发 `set_constrained_layout_pads` 的 PendingDeprecation
+  警告（它不是 `DeprecationWarning`，不受 `filterwarnings` 的 `ignore::DeprecationWarning`
+  覆盖 ⇒ pytest 汇总里每次都刷）。改用 `fig.get_layout_engine().set(...)`，**留白口径不变**。
+
+### 科研（**编码器截止表取到一手来源** + 母带痕迹找到同行评审锚点）
+
+- ★ 「编码器截止表只有社区资料、**未取到一手表格**」这一记账**已更正**（2026-10-17）：
+  取到两个**第一方**来源——① LAME 项目官方 GPSYCHO 页（128 kbps 低通约 15.5 kHz、
+  256 kbps 不做低通）；② FFmpeg 源码宏 `AAC_CUTOFF_FROM_BITRATE`（AAC 立体声
+  192/256/320 kbps ≈ 18.0/20.0/22.0 kHz）。⚠ 但 `ltd=19.0`/`lossy=16.0` 这两个**判据门限
+  本身仍无外部出处** ⇒ 类别**保持"工程估计"**。记录见 `docs/thresholds.md §3.2`、
+  `docs/theory.md §5`。
+- 「母带处理痕迹」从"仍未清"→**部分已核**：找到同行评审锚点 **Croghan, Arehart, Kates,
+  JASA 132(2):1177–1188, 2012**（重度压缩/限幅损害听感）；但 PLR/DR 的**判据定义与门限**
+  仍来自行业工具 ⇒ 候选仍"工程估计"、门限不许升格。见 `docs/research.md §4`。
+
 ### 精度（`detect_cutoff` v4.1：修一个**实测的系统性偏差** —— 最大误差 25% → 1.3%）
 
 - ★ **发现**：把截止点检测的误差**曲面**量出来（入库探针 `packaging/cutoff_calib.py`，
