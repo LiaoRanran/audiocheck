@@ -147,3 +147,25 @@ def test_usability_dynamics_needs_both_missing():
     assert "无动态统计" not in str(only_lra), "只缺 DR 就说『无动态统计』是错的：%s" % only_lra
     both = usability_matrix({}, [], TH)["动态与微动态"]
     assert "无动态统计" in str(both)
+
+
+def test_low_pct_is_sub_plus_bass_not_difference():
+    """`low_pct = sub + bass`：低频占比是**求和**，不是差。
+
+    sub=12、bass=8 ⇒ 和 20%（不该判"低频缺失"）；差只有 4% ⇒ 会被误判成缺失。
+    """
+    cell = usability_matrix({"bands_pct": {"sub": 12.0, "bass": 8.0}}, [], TH)["低频下潜/控制力"]
+    assert "低频缺失" not in str(cell), "把 sub−bass 当成低频占比了：%s" % cell
+
+
+def test_usability_clip_advice_boundary_is_exclusive():
+    """`clip > clip_advice_pct`：正好等于建议线时**不**降级动态用途。
+
+    ⚠ 必须同时给 lra/dr：两者都缺时会先落进"不可判（无动态统计）"那条分支，
+    就测不到削波这一条了。
+    """
+    base = {"lra": 8.0, "dr": 12.0}
+    at = usability_matrix({**base, "clip_pct": TH.clip_advice_pct}, [], TH)["动态与微动态"]
+    above = usability_matrix({**base, "clip_pct": TH.clip_advice_pct + 1e-6}, [], TH)["动态与微动态"]
+    assert at["level"] == "可用", "正好等于 clip_advice_pct 不该降级：%s" % at
+    assert above["level"] == "不可用", "超过建议线应降级：%s" % above

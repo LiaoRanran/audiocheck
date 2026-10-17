@@ -43,7 +43,10 @@
 - 等价体登记 4 条（都写了"为什么"）：`_RANK_UNKNOWN` 哨兵 99→100、
   `_worst` 的 `>`→`>=`（平局赋同一个值）、`verdict.order` 90→91（无 91）、
   `causes.order` 89→90（与 verdict 平局，稳定排序保持注册序）。
-- 验证：见下一条提交的实测分数。
+- **实测：0.830 → 0.980（100/102，等价 18，存活 2）**，`--strict` 过。
+  剩下 2 条（`low_pct` 的求和、`clip_advice_pct` 的开区间）补测试后**逐个定点验证
+  均被杀死**（pytest rc=1）——见 `test_low_pct_is_sub_plus_bass_not_difference` 与
+  `test_usability_clip_advice_boundary_is_exclusive`。
 
 ### 新增（E5 帮助面板：快捷键 / 视图 / **效力边界** / 阈值出处，内容全部派生）
 
