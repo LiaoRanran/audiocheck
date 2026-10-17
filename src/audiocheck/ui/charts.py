@@ -626,6 +626,25 @@ def _zoom_after(z: float, step: int) -> float:
     return max(ZOOM_MIN, min(ZOOM_MAX, z * (1.12 ** step)))
 
 
+def _apply_curve_ticks(ax, v0: float, v1: float, nyq: float) -> None:
+    """**2D 对数频率轴**的刻度（两条曲线图共用一处：频谱曲线 + 多文件对比）。
+
+    不共用就会退回"默认对数轴只标 10²/10³/10⁴"——关键区（10k–22k）一个刻度都没有，
+    读者无法判断截止点是 18k 还是 21k，只能信标注框里那个数字（"读数能自证"正是
+    这张图该给的东西）。主刻度按**当前视野**挑（`zoom.pick_ticks`），缩放后仍可读；
+    次刻度只留 2/5 两档（对数频率轴的惯例：够精读、不糊成一片）。
+    **必须在 `semilogx()` 之后调用**——它会 `set_xscale('log')` 并重置定位器。
+    """
+    ticks = [t for t in Z.pick_ticks(v0, v1, log=True) if t <= nyq]
+    ax.set_xticks(ticks)
+    ax.set_xticklabels([_hz_label(float(t)) for t in ticks])
+    minors = [float(t * m)
+              for t in (20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000)
+              for m in (2, 5)]
+    ax.set_xticks([v for v in minors if v0 < v <= nyq], minor=True)
+    ax.set_xlim(v0, v1)
+
+
 def _db_ticks(vmin: float, step: float = 20.0) -> list[float]:
     """dB 轴刻度：**升序、去重、全部 ≥ vmin**，永远含 vmin 与 0。
 
@@ -1232,17 +1251,7 @@ class SpectrumCanvas(BaseCanvas):
         if self._view_x is None or self._view_dirty:
             self._view_x = self._full_x
             self._view_dirty = False
-        v0, v1 = self._view_x
-        ticks = [t for t in Z.pick_ticks(v0, v1, log=True) if t <= nyq]
-        ax.set_xticks(ticks)
-        ax.set_xticklabels([("%gk" % (t / 1000) if t >= 1000 else "%g" % t) for t in ticks])
-        # 次刻度只留 2/5 两档（对数频率轴的惯例）：既够精读，又不会糊成一片。
-        # 早先 `minorticks_off()` 是因为**默认**次刻度太密——那是关错了对象。
-        minor = [float(t * m)
-                 for t in (20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000)
-                 for m in (2, 5)]
-        ax.set_xticks([v for v in minor if v0 < v <= nyq], minor=True)
-        ax.set_xlim(v0, v1)
+        _apply_curve_ticks(ax, *self._view_x, nyq)
         # 顶部多留 14% 给频段标签，否则标签与截止标注挤在一起
         ax.set_ylim(lo, top + (top - lo) * 0.14)
 
@@ -1410,7 +1419,11 @@ class SpectrogramCanvas(BaseCanvas):
         db = self._rs_cache
         # B11-B：色窗下界自适应（内容底 − 余量，db_range 兜底）。单调收紧、
         # 量出来的底、披露在图上——"不许造假抬高"三条纪律见 _adaptive_vmin 注释。
-        self._vmin = _adaptive_vmin(db, self.db_range)
+        # ⚠ 按**同一把键**缓存：`_adaptive_vmin` 是 648k 点的 nanpercentile（实测 10 ms），
+        #    而它只取决于 (db, db_range) = 上面那把 `key` ⇒ 键不变就不必重算。
+        if getattr(self, "_vmin_key", None) != key:
+            self._vmin = _adaptive_vmin(db, self.db_range)
+            self._vmin_key = key
         mesh = ax.imshow(db, aspect="auto", origin="lower",
                          extent=(t[0], t[-1], math.log10(20.0), math.log10(f[-1])),
                          cmap=spectro_cmap(), vmin=self._vmin, vmax=0.0, interpolation="nearest",
@@ -1420,6 +1433,12 @@ class SpectrogramCanvas(BaseCanvas):
         for lev in (100, 1000, 10000):
             if lev < f[-1]:
                 ax.axhline(math.log10(lev), color=p["grid"], lw=.6, alpha=.55, zorder=2)
+        # 感知刻度（"Bark 底纹"欠账的**线**形态；**换刻度是另一件更大的事**，此处不做）：
+        # Bark 临界频带边界线——与频谱曲线共用 `bark_edges`（口径一处）。图上铺一层
+        # 极淡的横线，读者才看得出"对数轴上等距的一段，在耳朵里是不是等宽"。
+        # 放在图元之上（zorder=2）但**很淡**：给一把尺，不遮内容。
+        for e in bark_edges(20.0, float(f[-1]))[1:-1]:
+            ax.axhline(math.log10(e), color=p["grid"], lw=.45, alpha=.28, zorder=2)
         # 纵轴刻度：位置是 log10(Hz)，标签写 Hz（读起来和原来一样）
         # E 轮轴精度：主刻度带单位 + 次刻度补标签（实现集中在一处，不许两份）
         _apply_freq_axis(ax, f[-1], p)
@@ -1589,6 +1608,12 @@ class StereoCanvas(BaseCanvas):
         for lev in (100, 1000, 10000):
             if lev < f[-1]:
                 ax.axhline(math.log10(lev), color=p["grid"], lw=.6, alpha=.55, zorder=2)
+        # 感知刻度（"Bark 底纹"欠账的**线**形态；**换刻度是另一件更大的事**，此处不做）：
+        # Bark 临界频带边界线——与频谱曲线共用 `bark_edges`（口径一处）。图上铺一层
+        # 极淡的横线，读者才看得出"对数轴上等距的一段，在耳朵里是不是等宽"。
+        # 放在图元之上（zorder=2）但**很淡**：给一把尺，不遮内容。
+        for e in bark_edges(20.0, float(f[-1]))[1:-1]:
+            ax.axhline(math.log10(e), color=p["grid"], lw=.45, alpha=.28, zorder=2)
         # E 轮轴精度：与频谱图同一处实现（不许两份）
         _apply_freq_axis(ax, f[-1], p)
         # 披露分辨率（与频谱图同口径）——相位场同样吃 STFT 的窗长
@@ -2040,7 +2065,11 @@ class WaterfallCanvas(BaseCanvas):
         cmap = spectro_cmap()
         # B11-B：瀑布与频谱图同一套色窗口径（内容底 − 余量，db_range 兜底）。
         # 3D 的 z 轴就是 dB——窗底跟着数据走，别再把 45dB 浪费在本底上。
-        self._vmin = _adaptive_vmin(db, self.db_range)
+        # ⚠ 同源缓存：`_adaptive_vmin` 只取决于 (S, db_range) ⇒ 键不变不重算（实测 ~10ms）。
+        vkey = (id(S), self.db_range)
+        if getattr(self, "_vmin_key", None) != vkey:
+            self._vmin = _adaptive_vmin(db, self.db_range)
+            self._vmin_key = vkey
         from matplotlib.collections import PolyCollection
         from matplotlib.colors import to_rgb
         bg = to_rgb(p["surface"])
@@ -2427,7 +2456,8 @@ class CompareCanvas(BaseCanvas):
         if self._view_x is None or self._view_dirty:
             self._view_x = self._full_x
             self._view_dirty = False
-        ax.set_xlim(*self._view_x)
+        # 与频谱曲线同口径（此前这里只设 xlim，底轴退回 10²/10³/10⁴ 三个刻度）
+        _apply_curve_ticks(ax, *self._view_x, float(nyq))
         ax.set_ylim(-80, 8)
         leg = ax.legend(loc="lower left", fontsize=p['fs_tick'], framealpha=.92, ncol=1,
                         facecolor=p["surface2"], edgecolor=p["border_hi"], labelcolor=p["text"])

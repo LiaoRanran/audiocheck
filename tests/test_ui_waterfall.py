@@ -285,5 +285,24 @@ class TestWaterfallAxes(unittest.TestCase):
                            "峰值保持后突发应接近 0 dB（旧实现只有约 −40 dB）")
 
 
+class TestCurveTicks(unittest.TestCase):
+    """2D 对数频率轴刻度（频谱曲线 + 多文件对比**共用一处**）。
+
+    不共用就会退回 matplotlib 默认对数轴的三档 10²/10³/10⁴——关键区（10k–22k）一个刻度都没有。
+    """
+
+    def test_not_just_decades(self):
+        from matplotlib.figure import Figure
+
+        from audiocheck.ui.charts import _apply_curve_ticks
+        ax = Figure().add_subplot(111)
+        ax.set_xscale("log")
+        _apply_curve_ticks(ax, 20.0, 22050.0, 22050.0)
+        ticks = [t for t in ax.get_xticks() if t > 0]
+        self.assertGreater(len(ticks), 3, "必须多于默认对数轴的三档：%s" % ticks)
+        self.assertIn(2000.0, ticks)
+        self.assertIn(20000.0, ticks)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
