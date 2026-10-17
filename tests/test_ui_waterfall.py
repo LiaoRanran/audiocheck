@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import math
 import os
 import sys
 import unittest
@@ -29,7 +30,19 @@ APP = QApplication.instance() or QApplication([])
 
 from audiocheck.ui import theme as T  # noqa: E402
 from audiocheck.ui import window as W  # noqa: E402
-from audiocheck.ui.charts import READOUT_MAX_PX, WaterfallCanvas, _nearest_surface  # noqa: E402
+from audiocheck.ui.charts import (  # noqa: E402
+    READOUT_MAX_PX,
+    ZOOM_MAX,
+    ZOOM_MIN,
+    WaterfallCanvas,
+    _db_ticks,
+    _freq_axis_ticks,
+    _freq_major_pos_labels,
+    _hz_label,
+    _nearest_surface,
+    _peak_hold_cols,
+    _zoom_after,
+)
 
 
 def _synth_data():
@@ -164,6 +177,112 @@ class TestWaterfallDisclosure(unittest.TestCase):
         dt = float(t[1] - t[0])
         self.assertIn("Δf ≈ %.3g Hz" % df, disc[0])
         self.assertIn("Δt ≈ %.3g s" % dt, disc[0])
+
+
+class TestWaterfallAxes(unittest.TestCase):
+    """数轴契约（2026-10-17 修）：dB 刻度**单调**、频轴与频谱图**同口径**、滚轮缩放可测。
+
+    两个缺陷都是实测到的（`out/_axis_probe.py`）：
+      * z 轴旧写法 `[round(vmin),−60,−40,−20,0]` 在 vmin ∈ (−60,0) 时**非单调**，
+        低于 zlim 底的刻度被画到框外——而 vmin ∈ (−60,0) 正是**响度战**素材；
+      * x 轴只标 10/100/1k/10k，比频谱图少 20/50/200/500/2k/5k/20k。
+    """
+
+    def test_db_ticks_monotonic_dedup_bounded(self):
+        for vmin in (-90.0, -76.5, -57.5, -38.5, -20.5, -10.0, -1.0):
+            zt = _db_ticks(vmin)
+            self.assertEqual(zt, sorted(zt), "刻度必须升序：vmin=%s → %s" % (vmin, zt))
+            self.assertEqual(len(zt), len(set(zt)), "刻度不许重复：%s" % zt)
+            self.assertGreaterEqual(min(zt), vmin - 1e-9, "刻度不许低于 zlim 底：%s" % zt)
+            self.assertIn(0.0, zt, "必须含 0：%s" % zt)
+            self.assertLessEqual(max(zt), 0.0)
+
+    def test_db_ticks_regression_loud_material(self):
+        """响度战素材（vmin 落在 (−60,0)）不再出现非单调刻度。"""
+        old = [round(-57.5), -60, -40, -20, 0]
+        self.assertNotEqual(old, sorted(old), "旧写法确实是坏的（回归前提）")
+        new = _db_ticks(-57.5)
+        self.assertEqual(new, sorted(new))
+        self.assertGreaterEqual(min(new), -57.5)
+
+    def test_freq_axis_matches_spectrogram(self):
+        fmax = 22050.0
+        pos, lab = _freq_major_pos_labels(fmax)
+        majors, _ = _freq_axis_ticks(fmax)
+        self.assertEqual(len(pos), len(majors))
+        for p, m in zip(pos, majors):
+            self.assertAlmostEqual(p, math.log10(m), places=9)
+        self.assertEqual(lab[-1], _hz_label(majors[-1], unit=True))
+        self.assertTrue(all("Hz" not in s for s in lab[:-1]), "只有最大刻度带单位")
+        for need in (20, 50, 200, 500, 2000, 5000, 20000):   # 旧写法缺的这些
+            self.assertIn(math.log10(need), pos)
+
+    def test_zoom_after_pure(self):
+        self.assertGreater(_zoom_after(1.0, 1), 1.0)
+        self.assertLess(_zoom_after(1.0, -1), 1.0)
+        self.assertEqual(_zoom_after(1.0, 0), 1.0)
+        self.assertEqual(_zoom_after(ZOOM_MAX, 10), ZOOM_MAX, "上限必须钳住")
+        self.assertEqual(_zoom_after(ZOOM_MIN, -10), ZOOM_MIN, "下限必须钳住")
+
+    def _drawn(self):
+        cv = WaterfallCanvas()
+        cv.resize(600, 400)
+        cv.apply_theme(T.plot_palette(T.DARK.p, T.DARK))
+        t, f, S = _synth_data()
+        cv.set_data({"file": "x.wav"}, (t, f, S))
+        cv.redraw()
+        return cv, t, f
+
+    def test_canvas_zticks_are_monotonic(self):
+        cv, _t, _f = self._drawn()
+        zt = list(cv.ax.get_zticks())
+        self.assertEqual(zt, sorted(zt), "画布上的 z 刻度必须升序：%s" % zt)
+        self.assertEqual(len(zt), len(set(zt)))
+        self.assertGreaterEqual(min(zt), cv._vmin - 1e-9)
+
+    def test_canvas_xticks_match_freq_majors(self):
+        cv, _t, f = self._drawn()
+        majors, _ = _freq_axis_ticks(float(f[-1]))
+        self.assertEqual(len(cv.ax.get_xticks()), len(majors))
+
+    def test_scroll_zoom_changes_and_resets(self):
+        cv, _t, _f = self._drawn()
+
+        class _Ev:
+            inaxes = cv.ax
+            step = 2
+
+        z0 = cv._zoom
+        cv._on_scroll(_Ev())
+        self.assertGreater(cv._zoom, z0, "滚轮向前应放大")
+        cv.reset_view()
+        self.assertEqual(cv._zoom, cv._zoom0, "复位应回到初始 zoom")
+
+    # ---- 时间峰值保持（2026-10-17 修）：瞬态不许因抽样而丢 ----
+    def test_peak_hold_cols_keeps_transient(self):
+        db = np.full((3, 10), -40.0)
+        db[:, 5] = 0.0                        # 列 5 = 瞬态；step=2 ⇒ 抽样列是 0,2,4,6,8
+        t = np.arange(10.0)
+        db2, t2 = _peak_hold_cols(db, t, 2)
+        self.assertEqual(db2.shape[1], 5)
+        self.assertEqual(db2[:, 2].max(), 0.0, "列 5 落在第 2 组（列 4–5），突发必须保留")
+        self.assertEqual(db2.max(), 0.0, "峰值保持后整张图仍含突发")
+        self.assertAlmostEqual(t2[2], 4.5, msg="代表时间应取组内均值")
+
+    def test_canvas_keeps_transient_in_dropped_column(self):
+        """抽样的**奇数列**上的突发，必须仍出现在瀑布表面上（旧实现整条丢掉）。"""
+        cv = WaterfallCanvas()
+        cv.resize(600, 400)
+        cv.apply_theme(T.plot_palette(T.DARK.p, T.DARK))
+        t = np.linspace(0.0, 60.0, 120)
+        f = np.geomspace(20.0, 20000.0, 180)
+        S = np.full((len(f), len(t)), -20.0)
+        S[:, 5] = 20.0                        # +40dB 突发，落在奇数（未抽样）列
+        cv.set_data({"file": "x.wav"}, (t, f, S))
+        cv.redraw()
+        _lf, dbg, _ys, _tg = cv._surf
+        self.assertGreater(dbg.max(), -10.0,
+                           "峰值保持后突发应接近 0 dB（旧实现只有约 −40 dB）")
 
 
 if __name__ == "__main__":

@@ -602,6 +602,47 @@ def _apply_freq_axis(ax, f_max: float, p) -> None:
                        fontsize=max(6.0, p["fs_tick"] - 1.5), color=p["text_faint"])
     ax.tick_params(axis="y", which="minor", length=2, color=p["text_faint"])
 
+
+def _freq_major_pos_labels(f_max: float) -> tuple[list[float], list[str]]:
+    """**3D 频轴**的（log10 位置, 标签），与 `_apply_freq_axis` **同一套 1-2-5 主刻度**。
+
+    为什么单列：瀑布图的 x 轴此前只标十进制整数 `10/100/1k/10k`，比频谱图少
+    20/50/200/500/2k/5k/20k——同一份数据在两张图上**刻度不一致**（数轴口径两份）。
+    这里复用 `_freq_axis_ticks`，口径集中一处。3D 轴比 2D 短，单位只标在最大刻度上
+    （避免 10 个 "Hz" 挤成一团），其余刻度与频谱图逐点相同。
+    """
+    majors, _ = _freq_axis_ticks(f_max)
+    return ([math.log10(v) for v in majors],
+            [_hz_label(v, unit=(v == majors[-1])) for v in majors])
+
+
+#: 瀑布图滚轮缩放的钳制范围（乘在 `set_box_aspect(zoom=)` 上）。
+ZOOM_MIN, ZOOM_MAX = 0.6, 2.4
+
+
+def _zoom_after(z: float, step: int) -> float:
+    """滚轮缩放后的 zoom 系数（**纯函数**）：每格 ×1.12^step，钳制在 [ZOOM_MIN, ZOOM_MAX]。
+    单列成纯函数是为了可单测（钳制与方向），与 Qt 事件解耦。"""
+    return max(ZOOM_MIN, min(ZOOM_MAX, z * (1.12 ** step)))
+
+
+def _db_ticks(vmin: float, step: float = 20.0) -> list[float]:
+    """dB 轴刻度：**升序、去重、全部 ≥ vmin**，永远含 vmin 与 0。
+
+    为什么必须自己算：旧写法 `[round(vmin), -60, -40, -20, 0]` 在 vmin 落在 (−60, 0)
+    区间时**非单调**（如 vmin=−57.5 → [−57, −60, −40, −20, 0]，−60 掉到 zlim 底之外），
+    matplotlib 会把低于框底的刻度画在框外、标签错位。实测（`out/_axis_probe.py`）：
+    **5% 分位 ≥ −25 dB 的"响度战"素材就会踩到**——而那恰恰是本工具最常看的素材。
+    """
+    grid = []
+    v = math.ceil(vmin / step) * step
+    while v < -1e-9:
+        grid.append(v)
+        v += step
+    bottom = float(math.ceil(vmin - 1e-9))
+    return sorted({t for t in [bottom, 0.0, *grid] if t >= vmin - 1e-9})
+
+
 #: **相位场**的发散色图九点 LCH 表（ρ 从 −1 到 +1）。
 #:
 #: 发散色图（diverging）**不该按顺序色图的判据测**——它的中点是"零点"，
@@ -741,6 +782,27 @@ class CursorBus:
 #: 进程级唯一总线。**故意不用 Qt 信号**：画布之间没有父子关系，信号要
 #: 先找个共同 QObject 当中介，而那正是"为了机制而加一层"的例子。
 CURSOR = CursorBus()
+
+
+def _peak_hold_cols(db: np.ndarray, t: np.ndarray, step: int):
+    """时间向**峰值保持**分组（与频谱图 `_peak_hold` 同口径）：每 `step` 列并成一列、
+    逐频点取 max。返回 `(db2, t2)`，`t2[j]` 是该组代表时间（组内均值）。
+
+    为什么必须做：瀑布此前是 `range(0, n, step)` **直接抽样列**——落在未采样列上的
+    **瞬态会被整条丢掉**，而频谱图一直做峰值保持（口径两份）。而"咔哒/削波/瞬态"
+    正是本工具要看的形态之一。
+    """
+    db = np.asarray(db)
+    t = np.asarray(t, dtype=float)
+    n = db.shape[1]
+    idx = list(range(0, n, int(step)))
+    out = np.empty((db.shape[0], len(idx)), dtype=db.dtype)
+    tt = np.empty(len(idx), dtype=float)
+    for j, i in enumerate(idx):
+        hi = min(n, i + int(step))
+        out[:, j] = db[:, i:hi].max(axis=1)
+        tt[j] = float(t[i:hi].mean()) if hi > i else float(t[min(i, n - 1)])
+    return out, tt
 
 
 def _resample_rows(db, f, fl, signed: bool = False):
@@ -1789,6 +1851,10 @@ class WaterfallCanvas(BaseCanvas):
         self._msg = "选择条目后自动生成"
         self._elev, self._azim = 26, -58
         self._elev0, self._azim0 = 26, -58      # 复位目标（B14 E.2-5）
+        #: 滚轮缩放（乘在 `set_box_aspect(zoom=…)` 上）。与频谱图/对比图的滚轮缩放
+        #: 对齐——此前瀑布只能转视角、不能缩放，看"低频堆积"时够不着细节。
+        self._zoom = 1.0
+        self._zoom0 = 1.0
         # B14：dB 显示窗按**画布实例**持有（与频谱图同一套控件驱动）。
         self.db_range = SPECTRO_DB_RANGE
         self._vmin = -SPECTRO_DB_RANGE      # B11：色窗下界（draw 时自适应更新）
@@ -1810,6 +1876,7 @@ class WaterfallCanvas(BaseCanvas):
         self._x_timer.timeout.connect(self.redraw)
         self.mpl_connect("button_press_event", self._on_press)
         self.mpl_connect("motion_notify_event", self._on_drag)
+        self.mpl_connect("scroll_event", self._on_scroll)
         # B14 补强⑦：游标读数——悬停时读"这一点的 时间/频率/电平"。
         # 用 **Qt 子 QLabel** 而不是画进 matplotlib：3D 整帧重绘实测
         # ~370ms，一个读数不值得每次鼠标移动都重画一遍；标签只改
@@ -1909,9 +1976,23 @@ class WaterfallCanvas(BaseCanvas):
         super().mouseReleaseEvent(ev)
 
     def reset_view(self):
-        """复位视角（B14 E.2-5）：回到初始 elev/azim。**幂等**（连按两次结果一致）。"""
+        """复位视角（B14 E.2-5）：回到初始 elev/azim 与缩放。**幂等**。"""
         self._elev, self._azim = self._elev0, self._azim0
+        self._zoom = self._zoom0
         self.redraw()
+
+    def _on_scroll(self, ev):
+        """滚轮缩放视角（与频谱图/对比图的滚轮缩放对齐）。
+
+        `set_box_aspect(zoom=)` 的 zoom 越大，3D 盒在画布里占得越大 ⇒ 视觉上放大。
+        节流与拖拽同一套（3D 整帧重绘 ~370ms），避免滚动事件连发时排队重画。
+        """
+        if ev.inaxes is not self.ax or getattr(ev, "step", None) is None:
+            return
+        self._zoom = _zoom_after(self._zoom, int(ev.step))
+        if not self._drag_timer.isActive():
+            self.redraw()
+            self._drag_timer.start()
 
     def mouseDoubleClickEvent(self, ev):        # 双击复位
         self.reset_view()
@@ -1970,10 +2051,13 @@ class WaterfallCanvas(BaseCanvas):
         # 这是 3D 可视化里最省算力的立体线索（不引入 LightSource 的逐面法线计算）。
         step = max(1, n // WATERFALL_SLICES)
         idxs = list(range(0, n, step))
+        # 时间向**峰值保持**（与频谱图同口径）：每个切片取它负责的那 `step` 列的逐频 max。
+        # 直接抽样列会漏掉落在未采样列上的**瞬态**（本项的主要形态之一：咔哒/削波）。
+        dbg, tg = _peak_hold_cols(db, t, step)
         verts, facecols = [], []
-        for i in idxs:
+        for j, i in enumerate(idxs):
             u = i / max(1, n - 1)
-            v = ([(lf[0], -self.db_range)] + list(zip(lf, db[:, i]))
+            v = ([(lf[0], -self.db_range)] + list(zip(lf, dbg[:, j]))
                  + [(lf[-1], -self.db_range)])
             verts.append(v)
             col = cmap(0.10 + 0.82 * u)
@@ -1986,30 +2070,34 @@ class WaterfallCanvas(BaseCanvas):
                               edgecolors=(1.0, 1.0, 1.0, 0.10), linewidths=0.25)
         ax.add_collection3d(poly, zs=idxs, zdir="y")
         # 脊线高光：每片上沿提亮描一条（顶面受光），立体感的主要来源
-        for i in idxs:
+        for j, i in enumerate(idxs):
             u = i / max(1, n - 1)
             rc = cmap(min(1.0, 0.16 + 0.80 * u))
-            ax.plot(lf, db[:, i], zs=i, zdir="y",
+            ax.plot(lf, dbg[:, j], zs=i, zdir="y",
                     color=(float(rc[0]), float(rc[1]), float(rc[2])),
                     lw=0.8, alpha=0.34 + 0.56 * u, solid_capstyle="round")
         ax.set_zlim(self._vmin, 0)
         ax.set_ylim(0, n)
         ax.set_xlim(lf[0], lf[-1])
         try:
-            ax.set_box_aspect((1.55, 1.0, 0.78), zoom=1.12)
+            ax.set_box_aspect((1.55, 1.0, 0.78), zoom=1.12 * self._zoom)
         except TypeError:                             # 老版本 matplotlib 不支持 zoom
             ax.set_box_aspect((1.55, 1.0, 0.78))
         ax.view_init(elev=self._elev, azim=self._azim)
-        ticks = [v for v in (1, 2, 3, 4) if lf[0] <= v <= lf[-1]]
-        ax.set_xticks(ticks)
-        ax.set_xticklabels(["%g" % (10 ** v) if v < 3 else "%gk" % (10 ** (v - 3)) for v in ticks],
-                           fontsize=p['fs_tick'])
+        # 数轴口径（2026-10-17 修）：x 轴改用**与频谱图同一套 1-2-5 主刻度**
+        # （此前只有 10/100/1k/10k，同一份数据在两张图上刻度不一致）。
+        xt, xlab = _freq_major_pos_labels(float(f2[-1]))
+        ax.set_xticks(xt)
+        ax.set_xticklabels(xlab, fontsize=p['fs_tick'])
         ax.set_yticks([0, n // 2, n])
         ax.set_yticklabels(["0", "%.0fs" % (t[len(t) // 2] if len(t) else 0),
                             "%.0fs" % (t[-1] if len(t) else 0)], fontsize=p['fs_tick'])
-        ax.set_zticks([round(self._vmin), -60, -40, -20, 0])
-        ax.set_zticklabels(["%.0f" % round(self._vmin), "-60", "-40", "-20", "0"],
-                           fontsize=p['fs_tick'])
+        # z 轴（dB）刻度由 `_db_ticks` 生成：**升序、去重、全部 ≥ vmin**。
+        # 旧的写死在 [round(vmin), -60, -40, -20, 0] 在 vmin ∈ (−60,0) 时非单调
+        # （响度战素材就会踩到），低于框底的刻度被画到框外。见 `_db_ticks` 注释。
+        zt = _db_ticks(self._vmin)
+        ax.set_zticks(zt)
+        ax.set_zticklabels(["%d" % round(v) for v in zt], fontsize=p['fs_tick'])
         ax.set_xlabel("Hz", color=p["text_dim"], fontsize=p['fs_tick'], labelpad=-2)
         ax.set_ylabel("时间", color=p["text_dim"], fontsize=p['fs_tick'], labelpad=-2)
         ax.set_zlabel("dB", color=p["text_dim"], fontsize=p['fs_tick'], labelpad=-4)
@@ -2029,7 +2117,7 @@ class WaterfallCanvas(BaseCanvas):
                   "Δf ≈ %.3g Hz ｜ Δt ≈ %.3g s ｜ 峰值下 %.0fdB" % (df, dt, -self._vmin),
                   transform=ax.transAxes,
                   color=p["text_faint"], fontsize=p['fs_tick'])
-        ax.text2D(.86, .95, "拖拽旋转 · 双击复位 · F 全屏", transform=ax.transAxes, color=p["text_faint"], fontsize=p['fs_tick'])
+        ax.text2D(.86, .95, "拖拽旋转 · 滚轮缩放 · 双击复位 · F 全屏", transform=ax.transAxes, color=p["text_faint"], fontsize=p['fs_tick'])
         # B14 补强⑤：**别处**指过来的频率 → 画一面"频率墙"（底边 + 顶边）。
         # 只画两条边不画面：满幅半透明面会把背后的数据压掉，而参考线的职责
         # 是"指位置"，不是"遮内容"。
@@ -2039,11 +2127,12 @@ class WaterfallCanvas(BaseCanvas):
                 ax.plot([lx, lx], [0, n], [z, z], color=p["accent"], lw=REF_LINE_W,
                         alpha=.55, zorder=6)
         # 游标读数缓存：表面网格（**对数**频点 × 各片 dB × 片号 × 片时间）
-        # ——只缓存**真正画出来的片**（idxs），与屏幕上的一致。
+        # ——只缓存**真正画出来的片**（idxs），与屏幕上的一致；值用**峰值保持后**的
+        # `dbg`（与画出来的填充片/脊线同源，读数才不会与眼睛看到的对不上）。
         # ⚠ 频轴存的是 lf（log10）而不是 fl：3D 图的 x 坐标就是 lf
         # （xlim 是 1.3–4.3），存线性 Hz 会把投影点全甩出画布。
-        self._surf = (lf, db[:, idxs], np.asarray(idxs, dtype=float),
-                      np.asarray(t)[idxs])
+        self._surf = (lf, np.asarray(dbg), np.asarray(idxs, dtype=float),
+                      np.asarray(tg, dtype=float))
         self.draw()
 
 
