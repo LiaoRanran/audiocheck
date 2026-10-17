@@ -91,9 +91,16 @@ def show(r: dict, quiet: bool = False) -> None:
         r["format"], r["sr"] / 1000, r["bits"], r["seconds"] // 60, r["seconds"] % 60,
         r["size_mb"], r["channels"], "" if not r.get("kbps") else "  ≈%d kbps" % r["kbps"]))
     if r.get("cutoff_hz"):
-        print("      带宽  截止 %.2fkHz（奈奎斯特 %.1fkHz，占 %.0f%%）%s" % (
+        # 判定边界余量（2026-10-17）：带宽等级没有过渡带，贴着线时结论会跨级。
+        # **门限没动**，只是把"离线多远"印出来——看得见才谈得上诚实。
+        mg = r.get("bandwidth_margin") or {}
+        mg_txt = ("  ｜ 距「%s」线 %.2fkHz（%.1f%%）"
+                  % (mg["line_label"], abs(mg["delta_khz"]), abs(mg["delta_pct"] or 0.0))
+                  if mg else "")
+        print("      带宽  截止 %.2fkHz（奈奎斯特 %.1fkHz，占 %.0f%%）%s%s" % (
             r["cutoff_khz"], r["sr"] / 2000, (r.get("cutoff_ratio") or 0) * 100,
-            "" if not r.get("brickwall_db_per_oct") else "  砖墙 %.0fdB/oct" % r["brickwall_db_per_oct"]))
+            "" if not r.get("brickwall_db_per_oct") else "  砖墙 %.0fdB/oct" % r["brickwall_db_per_oct"],
+            mg_txt))
     print("      电平  峰值 %s ｜ RMS %s ｜ DR %s ｜ 削波 %s" % (
         _fmt(r.get("peak_dbfs")), _fmt(r.get("rms_dbfs")), _fmt(r.get("dr_db")), _fmt(r.get("clip_pct"))))
     if r.get("lufs") is not None:

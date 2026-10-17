@@ -133,6 +133,44 @@ def axis_bandwidth(fs: int, cutoff_hz: float | None, brickwall_db_per_oct: float
     return "warn", "半 Hi-Res（内容 %.1fkHz / 容器 %.1fkHz）" % (k, fs / 1000), conf
 
 
+# ============================================================ 带宽判定边界余量
+def bandwidth_margin(fs: int, cutoff_hz: float | None, th) -> dict | None:
+    """带宽轴**离最近一条判定线多远**（kHz 与 %）。
+
+    为什么要有它（2026-10-17 接手时补）：带宽等级是一条 `if k >= 门限` 的链，
+    相邻两级之间**没有过渡带**——真实曲库实测：96k 的「伪 Hi-Res / 半 Hi-Res」
+    两档在谱上只差约 2 dB（24–30 kHz：−44.4 vs −42.0 dB），判定却跨两级，
+    全压在 `hi_ok=24.5` 上。
+
+    **门限一个都没动**（拿一份曲库去调参是不允许的，见 `AGENTS.md` §3.4；
+    要做对需要**独立标注**）。这里只做**披露**：把"离分界多远"量出来，
+    让"贴着线"的结论自己露出来，而不是假装它很确定。
+
+    返回 None 表示无从计算（没有截止点）。**刻意不设"敏感/不敏感"的二元判据**
+    ——那需要一个新的门限，而新门限必须有出处；这里只报测量值。
+    """
+    if cutoff_hz is None:
+        return None
+    k = cutoff_hz / 1000.0
+    nyq = fs / 2.0
+    if fs <= th.fs_44_container:
+        lines = [(th.cd_full, "CD 级满带宽"), (th.ltd, "轻微带限"),
+                 (th.lossy, "有损溯源")]
+    elif fs <= th.fs_48_container:
+        lines = [(th.full_48, "真 48kHz"), (th.up_44, "疑似 44.1kHz 升频"),
+                 (th.ltd, "带宽偏窄"), (th.lossy, "有损溯源")]
+    else:
+        lines = [(th.hi_ok, "伪 Hi-Res"), (th.hi_ratio * nyq / 1000.0, "真 Hi-Res")]
+    line_khz, label = min(lines, key=lambda kv: abs(k - kv[0]))
+    delta = k - line_khz
+    return {
+        "line_khz": round(line_khz, 2),
+        "line_label": label,
+        "delta_khz": round(delta, 2),
+        "delta_pct": round(100.0 * delta / line_khz, 2) if line_khz else None,
+    }
+
+
 # ============================================================ 轴二：位深保真
 def axis_bitdepth(r: dict, th) -> tuple[str, str]:
     """位深轴。用 codec/bitdepth 的结论核对容器标称。
@@ -369,6 +407,9 @@ class VerdictAnalyzer(Analyzer):
                              for name, lv, t, d in axes},
             "phenomena": phenomena,              # C4.4：同一份现象层的列表形态
             "bandwidth_confidence": conf,
+            # 判定边界余量（2026-10-17）：带宽等级没有过渡带，这里披露"离最近
+            # 一条判定线多远"——**门限没动**，动的是可见性。见 bandwidth_margin。
+            "bandwidth_margin": bandwidth_margin(ctx.fs, r.get("cutoff_hz"), th),
         }
         cc = cross_checks(r, ctx.fs, r.get("cutoff_hz"), th)
         if cc:

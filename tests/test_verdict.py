@@ -18,6 +18,7 @@ from audiocheck.core.analyzers.verdict import (
     axis_channels,
     axis_dynamics,
     axis_level,
+    bandwidth_margin,
     cross_checks,
 )
 
@@ -363,3 +364,42 @@ class TestSilentDegradationsAreFixed:
                 {"file": "b.wav", "path": "/x/b.wav", "sr": 44100}]   # 没有 level = 未判定
         md = summarize.build(rows)
         assert "未判定" in md, "汇总没有单列未判定：\n%s" % md
+
+
+# ============================================================ 判定边界余量（2026-10-17）
+def test_margin_points_to_nearest_line_44k():
+    m = bandwidth_margin(44100, 16000.0, TH)      # 16.0 kHz 正落在 lossy 线上
+    assert m["line_label"] == "有损溯源"
+    assert m["delta_khz"] == 0.0 and m["delta_pct"] == 0.0
+
+
+def test_margin_hi_res_points_to_hi_ok():
+    """96k 容器、内容 24.0 kHz ⇒ 最近线是 `hi_ok=24.5`（差 −0.5 kHz / −2.04%）。
+
+    这正是真实曲库暴露的脆弱点：伪/半 Hi-Res 只差约 2 dB 谱电平，
+    判定却跨两级、全压在这一个门限上。余量把这件事印出来（**门限没动**）。
+    """
+    m = bandwidth_margin(96000, 24000.0, TH)
+    assert m["line_khz"] == 24.5 and m["line_label"] == "伪 Hi-Res"
+    assert m["delta_khz"] == -0.5 and m["delta_pct"] == -2.04
+
+
+def test_margin_hi_res_true_side_uses_ratio_line():
+    """内容 41 kHz / 96k ⇒ 奈奎斯特 48k，`hi_ratio` 线 = 0.85×48 = 40.8 kHz。"""
+    m = bandwidth_margin(96000, 41000.0, TH)
+    assert m["line_label"] == "真 Hi-Res"
+    assert abs(m["line_khz"] - 40.8) < 0.05
+
+
+def test_margin_none_without_cutoff():
+    assert bandwidth_margin(44100, None, TH) is None
+
+
+def test_margin_is_disclosure_not_a_threshold():
+    """**纪律**：余量只报测量值，不许引入"敏感/不敏感"的二元判词。
+
+    若将来想加"距线 <3% 判敏感"，那是一个**新门限**——必须有出处（§3.4）。
+    这条钉住"当前只有数，没有判词"：字段集合就是四个测量项。
+    """
+    m = bandwidth_margin(96000, 24000.0, TH)
+    assert set(m) == {"line_khz", "line_label", "delta_khz", "delta_pct"}
