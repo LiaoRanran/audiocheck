@@ -195,6 +195,24 @@ def test_loudness_honours_explicit_true_peak_sentinel(tmp_path):
     assert auto.get("true_peak_dbfs") is not None, auto
 
 
+def test_lra_requires_at_least_four_short_term_blocks(tmp_path):
+    """★ LRA 守卫边界：短时块 **≥4** 才算 LRA（`dsp.loudness` 里 `st_ms.shape[0] >= 4`）。
+
+    短时块 = 3s 窗 / 1s 步（`w=30`、`step_ms` 按 100ms 步）⇒
+    - 时长 **3.2 s** ⇒ 短时块 3 个 ⇒ `lra is None`（样本太少不下结论）；
+    - 时长 **3.35 s** ⇒ 短时块恰好 **4** 个 ⇒ `lra` 有值。
+
+    把守卫的 `>=` 改成 `>` 会让"恰好 4 块"的文件**丢掉 LRA**（安静地少一个指标）。
+    """
+    for secs, has in ((3.2, False), (3.35, True)):
+        n = int(FS * secs)
+        t = np.arange(n) / FS
+        x = 0.4 * np.sin(2 * np.pi * 200 * t)
+        r = dsp.loudness(_write(tmp_path, x), FS, 2, n)
+        assert (r.get("lra") is not None) is has, \
+            "%.2fs 的 lra=%r（期望 has=%s）" % (secs, r.get("lra"), has)
+
+
 # ---------------------------------------------------------------------- DR
 def test_dr_matches_analytical(tmp_path):
     """30 秒大幅 + 30 秒小幅，各占整数个 3 秒块 → DR 可手算。

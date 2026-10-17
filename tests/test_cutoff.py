@@ -119,6 +119,21 @@ def test_smooth_log_axis_vectorized_matches_pointwise():
                           _smooth_log_axis_pointwise(f, y, 6.0))
 
 
+def test_smooth_vectorized_preserves_input_dtype():
+    """★ 向量版对 float32 输入必须**回 float32**（保持输入 dtype）。
+
+    钉住 `out.astype(y.dtype, copy=False) if y.dtype != np.float64 else out`：
+    把 `!=` 改成 `==` ⇒ float32 输入会**原样返回 float64**（dtype 静默变宽，
+    下游缓存 / 绘图缓冲跟着翻倍）——而这条此前无覆盖（上面的 oracle 用的是 float64）。
+    """
+    from audiocheck.core.analyzers.spectrum import _smooth_log_axis
+
+    f = np.geomspace(20.0, 22050.0, 8193)
+    y32 = np.random.default_rng(0).random(8193).astype(np.float32)
+    assert _smooth_log_axis(f, y32, 6.0).dtype == np.float32
+    assert _smooth_log_axis(f, y32.astype(np.float64), 6.0).dtype == np.float64
+
+
 def test_smooth_power_flat_spectrum_returns_the_same_db():
     """功率域平滑的 dB 刻度必须是标准的 **10·log10**（否则"dB"就不是 dB）。
 

@@ -250,7 +250,7 @@ python packaging/palette_report.py         # 对照度报告 + 色卡 PNG
 | **自由线程解释器** | `sys._is_gil_enabled()` 为 False，纯 Python 慢 ~70% | 性能基准绝对值必须标环境 |
 | **`FindChildren` 找不到卡片** | 指标卡只在有分析结果后才创建 | 离屏诊断先喂数据跑一遍分析 |
 | **`--list` 清单带 UTF-8 BOM** | PowerShell `Out-File -Encoding utf8` 默认写 BOM ⇒ BOM 留在**第一行**路径上 ⇒ 该文件**静默消失**（实测：6 个文件只分析出 5 个） | CLI 已改 `utf-8-sig`；造清单用 `[IO.File]::WriteAllLines()`（无 BOM） |
-| **路径超过 Windows MAX_PATH（260）** | 日文长专辑名 + 长曲名很容易超；`os.path.isfile` 为 False ⇒ 文件**静默消失**（库里实测 2 个 268 字符的 wav） | CLI 的 `_warn_uncollected()` 会把这类目标**打印出来**。修 MAX_PATH 本身需 `\\?\` 贯穿（**未做**，libsndfile 是否接受未验证） |
+| **路径超过 Windows MAX_PATH（260）** | 日文长专辑名 + 长曲名很容易超；`os.path.isfile` 为 False ⇒ 文件**静默消失**（库里实测 2 个 268 字符的 wav） | **已修**（2026-10-17）：`\\?\` 前缀贯穿收录与读取（实测被 libsndfile / `open` / `mutagen` / `os.walk` 接受），见 `core/context.io_path`；`collect_files`/`analyze`/`views` 三处调用。CLI 的 `_warn_uncollected()` 仍兜底提示。**非 Windows 零影响** |
 | **PowerShell 的 `[` `]` 是通配符** | `Get-ChildItem -Include/-Filter` 会**静默漏掉**名字里带方括号的目录/文件（实测：405 个 flac 只找到 2 个） | 用 `-LiteralPath` + `Where-Object { $_.Extension -in ... }` 过滤扩展名 |
 | **截断的音频"能打开"** | 下载没下全的 FLAC：头部 STREAMINFO 照旧声称满长、`sf.info()` 也返回满长，**读到一半才失败**；结论会拿部分内容算 | `basic` 已产出 `read_incomplete` + 可读的"疑似截断"说明；**别**只看 `sf.info()` 判断文件是否完好 |
 | **打包"成功"但 exe 一启动就退** | 相对导入 / spec excludes / hiddenimports 列错 | 见 `../接手提示词.md` §4 第 5/6/7 条；**构建后必须真启动一次** |
@@ -265,14 +265,18 @@ git --no-pager log --oneline -5          # 最新提交
 python -m pytest -q 2>&1 | tail -1       # 用例数
 ```
 
-交接时的实测快照（**2026-10-13，可能已过期**）：
+交接时的实测快照（**2026-10-17**，用前请按上面的命令重新核实）：
 
-- audiocheck：32 提交、269 用例、ruff 干净；A 块（图表缩放/平移/图例开关）已完成
-- 进行中的路线图（用户拍板 **A→B→C 逐块交付**）：
-  **B 材质纹理（中档）+ 排版** ← 下一步；**C 内核智能性**（四个方向，
-  **文献债未补，补不到就不定阈值**）
+- audiocheck：**690 用例全绿、ruff 全树干净**（`ruff check src tests packaging`）；提交历史见 `git log`
+- 本轮（夜间大包）完成：`detect_cutoff` v4.1 精度（合成标定最大误差 **25%→1.3%**，
+  `docs/theory.md §1.6`）、Windows **MAX_PATH** 修复（收录 448/450→**450/450**）、
+  matplotlib 警告、编码器截止表取到**一手来源** + 母带痕迹找到同行评审锚点、
+  真实曲库 448 文件复核（**只换 cutoff 实现**对照实测 **55/448 改档**；新分布
+  **ok 78 ｜ warn 227 ｜ bad 143**）
+- 进行中的路线图（用户拍板 **A→B→C 逐块交付**）：B 材质纹理 + 排版 → **C 内核智能性**
+  （四方向文献债状态见 `docs/research.md §4`；**补不到就不定阈值**）
 - 活文档：`../接手提示词.md`（状态/欠账/环境坑）、`docs/research.md`（取证状态）、
-  `CHANGELOG.md`（每轮量到的数字，含难看的那些）
+  `docs/thresholds.md`（每阈值出处账）、`CHANGELOG.md`（每轮量到的数字，含难看的那些）
 
 ---
 

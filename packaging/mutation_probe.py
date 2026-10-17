@@ -59,11 +59,15 @@ TARGETS: dict[str, list[str]] = {
         "tests/test_truepeak.py", "tests/test_timeline_loudness.py"],
 }
 
-#: 变异分数下限。**两次更正，都写在这里免得后人再踩**：
+#: 变异分数下限。**三次更正，都写在这里免得后人再踩**：
 #:  ① 首轮记的 **0.524** 是 `--max-seconds 300` 的**部分**结果，而且当时那轮会被
 #:     一个让实现**非终止**的变异体挂死（见 `_run_subset` 的超时注释）。
 #:     修好量具、跑满全部候选后，**首个可复算的完整基线 = 0.390**（30/77，47 存活）。
 #:  ② 补齐测试缺口后 **0.946**（53/56，3 存活；见 CHANGELOG 2026-10-16 轮）。
+#:  ③ **2026-10-17**：`_smooth_log_axis` 向量化 + `detect_cutoff` v3.1 两次改源码把
+#:     行号推后 ⇒ 白名单**过期**，分数假跌到 **0.760**（18"存活"里 16 条其实是等价）。
+#:     重新对齐行号 + 补 2 条测试（float32 dtype、LRA 四块边界）后 = **1.000**（59/59）。
+#:     ⚠ 教训：**行号键会漂**——改被覆盖的源码后必须重跑并核对行号，别把假跌当"测试差"。
 #: 下限取 0.90 留一点余量；**想再往上压，必须先填掉报告里列出的"测试缺失"**。
 MIN_SCORE = 0.90
 
@@ -72,6 +76,11 @@ MIN_SCORE = 0.90
 #: ⚠ 纪律：这里**不许塞"我懒得测"的条目**。每条理由要么是**可证明的**（如
 #: "kernel 在分子分母同比出现 ⇒ 比值不变"），要么是**在可达域上不可区分**
 #: 并写清那个域（如 "f[0]=0 时两版都跳过"）。但凡多一个反例就不属于这里。
+#:
+#: ⚠⚠ **键里的行号是快照，源文件一改动就整体漂移**（本轮实锤：`_smooth_log_axis`
+#: 向量化 + `detect_cutoff` v3.1 两次改动把行号推后 12–26 行 ⇒ 一批**本该等价**的
+#: 变异体被判成"存活"、分数从 0.946 掉到 0.760）。**改动被这些源码后必须重跑本探针
+#: 并核对行号**——否则分数是假的（低不是"测试差"，是"白名单过期"）。
 EQUIVALENT: dict[str, str] = {
     "src/audiocheck/core/dsp.py:30:const:4096->4097":
         "TP_OVERLAP 是真峰值分段的重叠采样数，±1 只挪动分段边界；取最大值的中段不变。",
@@ -80,65 +89,75 @@ EQUIVALENT: dict[str, str] = {
     "src/audiocheck/core/analyzers/spectrum.py:17:const:6.0->9.0":
         "`_smooth_log_axis` 的 `fraction` 默认值**从不被使用**——两个调用方 "
         "(`smooth_log`/`smooth_power`) 都显式传入自己的 `fraction`。",
-    # --- 2026-10-16 变异轮：以下 12 条经核查为等价（每条都写了"为什么"）---
-    "src/audiocheck/core/analyzers/spectrum.py:22:cmp:<=-><":
+    # --- 2026-10-16 变异轮：以下经核查为等价（每条都写了"为什么"）---
+    "src/audiocheck/core/analyzers/spectrum.py:51:cmp:<=-><":
         "`if fc <= 0: continue`：频点网格 f[0]=0、其余为正。fc=0 时窗口内点数 =1 <2，"
         "两版都不更新 out[i] ⇒ 在可达域（f ≥ 0）上逐位相同。",
-    "src/audiocheck/core/analyzers/spectrum.py:24:cmp:>=->>":
+    "src/audiocheck/core/analyzers/spectrum.py:53:cmp:>=->>":
         "log 轴平滑的窗界 `f >= fc/ratio`：某频点**恰好等于** fc/ratio 的概率为 0"
         "（ratio 是无理数、频点有限）⇒ 不可区分。",
-    "src/audiocheck/core/analyzers/spectrum.py:24:cmp:<=-><":
+    "src/audiocheck/core/analyzers/spectrum.py:53:cmp:<=-><":
         "同上：`f <= fc*ratio` 的边界相等不可达 ⇒ 不可区分。",
-    "src/audiocheck/core/analyzers/spectrum.py:45:bin:+->-":
+    "src/audiocheck/core/analyzers/spectrum.py:74:bin:+->-":
         "`ps + 1e-20` → `ps - 1e-20`：1e-20 只为避免 log10(0) 下溢；可达谱的最低功率"
         "≫ 1e-20（合成语料 floor −90 dB ⇒ ps ≈1e-9）⇒ 数值不变。",
-    "src/audiocheck/core/analyzers/spectrum.py:88:bin:*->/":
+    "src/audiocheck/core/analyzers/spectrum.py:129:bin:*->/":
         "`floor_hz = max(min_hz*2, 100)`：默认 min_hz=20 ⇒ 40 与 10 都被 max(·,100) "
         "主导 ⇒ 结果逐位相同。（min_hz>50 时会分叉，但那不是本项目任何语料/配置的取值。）",
-    "src/audiocheck/core/analyzers/spectrum.py:102:cmp:>->>=":
+    "src/audiocheck/core/analyzers/spectrum.py:143:cmp:>->>=":
         "`while cur > floor_hz`：cur 是 nyq 沿 2^(1/12) 的几何序列，恰好等于 100 只会在"
         "多走一步后立即又退出 ⇒ 结果不变。",
-    "src/audiocheck/core/analyzers/spectrum.py:104:cmp:>->>=":
+    "src/audiocheck/core/analyzers/spectrum.py:145:cmp:>->>=":
         "同上（内层同一条件的 while）⇒ 结果不变。",
-    "src/audiocheck/core/analyzers/spectrum.py:106:cmp:>=->>":
+    "src/audiocheck/core/analyzers/spectrum.py:147:cmp:>=->>":
         "`if hi_f - cur >= cur*0.04`：这是「上方有没有可用频段」的门槛，恰好相等的浮点"
         "情形概率为 0 ⇒ 不可区分。",
-    "src/audiocheck/core/analyzers/spectrum.py:123:cmp:>=->>":
+    "src/audiocheck/core/analyzers/spectrum.py:167:cmp:>=->>":
         "陡度守卫 `pass_lvl - floor_lvl >= min_stop_db`：两侧电平是连续浮点，恰好相差"
         "等于 20.0 dB 的概率为 0 ⇒ 不可区分。",
-    "src/audiocheck/core/analyzers/spectrum.py:138:cmp:>=->>":
+    "src/audiocheck/core/analyzers/spectrum.py:193:cmp:>=->>":
         "`if raw[i] >= thr`：raw[i] 恰好等于 thr（(pass+floor)/2）的概率为 0 ⇒ 不可区分。",
-    "src/audiocheck/core/analyzers/spectrum.py:152:cmp:>->>=":
-        "`j1 > j0` vs `>=`：j1 == j0 时（cut 逼近奈奎斯特）两版都返回 0.0；"
-        "j1 < j0 不可能（min(cut*2, nyq) ≥ cut）⇒ **可证明等价**。",
-    "src/audiocheck/core/analyzers/spectrum.py:140:cmp:>=->>":
+    "src/audiocheck/core/analyzers/spectrum.py:195:cmp:>=->>":
         "`if run >= need` vs `> need`：两者定位的**是同一条连续段的上端**——"
         "run 多计 1 点时 i 恰好少 1，而 `j0 = i + need - 1` 在两个版本里取到同一个"
         "索引（(i-1)+(need+1)-1 == i+need-1）⇒ **可证明等价**。",
-    "src/audiocheck/core/analyzers/spectrum.py:148:cmp:<-><=":
+    "src/audiocheck/core/analyzers/spectrum.py:203:cmp:<-><=":
         "`if cut < min_hz: return None`：cut 是频点值，恰好等于 20.0（min_hz）的概率"
         "为 0 ⇒ 不可区分。",
-    "src/audiocheck/core/analyzers/spectrum.py:180:cmp:<-><=":
-        "`peak < -60.0` vs `<=`：峰值恰好等于 −60.0 dBFS 的概率为 0 ⇒ 不可区分"
-        "（这一条**守卫本身**已由 `test_silent_material_is_not_analyzed_as_content` 钉住）。",
-    "src/audiocheck/core/analyzers/spectrum.py:171:const:30->31":
+    "src/audiocheck/core/analyzers/spectrum.py:207:cmp:>->>=":
+        "`j1 > j0` vs `>=`：j1 == j0 时（cut 逼近奈奎斯特）两版都返回 0.0；"
+        "j1 < j0 不可能（min(cut*2, nyq) ≥ cut）⇒ **可证明等价**。",
+    "src/audiocheck/core/analyzers/spectrum.py:226:const:30->31":
         "`SpectrumAnalyzer.order`：order 只决定调度**排序**，不参与结果（依赖由 `requires` "
         "表达）。现有 order 集合为 {5,10,15,30,40,41,42,45,60,86,88,89,90}，30 与 31 "
         "之间没有别的分析器 ⇒ 排序结果逐位不变。",
+    "src/audiocheck/core/analyzers/spectrum.py:235:cmp:<-><=":
+        "`peak < -60.0` vs `<=`：峰值恰好等于 −60.0 dBFS 的概率为 0 ⇒ 不可区分"
+        "（这一条**守卫本身**已由 `test_silent_material_is_not_analyzed_as_content` 钉住）。",
+    # --- 2026-10-17（夜间大包）新增：v3.1 引入的分支 + 向量化守卫 ---
+    "src/audiocheck/core/analyzers/spectrum.py:31:cmp:<-><=":
+        "向量化守卫 `if f.size < 2 ...` → `<= 2`：**f.size == 2 时两条路径输出逐点相同**"
+        "（实测：单调/非单调 × 不同量级，向量版与 `_smooth_log_axis_pointwise` 全部一致）"
+        "⇒ 在 size==2 这个唯一分叉域上不可区分；而生产网格 f.size ≥ 数百（16384-FFT）"
+        "⇒ 边界本身也不可达。",
+    "src/audiocheck/core/analyzers/spectrum.py:187:cmp:>->>=":
+        "`if jl2 > jl` → `>=`：这是 v3.1 通带窗 `[coarse/2.56, coarse/1.6]` 的『窗内有点』"
+        "守卫。实测 df=fs/16384 下该窗点数：96k@coarse=100 Hz 最少 **4 点**（44.1k 为 8）"
+        "⇒ `jl2 == jl`（零/一点窗）**在整个可达域（coarse ≥ 100 Hz）不可达** ⇒ 不可区分。",
     "src/audiocheck/core/dsp.py:60:cmp:>->>=":
         "`keep = lv > ABS_GATE`：lv 是连续浮点 dB，恰好等于 −70.0 的概率为 0 ⇒ 不可区分。",
     "src/audiocheck/core/dsp.py:64:cmp:>->>=":
         "`keep &= (lv > rel)`：同上，与相对门限恰好相等的概率为 0 ⇒ 不可区分。",
-    "src/audiocheck/core/dsp.py:117:cmp:<-><=":
-        "`if si < 4: return {}`：上游 line 76 的 `total < hop*4` 已保证 si ≥ 4 ⇒ 该分支"
+    "src/audiocheck/core/dsp.py:128:cmp:<-><=":
+        "`if si < 4: return {}`：上游 line 87 的 `total < hop*4` 已保证 si ≥ 4 ⇒ 该分支"
         "不可达 ⇒ 等价（下一步已加测试钉住上游守卫本身）。",
-    "src/audiocheck/core/dsp.py:254:bin:+->-":
+    "src/audiocheck/core/dsp.py:265:bin:+->-":
         "`denom = sqrt(...) + 1e-30` → `- 1e-30`：非零 denom 下 1e-30 是无操作"
         "（它只用于防除零）⇒ 不可区分。",
-    "src/audiocheck/core/dsp.py:257:cmp:<-><=":
+    "src/audiocheck/core/dsp.py:268:cmp:<-><=":
         "`min(pL,pR) < max(pL,pR)·10^(−30/10)`：两功率恰好相差正好 30.000 dB 的概率为 0"
         " ⇒ 不可区分。",
-    "src/audiocheck/core/dsp.py:313:bin:/->*":
+    "src/audiocheck/core/dsp.py:324:bin:/->*":
         "`kern = np.ones(w)/w` → `*w`：该核在 ρ̄ 里**同时**出现在分子与分母"
         "（`2Re(mov(ZL·conj ZR)) / (mov(p_l)+mov(p_r))`），同比缩放 ⇒ 比值不变 ⇒ "
         "**可证明**等价。",
