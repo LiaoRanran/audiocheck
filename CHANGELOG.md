@@ -4,6 +4,23 @@
 
 ## [未发布]
 
+### 科研（**C 块文献债补齐**：有损/转码链识别 + 母带处理痕迹各补到同行评审锚点）
+
+- ★ **有损/转码链识别 → 已核**：找到**单次有损的编码参数识别**的同行评审方法——
+  **B. Kim, Z. Rafii. *Lossy Audio Compression Identification*. EUSIPCO 2018**
+  （DOI 10.23919/EUSIPCO.2018.8553611）。更关键的是
+  **Koops, Micchi, Quinton. *Robust Lossy Audio Compression Identification*. ISMIR 2024**
+  （arXiv:2407.21545）**直接印证本项目的立场**：盲检测模型"在测试集近乎完美"是**假象**——
+  它们**依赖训练集的截止频率**、跨参数泛化很差 ⇒ **截止点才是鲁棒的那条信号**，
+  ML 分类器（含本项目已关闭的假 Hi-Res 分类器）容易过拟合。
+- ★ **母带处理痕迹 → 已核**：**E. Vickers. *The Loudness War: Do Louder, Hypercompressed
+  Recordings Sell Better?* JAES 59(5):346–351, 2011**（+ AES Conv. 129, 2010）；
+  **Croghan/Arehart/Kates, JASA 132(2):1177–1188, 2012**。
+  ⚠ 但 **PLR/DR 的判据定义与门限**仍来自行业工具 ⇒ 候选仍工程估计、门限不许升格。
+- 落点：`docs/research.md §4`（两行状态更新 + §4.1 加"外部印证"）+ §5 的 C 块下一步改为
+  "可动阈值"；`docs/thresholds.md` 不变（**门限本身仍未升级**——锚点证明"现象可测"，
+  不等于"门限该取多少"）。
+
 ### 绘图（感知刻度底纹 + 曲线轴同口径 + 色窗缓存；P10 **归因实测**）
 
 - ★ **① 频谱图重绘 —— 先画像（`out/_spec_profile.py`）**：全长 `redraw()` ≈ 507 ms，其中

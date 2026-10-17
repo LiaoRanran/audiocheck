@@ -93,8 +93,8 @@ C 块（内核智能性）四个方向，每一个在加阈值之前都要先有
 
 | 方向 | 需要的文献 | 状态 |
 |---|---|---|
-| 有损/转码链识别 | 有损编码在频谱上留下的**可检测痕迹**（截止点以上的量化噪声形状、心理声学模型造成的"谱孔"）的**同行评审**来源 | **部分已核**（2026-10-16）：**双压缩检测**有同行评审出处——Q. Liu, A. H. Sung, M. Qiao. *Detection of Double MP3 Compression*. Cognitive Computation 2(4):291–296, 2010；R. Yang, Z. Qu, J. Huang. *Detecting Double Compression of Audio Signal*. Proc. SPIE 7541, 75410K, 2010（MDCT 域统计量，转码链候选的**证据方法**）。⚠ 但单次有损的**谱形识别**（谱孔/量化噪声形状直接判码率）**仍未见同行评审的直接判据**——本项目现有证据仍是截止点+砖墙（工程估计） |
-| 母带处理痕迹 | 限幅/压缩的可量化指标（如 PLR、LRA 与响度的关系）的同行评审来源 | **部分已核**（2026-10-17 复查，此前记"仍未清"）：**"重度压缩/限幅会损害听感"这一现象有同行评审锚点**——N. B. Croghan, K. H. Arehart, J. M. Kates. *Quality and loudness judgments for music subjected to compression limiting*. **The Journal of the Acoustical Society of America 132(2):1177–1188, 2012**（ASA 同行评审：不同压缩量下听者的质量/响度判断）。**盲检测/反演**方向亦有文献（如 *Music De-limiter Networks via Sample-wise Gain Inversion*；*Black-Box Optimization for Identifying and Inverting Audio Dynamic Range Control Effects*——多为 arXiv/会议，未逐篇核到正式出处）。⚠ 但 **PLR/DR 作为判据的"指标定义"与门限**仍来自**行业工具**（TT DR 计量、MeterPlugs 等），**不是同行评审**（LRA/PLR 的定义来自 EBU Tech 3342 / TT，那是定义不是判据）⇒ 母带限幅候选保持"工程估计"，门限不许升格 |
+| 有损/转码链识别 | 有损编码在频谱上留下的**可检测痕迹**（截止点以上的量化噪声形状、心理声学模型造成的"谱孔"）的**同行评审**来源 | **已核**（2026-10-17 补）：① **单次有损的编码参数识别有同行评审方法**——B. Kim, Z. Rafii. *Lossy Audio Compression Identification*. **EUSIPCO 2018**（DOI 10.23919/EUSIPCO.2018.8553611；用对内容鲁棒的"压缩痕迹"度量估计编码参数与格式）。② **Koops, Micchi, Quinton. *Robust Lossy Audio Compression Identification*. ISMIR 2024**（arXiv:2407.21545）——**直接印证本项目的立场**：盲检测模型"在测试集近乎完美"是**假象**，它们**依赖训练集的截止频率**、跨参数泛化很差；⇒ **截止点才是鲁棒的那条信号**，ML 分类器（如本项目已关闭的假 Hi-Res 分类器）容易过拟合（见 §4.1）。③ 双压缩检测另有出处（Q. Liu et al. *Detection of Double MP3 Compression*, Cognitive Computation 2(4):291–296, 2010；R. Yang et al. *Detecting Double Compression of Audio Signal*, Proc. SPIE 7541, 75410K, 2010）。⚠ 本项目**未实现** Kim-Rafii 式参数估计（需重构编码帧/参数搜索），仍以**截止点 + 砖墙**为证据 |
+| 母带处理痕迹 | 限幅/压缩的可量化指标（如 PLR、LRA 与响度的关系）的同行评审来源 | **已核**（2026-10-17 补，此前记"仍未清"）：两条同行评审/学会锚点——① **E. Vickers. *The Loudness War: Do Louder, Hypercompressed Recordings Sell Better?* J. Audio Eng. Soc. 59(5):346–351, 2011**（另有同题 AES Conv. 129, 2010 论文）；② **N. B. Croghan, K. H. Arehart, J. M. Kates. *Quality and loudness judgments for music subjected to compression limiting*. JASA 132(2):1177–1188, 2012**（重度压缩/限幅损害听感）。⚠ 但 **PLR/DR 作为判据的"指标定义"与门限**仍来自**行业工具**（TT DR 计量、MeterPlugs 等），**非同行评审**（LRA/PLR 的定义来自 EBU Tech 3342 / TT，那是定义不是判据）⇒ 母带限幅候选保持"工程估计"，门限不许升格 |
 | 立体声真实性 | 上混/假环绕的检测方法；M/S 能量关系 | **已核**（2026-10-16）：T. Liu, D. Yan, R. Wang, N. Yan, G. Chen. *Identification of Fake Stereo Audio Using SVM and CNN*. **Information 12(7):263, 2021**（MDPI，同行评审；假立体声识别）；S. Kraft, U. Zölzer. *Stereo Signal Separation and Upmixing by Mid-Side Decomposition in the Frequency-Domain*. DAGA 2015（M/S 上混的正向模型）。⇒ 本项目的"相关极高+侧向能量极低"判据有了同行评审锚点；门限仍工程估计 |
 | 假 Hi-Res 系统化 | 上采样识别的可复算判据 | **C3 已试并关闭**（2026-10-15）：NYCU 2017 的差分对数谱特征 + 自实现逻辑回归，在本项目自建合成验证集上训练准确率 0.875 但**测试集（跨内容类型）误报率 0.722**——不构成 `cutoff_hz` 之外的增量且不泛化。真正起判别作用的是"22 kHz 以上有没有真实能量"，而那一项截止点已在测。代码与验证脚本保留（`packaging/fakehires_eval.py`、`analyzers/fakehires.py`，默认关）；要重开须先有**真实曲库**上的误报率证据 |
 
@@ -121,6 +121,11 @@ C 块（内核智能性）四个方向，每一个在加阈值之前都要先有
 "它不比截止点强、且分布与类别无关"，**不能说**"分类器准确率是多少"。
 详见 `docs/real_library.md` §4 缺陷 4（含为何不做数据调参）。
 
+★ **外部印证（2026-10-17 补）**：Koops, Micchi, Quinton（ISMIR 2024，见 §4 表）证明盲检测模型
+"在测试集近乎完美"是**假象**——它们**依赖训练集的截止频率**、跨参数泛化极差。这与我方在
+**真实曲库**上的实测（上表两组分布几乎重合、无区分力）**同向**。⇒ 关闭该功能**有外部依据**，
+不只是"我们这一份曲库不行"。
+
 ---
 
 ## 5. 下一步（按用户拍板的 A→B→C）
@@ -132,7 +137,9 @@ C 块（内核智能性）四个方向，每一个在加阈值之前都要先有
   所以"缩放 120 ms"这个数字目前不可复算，这是本轮留下的记账缺口。
 - **B（下一轮）**：材质（中档）+ 排版（按 §2.1 的 clreq 结论逐条过）。
   材质前先立基准——第五轮已经示范过"先量再上"。
-- **C（再下一轮）**：先补 §4 的文献债，再动阈值。补不到的方向明确写"不做判据"。
+- **C（再下一轮）**：§4 的四方向文献债**已补到"有同行评审锚点"**（2026-10-17：有损/转码链、
+  母带痕迹各补到出处）⇒ **下一步可动阈值**——但仍守 §3.4（先过区分力检验）与
+  "判据门限不许凭空升格"（锚点证明的是**现象可测**，不是**门限该取多少**）。
 
 ### 本轮实测到的三条（都比引用可靠，但要注意口径）
 
