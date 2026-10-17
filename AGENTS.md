@@ -267,12 +267,12 @@ python -m pytest -q 2>&1 | tail -1       # 用例数
 
 交接时的实测快照（**2026-10-17**，用前请按上面的命令重新核实）：
 
-- audiocheck：**690 用例全绿、ruff 全树干净**（`ruff check src tests packaging`）；提交历史见 `git log`
+- audiocheck：**692 用例全绿、ruff 全树干净**（`ruff check src tests packaging`）；提交历史见 `git log`
 - 本轮（夜间大包）完成：`detect_cutoff` v4.1 精度（合成标定最大误差 **25%→1.3%**，
   `docs/theory.md §1.6`）、Windows **MAX_PATH** 修复（收录 448/450→**450/450**）、
   matplotlib 警告、编码器截止表取到**一手来源** + 母带痕迹找到同行评审锚点、
-  真实曲库 448 文件复核（**只换 cutoff 实现**对照实测 **55/448 改档**；新分布
-  **ok 78 ｜ warn 227 ｜ bad 143**）
+  真实曲库 448 文件复核（**只换 cutoff 实现**对照实测 **55/448 改档**；全量 450 文件
+  新分布 **ok 78 ｜ warn 229 ｜ bad 143**）
 - 进行中的路线图（用户拍板 **A→B→C 逐块交付**）：B 材质纹理 + 排版 → **C 内核智能性**
   （四方向文献债状态见 `docs/research.md §4`；**补不到就不定阈值**）
 - 活文档：`../接手提示词.md`（状态/欠账/环境坑）、`docs/research.md`（取证状态）、

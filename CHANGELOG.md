@@ -33,6 +33,8 @@
   `display_path()`（剥前缀）。`collect_files` 用 `io_path` 探测/遍历、返回**剥净的普通
   路径**；`analyze`/`AnalysisContext` 只在**真正读文件时**换成 `io_path`；`views.py`
   的三个读点同步。⇒ 收录数 **450/450**，且结果里的 `path` 仍是干净路径。
+  **终局全跑真实曲库 450/450、0 error**：2 个 268 字符文件拿到正常结论
+  （`level=warn`，cutoff 20.84 / 21.04 kHz，44.1k）。
 - 新增 `tests/test_paths.py`（7 条，含 Windows 真造 >260 路径的端到端）。
 - 非 Windows 零影响（`io_path` 原样返回）。
 
@@ -77,7 +79,7 @@
     某 96k 曲 **35.13 → 23.78 kHz**）。
   这是**修正在起作用**：旧值把 96k 内容截止点报得虚高 ⇒ 误判"真 Hi-Res"；
   新值更接近真值（合成标定 ≤1.3%）。**口径变更记账**：`docs/theory.md §1.6`、
-  `docs/real_library.md` 更新为新分布（**ok 78 ｜ warn 227 ｜ bad 143**）。
+  `docs/real_library.md` 更新为新分布（全量 450 文件：**ok 78 ｜ warn 229 ｜ bad 143**）。
 - **实测**（250 Hz 步长扫 [6000,21000]）：最大相对偏差 **25.0% → 1.27%**、
   最大跨采样率散布 **10.2% → 0.69%**。
 - **属性测试收紧**：`test_cutoff_consistent_across_sample_rates` 从
