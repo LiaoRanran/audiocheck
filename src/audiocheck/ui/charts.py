@@ -10,6 +10,8 @@ import matplotlib
 import numpy as np
 
 matplotlib.use("QtAgg")
+# 频率刻度变换（log/linear/Bark/Mel/ERB）——**一处数学**在 core/scales.py。
+# 必须在类定义之前导入：`BaseCanvas.freq_scale` 的默认值在类体里求值。
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg  # noqa: E402
 from matplotlib.figure import Figure  # noqa: E402
 from matplotlib.gridspec import GridSpec  # noqa: E402
@@ -25,7 +27,10 @@ from PySide6.QtWidgets import (  # noqa: E402
     QWidget,
 )
 
+# 频率刻度变换（log/linear/Bark/Mel/ERB）——**一处数学**在 core/scales.py。
+# 必须在类定义之前导入：`BaseCanvas.freq_scale` 的默认值在类体里求值。
 from ..config import BAND_CN, BANDS  # noqa: E402
+from ..core import scales as _scales  # noqa: E402
 from . import palette as P  # noqa: E402
 from . import theme as T  # noqa: E402
 from . import zoom as Z  # noqa: E402
@@ -442,9 +447,26 @@ class BaseCanvas(FigureCanvasQTAgg):
         """
         return False
 
+    #: 频率轴刻度（E 轮"换刻度"）：只对**带频率轴**的画布有意义，
+    #: 其余画布继承了这个属性也不用（`set_freq_scale` 调了等于只重画一次）。
+    freq_scale = _scales.DEFAULT
+
+    def set_freq_scale(self, name: str) -> None:
+        """切换频率轴刻度：`log` / `linear` / `bark` / `mel` / `erb`。
+
+        **幂等**（同值不重画）；**未知名字回落默认**而不是抛异常——
+        一个拼错的名字不该让整块画布白掉。缓存键里含 `freq_scale`，
+        所以换刻度后必然重算（不会画出旧刻度的缓存）。
+        """
+        name = name if _scales.is_known(name) else _scales.DEFAULT
+        if name == self.freq_scale:
+            return
+        self.freq_scale = name
+        self._rs_key = None            # 子类若用 _rs_key 缓存，这里再兜一层
+        self.redraw_if_visible()
+
     def redraw_if_visible(self):
         """看得见就立刻画，看不见只标脏。
-
         画布在 QStackedWidget 里，同一时刻**只有一页可见**（实测
         `isVisible()`：切换前 6 张全 False，切到频谱图后才 1 张 True）。
         而一次重绘在本机要 90–370 ms（频谱图 90、瀑布图 370，见
@@ -590,14 +612,19 @@ def _freq_axis_ticks(f_max: float) -> tuple[list[float], list[float]]:
     return majors, minors
 
 
-def _apply_freq_axis(ax, f_max: float, p) -> None:
-    """把对数频率轴的刻度/标签/次刻度装到 `ax` 上（频谱图与瀑布图共用一处，
-    不许两份——此前这段代码在两个画布里各抄了一遍）。"""
+def _apply_freq_axis(ax, f_max: float, p, scale: str = _scales.DEFAULT) -> None:
+    """把频率轴的刻度/标签/次刻度装到 `ax` 上（频谱图与相位场共用一处，
+    不许两份——此前这段代码在两个画布里各抄了一遍）。
+
+    `scale` 决定**刻度值**（log10 / Bark / Mel / ERB / 线性）：标签永远是 Hz
+    （读者要看的是频率，不是 Bark 数），但**位置**按所选刻度铺开。
+    """
+    fwd = _scales.get(scale)[0]
     majors, minors = _freq_axis_ticks(f_max)
-    ax.set_yticks([math.log10(v) for v in majors])
+    ax.set_yticks([float(fwd(v)) for v in majors])
     ax.set_yticklabels([_hz_label(v, unit=True) for v in majors],
                        fontsize=p["fs_tick"], color=p["text_dim"])
-    ax.set_yticks([math.log10(v) for v in minors], minor=True)
+    ax.set_yticks([float(fwd(v)) for v in minors], minor=True)
     ax.set_yticklabels([_hz_label(v) for v in minors], minor=True,
                        fontsize=max(6.0, p["fs_tick"] - 1.5), color=p["text_faint"])
     ax.tick_params(axis="y", which="minor", length=2, color=p["text_faint"])
@@ -861,15 +888,15 @@ def _resample_rows(db, f, fl, signed: bool = False):
 
 
 # --------------------------------------------------------------------- Bark 标度
-# Traunmüller (1990) 的解析式：z = 26.81·f/(1960+f) − 0.53。
-# 与 headphone-lab 的 `perceptual.py` 同一套（两个项目各自独立实现，
-# 因为它们是分开的仓库，但口径必须一致，否则跨项目的数字没法对）。
-def bark(f: float) -> float:
-    return 26.81 * f / (1960.0 + f) - 0.53
+# **一处数学**：实现在 `core/scales.py`（与"换刻度"共用同一份）。
+# 早先这里自己写了一份 Traunmüller 解析式，当时与 scales 一致，但两份迟早分叉；
+# 分叉后"临界带线"与"Bark 刻度轴"就会对不上，且没人看得出来。
+bark = _scales.bark          # 直接绑定同一个函数对象（test_scales 钉住 is 同一性）
 
 
 def bark_to_hz(z: float) -> float:
-    return 1960.0 * (z + 0.53) / (26.28 - z)
+    """Bark → Hz。逆变换在 `core/scales.py`，这里只做 float 收口。"""
+    return float(_scales.bark_inv(z))
 
 
 def bark_edges(lo: float = 20.0, hi: float = 20000.0) -> list[float]:
@@ -1329,8 +1356,9 @@ class SpectrogramCanvas(BaseCanvas):
             CURSOR.clear(self)
             return
         t, f, _S = self.data
-        fq = 10.0 ** float(ev.ydata)
-        rows = np.geomspace(20.0, f[-1], self._rs_cache.shape[0])
+        # 游标读数按**当前刻度**反算频率（换刻度后 ydata 不再是 log10）
+        fq = float(_scales.get(self.freq_scale)[1](float(ev.ydata)))
+        rows = _scales.display_grid(f[-1], self._rs_cache.shape[0], self.freq_scale)[0]
         j = int(np.clip(np.searchsorted(rows, fq), 0, len(rows) - 1))
         k = int(np.clip(np.searchsorted(t, float(ev.xdata)), 0, len(t) - 1))
         txt = "%.2fs  %.0f Hz  %.1f dB" % (float(ev.xdata), fq, float(self._rs_cache[j, k]))
@@ -1409,11 +1437,15 @@ class SpectrogramCanvas(BaseCanvas):
         # 而重采样是 2049→360 行的插值，不缓存等于每次白算一遍。
         # ⚠ 键必须含 db_range：换了窗，裁剪界就变，缓存不复用（否则 60dB 窗
         #    会画出 90dB 缓存的数据——看起来"换了没反应"，实则是旧数据）。
-        key = (id(S), RESAMPLE_ROWS, len(t), self.db_range)
+        # E 轮"换刻度"：显示网格在该刻度上等距（log10 / Bark / Mel / ERB / 线性）。
+        # `_resample_rows` 按 searchsorted 取带内峰值，支持任意递增 fl —— 不必改重采样。
+        fl, ylo, yhi = _scales.display_grid(f[-1], RESAMPLE_ROWS, self.freq_scale)
+        # ⚠ 键必须含 db_range 与 **freq_scale**：换了窗/换了刻度，缓存都不能复用
+        #    （否则"换了没反应"，实则是旧数据）。
+        key = (id(S), RESAMPLE_ROWS, len(t), self.db_range, self.freq_scale)
         if self._rs_key != key:
             self._rs_cache = np.clip(
-                _resample_rows(S - np.nanmax(S), f, np.geomspace(20.0, f[-1],
-                                                                 RESAMPLE_ROWS)),
+                _resample_rows(S - np.nanmax(S), f, fl),
                 -self.db_range, 0.0)
             self._rs_key = key
         db = self._rs_cache
@@ -1425,23 +1457,24 @@ class SpectrogramCanvas(BaseCanvas):
             self._vmin = _adaptive_vmin(db, self.db_range)
             self._vmin_key = key
         mesh = ax.imshow(db, aspect="auto", origin="lower",
-                         extent=(t[0], t[-1], math.log10(20.0), math.log10(f[-1])),
+                         extent=(t[0], t[-1], ylo, yhi),
                          cmap=spectro_cmap(), vmin=self._vmin, vmax=0.0, interpolation="nearest",
                          zorder=1)
-        ax.set_ylim(math.log10(20.0), math.log10(f[-1]))
+        ax.set_ylim(ylo, yhi)
         ax.grid(False)
+        _fwd = _scales.get(self.freq_scale)[0]
         for lev in (100, 1000, 10000):
             if lev < f[-1]:
-                ax.axhline(math.log10(lev), color=p["grid"], lw=.6, alpha=.55, zorder=2)
+                ax.axhline(float(_fwd(lev)), color=p["grid"], lw=.6, alpha=.55, zorder=2)
         # 感知刻度（"Bark 底纹"欠账的**线**形态；**换刻度是另一件更大的事**，此处不做）：
         # Bark 临界频带边界线——与频谱曲线共用 `bark_edges`（口径一处）。图上铺一层
         # 极淡的横线，读者才看得出"对数轴上等距的一段，在耳朵里是不是等宽"。
         # 放在图元之上（zorder=2）但**很淡**：给一把尺，不遮内容。
         for e in bark_edges(20.0, float(f[-1]))[1:-1]:
-            ax.axhline(math.log10(e), color=p["grid"], lw=.45, alpha=.28, zorder=2)
-        # 纵轴刻度：位置是 log10(Hz)，标签写 Hz（读起来和原来一样）
+            ax.axhline(float(_fwd(e)), color=p["grid"], lw=.45, alpha=.28, zorder=2)
+        # 纵轴刻度：位置由**当前刻度**决定，标签写 Hz（读起来和原来一样）
         # E 轮轴精度：主刻度带单位 + 次刻度补标签（实现集中在一处，不许两份）
-        _apply_freq_axis(ax, f[-1], p)
+        _apply_freq_axis(ax, f[-1], p, self.freq_scale)
         # B14 精度：披露频率分辨率（Δf = 相邻 bin 间距，从数据直接算，不靠 nperseg 猜）
         # B11-A3：披露**补全到覆盖口径**——全曲 + 显示列宽 + 实际色窗。
         # ★ 显示列宽是 200ms 不是 70ms（E1 实测：2580 原始列被峰值保持压到
@@ -1537,8 +1570,9 @@ class StereoCanvas(BaseCanvas):
             CURSOR.clear(self)
             return
         t, f, _rho = self.data
-        fq = 10.0 ** float(ev.ydata)
-        rows = np.geomspace(20.0, f[-1], self._rs_cache.shape[0])
+        # 游标读数按**当前刻度**反算频率（换刻度后 ydata 不再是 log10）
+        fq = float(_scales.get(self.freq_scale)[1](float(ev.ydata)))
+        rows = _scales.display_grid(f[-1], self._rs_cache.shape[0], self.freq_scale)[0]
         j = int(np.clip(np.searchsorted(rows, fq), 0, len(rows) - 1))
         k = int(np.clip(np.searchsorted(t, float(ev.xdata)), 0, len(t) - 1))
         rv = float(self._rs_cache[j, k])
@@ -1594,28 +1628,30 @@ class StereoCanvas(BaseCanvas):
             self.draw()
             return
         t, f, rho = self.data
-        key = (id(rho), RESAMPLE_ROWS, len(t))
+        # E 轮"换刻度"：与频谱图同一套（显示网格在该刻度上等距）
+        fl, ylo, yhi = _scales.display_grid(f[-1], RESAMPLE_ROWS, self.freq_scale)
+        key = (id(rho), RESAMPLE_ROWS, len(t), self.freq_scale)
         if self._rs_key != key:
-            self._rs_cache = _resample_rows(
-                rho, f, np.geomspace(20.0, f[-1], RESAMPLE_ROWS), signed=True)
+            self._rs_cache = _resample_rows(rho, f, fl, signed=True)
             self._rs_key = key
         mesh = ax.imshow(self._rs_cache, aspect="auto", origin="lower",
-                         extent=(t[0], t[-1], math.log10(20.0), math.log10(f[-1])),
+                         extent=(t[0], t[-1], ylo, yhi),
                          cmap=phase_cmap(), vmin=-1.0, vmax=1.0,
                          interpolation="nearest", zorder=1)
-        ax.set_ylim(math.log10(20.0), math.log10(f[-1]))
+        ax.set_ylim(ylo, yhi)
         ax.grid(False)
+        _fwd = _scales.get(self.freq_scale)[0]
         for lev in (100, 1000, 10000):
             if lev < f[-1]:
-                ax.axhline(math.log10(lev), color=p["grid"], lw=.6, alpha=.55, zorder=2)
+                ax.axhline(float(_fwd(lev)), color=p["grid"], lw=.6, alpha=.55, zorder=2)
         # 感知刻度（"Bark 底纹"欠账的**线**形态；**换刻度是另一件更大的事**，此处不做）：
         # Bark 临界频带边界线——与频谱曲线共用 `bark_edges`（口径一处）。图上铺一层
         # 极淡的横线，读者才看得出"对数轴上等距的一段，在耳朵里是不是等宽"。
         # 放在图元之上（zorder=2）但**很淡**：给一把尺，不遮内容。
         for e in bark_edges(20.0, float(f[-1]))[1:-1]:
-            ax.axhline(math.log10(e), color=p["grid"], lw=.45, alpha=.28, zorder=2)
+            ax.axhline(float(_fwd(e)), color=p["grid"], lw=.45, alpha=.28, zorder=2)
         # E 轮轴精度：与频谱图同一处实现（不许两份）
-        _apply_freq_axis(ax, f[-1], p)
+        _apply_freq_axis(ax, f[-1], p, self.freq_scale)
         # 披露分辨率（与频谱图同口径）——相位场同样吃 STFT 的窗长
         if len(f) > 1:
             ax.text(0.995, 0.02, "Δf ≈ %.3g Hz" % float(f[1] - f[0]), transform=ax.transAxes,

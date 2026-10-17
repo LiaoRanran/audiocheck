@@ -897,5 +897,81 @@ class TestFreqAxisRendered(unittest.TestCase):
         cv.deleteLater()
 
 
+class TestFreqScaleSwitch(unittest.TestCase):
+    """E 轮"换刻度"：换的是**坐标**，不是标签，更不是判据。
+
+    判据都量**画出来的轴**（`get_ylim` / `get_yticks`），不量实现代码——
+    "改了 self.freq_scale 但图没变"必须能被抓住。
+    """
+
+    def _canvas(self):
+        import numpy as np
+        cv = C.SpectrogramCanvas()
+        cv.resize(720, 430)
+        cv.apply_theme(T.plot_palette(T.DARK.p, T.DARK))
+        f = np.geomspace(20.0, 22050.0, 400)
+        t = np.linspace(0.0, 30.0, 240)
+        S = -30.0 - 40.0 * (np.arange(len(f))[:, None] / len(f))
+        cv.set_data({"file": "x.wav"}, (t, f, S))
+        cv.redraw()
+        return cv
+
+    def test_default_is_log(self):
+        import math
+        cv = self._canvas()
+        self.assertEqual(cv.freq_scale, "log")
+        self.assertAlmostEqual(cv.ax.get_ylim()[1], math.log10(22050.0), places=6)
+        cv.deleteLater()
+
+    def test_switching_to_bark_moves_the_axis(self):
+        """Bark 下轴上限必须是 `bark(f_max)`，且 1 kHz 的刻度位置不再是 log10(1000)。
+
+        ⚠ 离屏画布**不可见** ⇒ `set_freq_scale` 按 P7 的约定只标脏、延迟到下一帧；
+        所以这里显式 `redraw()` 完成那一帧（与视觉回归同一手法）。
+        """
+        import math
+        cv = self._canvas()
+        cv.set_freq_scale("bark")
+        cv.redraw()                      # 完成延迟帧（离屏画布不可见）
+        self.assertEqual(cv.freq_scale, "bark")
+        self.assertAlmostEqual(cv.ax.get_ylim()[1], float(C.bark(22050.0)), places=6)
+        self.assertNotAlmostEqual(cv.ax.get_ylim()[1], math.log10(22050.0), places=3)
+        ticks = [float(t) for t in cv.ax.get_yticks()]
+        self.assertTrue(any(abs(t - float(C.bark(1000.0))) < 1e-6 for t in ticks),
+                        "1kHz 的刻度没落在 bark(1000)=%.3f 上：%s" % (float(C.bark(1000.0)), ticks))
+        cv.deleteLater()
+
+    def test_switching_is_idempotent_and_unknown_falls_back(self):
+        cv = self._canvas()
+        cv.set_freq_scale("mel")
+        self.assertEqual(cv.freq_scale, "mel")
+        cv.set_freq_scale("mel")          # 幂等：同值不炸
+        self.assertEqual(cv.freq_scale, "mel")
+        cv.set_freq_scale("bogus")        # 未知名字回落默认，不许抛
+        self.assertEqual(cv.freq_scale, "log")
+        cv.deleteLater()
+
+    def test_every_scale_renders_ticks(self):
+        cv = self._canvas()
+        for name in C._scales.SCALES:
+            cv.set_freq_scale(name)
+            cv.redraw()                  # 完成延迟帧（离屏画布不可见）
+            self.assertGreater(len(cv.ax.get_yticks()), 3, "%s 没画出刻度" % name)
+        cv.deleteLater()
+
+    def test_judgment_layer_does_not_import_display_scales(self):
+        """**纪律**：判定层不许依赖显示刻度——刻度是坐标，不是判据。
+
+        这条挡的是"顺手用 Bark 距离当判据"这类越界：判据一旦跟着显示选项变，
+        同一份文件换个刻度就会得出不同结论，而那是最难发现的一类错误。
+        """
+        import inspect
+
+        from audiocheck.core.analyzers import causes, verdict
+        for m in (verdict, causes):
+            self.assertNotIn("scales", inspect.getsource(m),
+                             "%s 引用了显示刻度模块" % m.__name__)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

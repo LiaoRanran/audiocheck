@@ -26,6 +26,12 @@ FS = 48000
 def _write(tmp_path, x, fs=FS):
     p = tmp_path / "t.wav"
     sf.write(str(p), np.column_stack([x, x]).astype(np.float32), fs, subtype="PCM_16")
+    # ⚠ 2026-10-17：本文件曾**偶发** `FileNotFoundError`，至今**不可复现**（§6 欠账 #7）。
+    # 按"不猜着改"的规矩：不改任何逻辑，只加**可观测性**——写完立刻确认文件在并报大小。
+    # 这样它若再来一次，日志能立刻区分两种成因：
+    #   * 这条断言炸 ⇒ **写没落盘**（测试侧/磁盘/杀软），与产品无关；
+    #   * 断言通过而后面打开时炸 ⇒ **文件在两次调用之间消失**，才可能是产品侧。
+    assert p.exists(), "sf.write 返回后文件却不存在：%s" % p
     return str(p)
 
 

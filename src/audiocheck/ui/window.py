@@ -234,6 +234,9 @@ class MainWindow(FramelessWindow):
             app.setAttribute(Qt.AA_EnableHighDpiScaling, True)
             app.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
         super().__init__(title="audiocheck", subtitle="音源质量检测")
+        # 频率轴刻度（E 轮"换刻度"）：作用于频谱图与相位场。
+        # 默认对数——与历史行为一致；换刻度只改**坐标**，不改任何判定。
+        self.freq_scale = "log"
 
         self.theme: T.Theme = T.theme_for_width(T.DARK, self._screen_w())  # B14 字排版：按屏幕宽缩字阶
         # 由种子色生成的主题（`ui/palette.py`）。None = 用内置 DARK/LIGHT。
@@ -776,6 +779,12 @@ class MainWindow(FramelessWindow):
             self._cmds.append(
                 ("跳转到 " + self.VIEW_LABELS[_key], "",
                  lambda k=_key: self._navigate(k)))
+        # 频率轴刻度（E 轮"换刻度"）：只作用于带频率轴的密度场（频谱图/相位场）。
+        # 换刻度**只改坐标，不改任何判定**——判定仍按 Hz 算。
+        for _k, _lab in (("log", "对数"), ("bark", "Bark"), ("mel", "Mel"),
+                         ("erb", "ERB"), ("linear", "线性")):
+            self._cmds.append(("频率刻度：" + _lab, "",
+                               lambda k=_k: self.set_freq_scale(k)))
         for seq, fn in (("Ctrl+O", self.add_files), ("Ctrl+Shift+O", self.add_dir),
                         ("F5", self.start), ("Ctrl+R", self.start), ("Esc", self.stop),
                         ("Ctrl+E", self.export), ("Ctrl+L", self.clear),
@@ -789,6 +798,19 @@ class MainWindow(FramelessWindow):
         p = CommandPalette(self, self._cmds, self.theme)
         p.move(self.geometry().center() - p.rect().center())
         p.exec()
+
+    def set_freq_scale(self, name: str) -> None:
+        """切换频率轴刻度（频谱图 / 相位场）：`log` / `bark` / `mel` / `erb` / `linear`。
+
+        **只改坐标，不改任何判定**——判定仍按 Hz 算。未知名字回落对数
+        （`scales.is_known`），并把结果写回 `self.freq_scale` 供 `closeEvent` 持久化。
+        """
+        from ..core import scales as _scales
+        name = name if _scales.is_known(name) else _scales.DEFAULT
+        self.freq_scale = name
+        for cv in (getattr(self, "cv_spectro", None), getattr(self, "cv_phase", None)):
+            if cv is not None:
+                cv.set_freq_scale(name)
 
     def toggle_theme(self):
         # 用着种子色主题时按 Ctrl+D 就换该种子的另一套（深↔浅），
@@ -1546,6 +1568,10 @@ class MainWindow(FramelessWindow):
                 # 生成不达标（理论上不会发生：`build()` 内部就 strict 自审）
                 self.seed = self.seed_mode = None
                 self.seed_vibe = "calm"
+        # 频率轴刻度：与主题/种子一起持久化（视图选项，不影响判定）
+        fs = s.value("freq_scale")
+        if fs:
+            self.set_freq_scale(str(fs))
 
     def closeEvent(self, e):
         from PySide6.QtCore import QSettings
@@ -1555,6 +1581,7 @@ class MainWindow(FramelessWindow):
         s.setValue("seed", self.seed or "")
         s.setValue("seed_mode", self.seed_mode or "")
         s.setValue("seed_vibe", self.seed_vibe)
+        s.setValue("freq_scale", self.freq_scale)
         for w in ([self.worker] if self.worker else []) + list(self._view_workers.values()):
             if w and w.isRunning():
                 try:
