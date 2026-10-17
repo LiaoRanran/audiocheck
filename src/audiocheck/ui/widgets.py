@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
+    QTextBrowser,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -906,3 +907,51 @@ class Badge(QLabel):
     def set_level(self, level: str, theme: T.Theme) -> None:
         self._level = level
         self.apply_theme(theme)
+
+
+class HelpDialog(QDialog):
+    """帮助面板：快捷键 / 视图 / 效力边界 / 阈值出处。
+
+    ## 为什么内容**全部派生**、不许手写
+
+    手写的快捷键表会在加功能后过期，而**过期的帮助比没有帮助更坏**——
+    用户会照着做，然后发现不灵。所以这里只吃三份现成输出：
+    `window._cmds`（命令表的快捷键列）、`causes.boundaries()`（效力边界）、
+    `config.provenance_summary()`（阈值出处计数）。
+    回归 `test_help_dialog_is_derived_not_handwritten` 扫源码禁止硬编码 `Ctrl+`。
+    """
+
+    TITLE = "帮助 · 快捷键与效力边界"
+
+    def __init__(self, parent, shortcuts, views, boundaries, prov_text):
+        super().__init__(parent)
+        self.setWindowTitle(self.TITLE)
+        self.resize(660, 640)
+        lay = QVBoxLayout(self)
+        self.body = QTextBrowser()
+        self.body.setObjectName("HelpBody")
+        self.body.setOpenExternalLinks(False)
+        self.body.setHtml(self.build_html(shortcuts, views, boundaries, prov_text))
+        lay.addWidget(self.body, 1)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        btn = QPushButton("关闭")
+        btn.setObjectName("HelpClose")
+        btn.clicked.connect(self.accept)
+        row.addWidget(btn)
+        lay.addLayout(row)
+
+    @staticmethod
+    def build_html(shortcuts, views, boundaries, prov_text) -> str:
+        rows = "".join(
+            "<tr><td style='padding:2px 14px 2px 0'>%s</td>"
+            "<td><code>%s</code></td></tr>" % (lbl, sc) for lbl, sc in shortcuts)
+        vs = "".join("<li>%s</li>" % v for v in views)
+        bs = "".join("<li>%s</li>" % b for b in boundaries)
+        return (
+            "<h3>快捷键</h3><table>%s</table>"
+            "<p>全部功能另有命令面板（<code>Ctrl+K</code>），可搜到任意视图与动作。</p>"
+            "<h3>视图</h3><ul>%s</ul>"
+            "<h3>效力边界（本工具<b>不能</b>告诉你的）</h3><ul>%s</ul>"
+            "<h3>阈值出处</h3><p>%s</p>"
+            % (rows, vs, bs, prov_text))

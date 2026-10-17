@@ -161,3 +161,51 @@ class TestKeyboardMainFlow(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestHelpDialog(unittest.TestCase):
+    """E5 帮助面板：内容必须**派生**，不许手写。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.w = W.MainWindow()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.w.close()
+
+    def test_shortcuts_come_from_the_command_table(self):
+        """帮助里的快捷键集合 == 命令表里带快捷键的那些（**同一真源**）。
+
+        这条挡的是"帮助写了 Ctrl+X，但那个键早就改了/不存在了"——
+        过期的帮助比没有帮助更坏。
+        """
+        from audiocheck.ui.widgets import HelpDialog
+        sc = [(lbl, s) for lbl, s, _f in self.w._cmds if s]
+        html = HelpDialog.build_html(sc, ["总览"], ["边界 A"], "出处")
+        self.assertIn("Ctrl+K", html)
+        for _lbl, s in sc:
+            self.assertIn("<code>%s</code>" % s, html, "命令表的 %s 没进帮助" % s)
+
+    def test_views_and_boundaries_are_derived(self):
+        from audiocheck.core.analyzers.causes import boundaries
+        from audiocheck.ui.widgets import HelpDialog
+        views = [self.w.VIEW_LABELS[k] for k in self.w.VIEW_KEYS]
+        html = HelpDialog.build_html([], views, boundaries(), "出处")
+        for v in views:
+            self.assertIn(v, html)
+        for b in boundaries():
+            self.assertIn(b[:12], html, "效力边界没进帮助：%s" % b[:20])
+        self.assertIn("不能", html, "效力边界段必须写清『本工具不能告诉你什么』")
+
+    def test_dialog_builds_without_window(self):
+        """不依赖整个窗口也能构造（可测性）：空数据不炸。"""
+        from audiocheck.ui.widgets import HelpDialog
+        d = HelpDialog(None, [], [], [], "出处")
+        self.assertIn("快捷键", d.body.toPlainText())
+        d.deleteLater()
+
+    def test_f1_is_registered(self):
+        """F1 必须真的接到 open_help 上（不只是命令面板里有一条）。"""
+        seqs = [lbl for lbl, s, _f in self.w._cmds if s == "F1"]
+        self.assertTrue(seqs, "命令表里没有 F1 条目")

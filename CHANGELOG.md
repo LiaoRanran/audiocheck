@@ -4,6 +4,59 @@
 
 ## [未发布]
 
+### 新增（**换刻度**：Bark / Mel / ERB / 线性 频率轴）
+
+> 交接文档挂账 #1 收口。此前只画了 Bark 临界带的**线**（"底纹"），没做**换刻度**。
+
+- 新增 `core/scales.py`：五个刻度的**解析变换 + 逆变换**，出处逐条写进 docstring
+  （Traunmüller 1990 Bark / HTK-O'Shaughnessy 1987 Mel / Glasberg-Moore 1990 ERB-rate）。
+  `display_grid()` 给出"在该刻度上等距"的显示网格；未知名字**回落默认**而不抛异常。
+- 接线：`BaseCanvas.freq_scale` + `set_freq_scale`（幂等，延迟重绘沿用 P7 约定）；
+  频谱图 / 相位场的显示网格、extent、ylim、网格线、Bark 线、**游标反算**全部按当前刻度；
+  缓存键加入 `freq_scale`（换刻度必然重算）。
+- `_apply_freq_axis(ax, f_max, p, scale)`：**标签永远是 Hz**，只有位置按刻度铺
+  （读者要看频率，不是 Bark 数）。
+- 窗口：命令面板新增"频率刻度：对数/Bark/Mel/ERB/线性"，QSettings 持久化。
+- **一处数学**：`charts.bark` 直接绑定 `scales.bark`（此前两份实现，虽当前一致但迟早分叉，
+  分叉后"临界带线"与"Bark 轴"会对不上且没人看得出来）；`bark_to_hz` 收口到 `scales.bark_inv`。
+- 判据（22 + 5 条）：严格单调、互逆（相对误差 < 1e-9）、锚点
+  （bark(1000)=8.527、mel(1000)=1000、erb(1000)=15.62）、网格在自身刻度上等距；
+  **渲染级**验"Bark 下轴上限 == bark(f_max)、1 kHz 刻度落在 bark(1000)"；
+  **纪律**：判定层不许 import 显示刻度（判据跟着显示选项变是最难发现的错误）。
+- 验证：全量 **734 passed**；ruff 全树绿；视觉回归 0.0000%（默认仍对数，渲染未变）。
+
+### 新增（判定层纳入**变异测试**：18 个存活 ⇒ 补 14 条边界测试 + 4 条等价登记）
+
+> 此前变异测试只覆盖 `spectrum.py` + `dsp.py`——**测量再好，结论判错一样没用**。
+
+- `mutation_probe.TARGETS` 增加 `verdict.py` + `causes.py`（子集：
+  `test_verdict` / `test_c4_granularity` / `test_judgment_boundaries`）。
+- **首轮结果：88/106 = 0.830，18 个存活**（低于 0.90 下限）——其中 **8 个是边界翻转**
+  （`<=`→`<`、`>=`→`>`）。根因很一致：原有测试只验"阈值里面一点"和"外面一点"，
+  **从没验过正好等于阈值**。而真实曲库实测 **57% 的文件距最近判定线 <3%**
+  （见 `docs/real_library.md`）——边界恰恰是用户最常踩到的地方。
+- 新增 `tests/test_judgment_boundaries.py`（14 条）：容器分界 45000/50000 Hz、
+  `cd_full` / `hi_ok` / `hi_ratio` 的等号侧、`bit_padded and bit_origin` 的合取、
+  `clip > clip_severe_pct` 与 `lufs > loud_war_lufs` 的**开区间**、用途矩阵的
+  削波线与"两个动态量都缺"的合取、成因层的 `not hard and not gentle`（平缓滚降
+  不许冒"中间带"候选）。
+- 等价体登记 4 条（都写了"为什么"）：`_RANK_UNKNOWN` 哨兵 99→100、
+  `_worst` 的 `>`→`>=`（平局赋同一个值）、`verdict.order` 90→91（无 91）、
+  `causes.order` 89→90（与 verdict 平局，稳定排序保持注册序）。
+- 验证：见下一条提交的实测分数。
+
+### 新增（E5 帮助面板：快捷键 / 视图 / **效力边界** / 阈值出处，内容全部派生）
+
+- `widgets.HelpDialog` + 窗口 `open_help()`：**F1** 与命令面板"帮助 / 快捷键"均可打开。
+- **内容不许手写**：快捷键来自 `window._cmds`（同一真源）、视图来自 `VIEW_KEYS`、
+  效力边界来自 `causes.boundaries()`、阈值出处来自 `config.provenance_summary()`。
+  手写的帮助会在加功能后过期，而**过期的帮助比没有帮助更坏**（用户照着做发现不灵）。
+- 判据（4 条）：命令表里每个带快捷键的条目都必须出现在帮助里；效力边界逐条出现；
+  空数据也能构造（可测性）；F1 真的在命令表里。
+- 顺带：`test_truepeak` 的 `_write` 加"写完立刻验在 + 报大小"——该文件曾**偶发**
+  `FileNotFoundError` 且至今**不可复现**（§6 欠账 #7），按"不猜着改"只加可观测性，
+  下次复现能立刻区分"写没落盘"与"打开时丢了"。连跑 3 次无复现。
+
 ### 新增（**带宽判定边界余量**：把"贴着判定线"变成用户可见，门限一个没动）
 
 > 背景：真实曲库暴露的脆弱点——96k 的「伪 Hi-Res / 半 Hi-Res」两档在谱上只差

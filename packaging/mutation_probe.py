@@ -57,6 +57,15 @@ TARGETS: dict[str, list[str]] = {
     "src/audiocheck/core/dsp.py": [
         "tests/test_dsp.py", "tests/test_dsp_standard.py",
         "tests/test_truepeak.py", "tests/test_timeline_loudness.py"],
+    # 判定层（2026-10-17 夜间包）：**产品结论就在这两个文件里**，此前从未被变异测试
+    # 覆盖过——内核的测量再好，结论判错一样没用。子集取"直接钉判定的两个测试文件"
+    # （80 用例 / ~12 s，`-x` 早停后单个体通常几秒）。
+    "src/audiocheck/core/analyzers/verdict.py": [
+        "tests/test_verdict.py", "tests/test_c4_granularity.py",
+        "tests/test_judgment_boundaries.py"],
+    "src/audiocheck/core/analyzers/causes.py": [
+        "tests/test_c4_granularity.py", "tests/test_verdict.py",
+        "tests/test_judgment_boundaries.py"],
 }
 
 #: 变异分数下限。**三次更正，都写在这里免得后人再踩**：
@@ -84,6 +93,19 @@ MIN_SCORE = 0.90
 EQUIVALENT: dict[str, str] = {
     "src/audiocheck/core/dsp.py:30:const:4096->4097":
         "TP_OVERLAP 是真峰值分段的重叠采样数，±1 只挪动分段边界；取最大值的中段不变。",
+    # --- 2026-10-17 夜间包：判定层纳入后新增的等价体（每条都经核查）---
+    "src/audiocheck/core/analyzers/verdict.py:42:const:99->100":
+        "`_RANK_UNKNOWN` 是**未知等级的排序哨兵**，只需大于所有真实等级（ok/warn/bad = 0/1/2）；"
+        "99 与 100 在任何比较里都给出同一结果。",
+    "src/audiocheck/core/analyzers/verdict.py:51:cmp:>->>=":
+        "`_worst` 取最大等级：`r >= best_rank` 在平局时把 `best` 重新赋成**同一个值**，"
+        "返回值逐位相同（只多一次赋值）。",
+    "src/audiocheck/core/analyzers/verdict.py:342:const:90->91":
+        "调度 order：现有分析器里**没有 91**（causes=89、verdict=90、timeline=86），"
+        "90→91 仍排在最后 ⇒ 执行顺序不变。",
+    "src/audiocheck/core/analyzers/causes.py:335:const:89->90":
+        "调度 order：89→90 会与 verdict 平局；`schedule()` 用**稳定排序**且 causes 先注册"
+        "（实测 order 列表 causes 在 verdict 前）⇒ 平局后顺序不变。",
     "src/audiocheck/core/dsp.py:31:const:64->65":
         "TP_TRIM 是每段两端丢弃的瞬态采样数（滤波器瞬态约 21），64→65 丢弃范围仍在瞬态内。",
     "src/audiocheck/core/analyzers/spectrum.py:17:const:6.0->9.0":

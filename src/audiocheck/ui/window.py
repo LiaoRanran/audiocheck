@@ -771,6 +771,7 @@ class MainWindow(FramelessWindow):
             ("切换配色风格（克制 / 缤纷）", "Ctrl+M", self.toggle_vibe),
             ("换个种子色（生成整套配色）", "Ctrl+G", self.pick_seed),
             ("阈值设置", "Ctrl+T", self.open_settings),
+            ("帮助 / 快捷键", "F1", self.open_help),
         ]
         # 视图跳转**从 VIEW_KEYS 派生**（唯一真源）——手写列表曾漏掉 phase/compare，
         # 导致这两个视图在命令面板里不存在（键盘不可达）。闭包必须默认参数绑定 key，
@@ -791,6 +792,7 @@ class MainWindow(FramelessWindow):
                         ("Ctrl+D", self.toggle_theme), ("Ctrl+T", self.open_settings),
                         ("Ctrl+G", self.pick_seed), ("Ctrl+M", self.toggle_vibe),
                         ("Ctrl+K", self._palette), ("Delete", self._remove_selected),
+                        ("F1", self.open_help),
                         ("Ctrl+F", lambda: self.ed_search.setFocus())):
             QShortcut(QKeySequence(seq), self).activated.connect(fn)
 
@@ -798,6 +800,24 @@ class MainWindow(FramelessWindow):
         p = CommandPalette(self, self._cmds, self.theme)
         p.move(self.geometry().center() - p.rect().center())
         p.exec()
+
+    def open_help(self):
+        """帮助面板（F1）：快捷键 / 视图 / **效力边界** / 阈值出处。
+
+        内容**全部派生**（命令表 / `causes.boundaries()` / `provenance_summary()`），
+        不手写——手写的帮助会过期，而过期的帮助比没有帮助更坏。
+        """
+        from ..config import provenance_summary
+        from ..core.analyzers.causes import boundaries as _bounds
+        from .widgets import HelpDialog
+        shortcuts = [(lbl, sc) for lbl, sc, _fn in self._cmds if sc]
+        views = [self.VIEW_LABELS[k] for k in self.VIEW_KEYS]
+        pv = provenance_summary()
+        est = len(pv["engineering_estimates"])
+        prov = ("共 %d 个阈值字段；其中 <b>%d 个</b>标『工程估计（无出处）』"
+                "——完整账目见 <code>docs/thresholds.md</code>。"
+                % (pv["total_fields"], est))
+        HelpDialog(self, shortcuts, views, _bounds(), prov).exec()
 
     def set_freq_scale(self, name: str) -> None:
         """切换频率轴刻度（频谱图 / 相位场）：`log` / `bark` / `mel` / `erb` / `linear`。
