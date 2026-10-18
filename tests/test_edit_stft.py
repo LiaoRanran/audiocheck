@@ -333,6 +333,205 @@ def test_chunk_size_does_not_change_the_result(tmp_path):
     assert a["roundtrip_floor_samples"] > 0
 
 
+# ============================================================ 4. 口径与默认值
+# 下面这批判据是从 2026-10-18 变异探针的**存活清单**转化来的：每一条都对应一个
+# "改一个字符也测不出来"的位置（`<`↔`<=`、默认值、守卫子句）。§ 见 `packaging/mutation_probe.py`。
+
+
+def test_smallest_legal_window_is_accepted():
+    """`n_fft` 的下限判据是 `< 2`：`n_fft = 2` **合法**，`1` 才该拒。"""
+    stft.check_params(2, 1)
+    with pytest.raises(ValueError):
+        stft.check_params(1, 1)
+
+
+def test_analyze_accepts_exactly_one_frame():
+    """帧数下限判据是 `frames < 1`：**恰好 1 帧**要能跑（`<= 1` 会把它也拒掉）。
+
+    构造：`pad=0` 且信号长度 = `n_fft` ⇒ `ceil((n−n+1)/hop) = 1` 帧。
+    """
+    S, meta = stft.analyze(np.zeros((1024, 1)), n_fft=1024, hop=256, pad=0)
+    assert meta["frames"] == 1 and S.shape == (513, 1, 1)
+    with pytest.raises(ValueError):                    # 空信号 ⇒ 0 帧 ⇒ 拒
+        stft.analyze(np.zeros((0, 1)), n_fft=1024, hop=256, pad=0)
+
+
+def test_default_stft_params_are_pinned():
+    """默认参数是**接口契约**：`n_fft=4096`、`hop=n_fft//4`。
+
+    用**行为**钉住（不查签名）：不带参数与显式传 (4096, 1024) 必须**逐位相同**；
+    改了默认值这条就红（默认值一改，`bin_freqs`/`frame_times` 的全部口径跟着漂）。
+    """
+    x = np.random.default_rng(23).standard_normal((2048, 1)) * 0.3
+    S1, m1 = stft.analyze(x)
+    S2, m2 = stft.analyze(x, n_fft=4096, hop=1024)
+    assert (m1["n_fft"], m1["hop"]) == (4096, 1024)
+    assert np.array_equal(S1, S2)
+    assert np.array_equal(stft.roundtrip(x), stft.roundtrip(x, n_fft=4096, hop=1024))
+
+
+def test_synthesize_refuses_a_region_with_collapsed_overlap():
+    """覆盖守卫的**第二个子句**：区间合法、但里面**有样本的分母塌陷** ⇒ 也要抛错。
+
+    构造：`pad=0`、只取 OLA 的**最后一个样本**——那里只有一个窗、`w[n−1]` 是周期性 Hann
+    在 `k=n−1` 处的值（`n=4096` 时 `w[n−1] ≈ 5.9e-7` ⇒ `Σw² ≈ 3.5e-13 ≤ _WSS_MIN(1e-12)`）。
+    ⚠ 窗长要**够大**才塌到阈值以下：`n=1024` 时 `w²(n−1) ≈ 8.9e-11`，仍高于阈值。
+    这一条同时管住守卫里的 `or` 与 `_WSS_MIN` 的取值：少了 `or` 的子句、
+    或把下限设成 0，都会让这里**静默产出放大后的浮点噪声**。
+    """
+    S, meta = stft.analyze(np.zeros((4096, 1)), n_fft=4096, hop=1024, pad=0)
+    lp = (S.shape[1] - 1) * 1024 + 4096
+    with pytest.raises(ValueError):
+        stft.synthesize(S, meta, keep=slice(lp - 1, lp))
+    # 反向：正常区间**不许**被守卫误拦（样本 ≥ (R−1)·hop 时 R 个窗齐备、分母 = 1.5）
+    S2, m2 = stft.analyze(np.zeros((12288, 1)), n_fft=4096, hop=1024, pad=0)
+    assert stft.synthesize(S2, m2, keep=slice(3072, 3082)).shape == (10, 1)
+
+
+def test_open_ended_keep_means_to_the_default_end():
+    """`keep=slice(a, None)` = "从 a 取到**默认末尾**"（末尾是 `pad+length`，不是 `pad−length`）。"""
+    x = np.random.default_rng(5).standard_normal((4096, 1))
+    S, meta = stft.analyze(x, n_fft=1024, hop=256)
+    full = stft.synthesize(S, meta)
+    got = stft.synthesize(S, meta, keep=slice(1024, None))
+    assert got.shape == full.shape and np.array_equal(got, full)
+
+
+# ========== 5. 掩码口径的"数得出来"判据（2026-10-18 变异探针存活清单转来）==========
+
+
+def test_mask_tf_point_count_pins_both_half_open_edges(tmp_path):
+    """掩码覆盖的时频点数**必须精确**：两条半开区间的边都靠它钉住。
+
+    推导（`fs=48000, n_fft=4096, hop=1024`，选区 `[t0,t1) s`，带 `[7000,9000) Hz`）：
+      * bin 中心 = `k·11.71875`；`[7000,9000)` ⇒ `k = 598..767` ⇒ **170** 个
+        （`k = 768` 恰好 9000.0 Hz ⇒ **不算**，半开上界）；
+      * 帧中心 = `(起点 + n_fft/2)/fs`；本跨度下首个中心 = `21952/48000 = 0.457333 s`、
+        每帧 +`1024/48000`；`t0 = 0.5 s` 时 `m = 2` 的中心**恰好** 0.5 ⇒ **算**（半开下界）。
+
+    ⇒ `t1 = 1.0 s`（无帧中心落在其上）时 = `170 × 24 = 4080`；
+    ⇒ `t1 = 47552/48000 s`（**故意让 `m = 25` 的中心恰好落在 `t1` 上**）时 = `170 × 23 = 3910`
+    ——上界**半开**，那一个帧**不算**。
+    ⚠ 这两个数是**快照**：改默认 `n_fft/hop` 或掩码口径就要重新推导（这正是它们的作用）。
+    """
+    src = _write(tmp_path / "src.wav", _tone_mix(parts=((8000.0, 0.3),)))
+    a1 = render_band(src, str(tmp_path / "d1.wav"), 0.5, 1.0, 7000.0, 9000.0, -40.0)
+    n1 = a1["ops"][0]["applied_tf_points"]
+    assert n1 == 170 * 24 == 4080, n1
+    assert type(n1) is int, "时频点数是**计数**，不许变成浮点（4080.0 也是错的）"
+
+    t1 = 47552.0 / FS          # = 0.990666…，刻意让帧中心恰好落在 t1 上
+    a2 = render_band(src, str(tmp_path / "d2.wav"), 0.5, t1, 7000.0, 9000.0, -40.0)
+    n2 = a2["ops"][0]["applied_tf_points"]
+    assert n2 == 170 * 23 == 3910, ("上界必须半开：落在 t1 上的那一帧不该算，实得 %d" % n2)
+
+
+def test_frequency_lower_edge_is_inclusive_on_a_bin_centre(tmp_path):
+    """频率下界 `>= f0` 是**闭**的：`f0` 恰好是 bin 中心时，那条 bin **要**被压。
+
+    构造：`n_fft=4096`、fs=48000 ⇒ 格点 `k·11.71875`；取 `f0 = 7031.25 = 600·11.71875`
+    与一条**恰好 7031.25 Hz** 的正弦。
+
+    ⚠ 这里的实测衰减**不是 −40 dB，而是 −15 dB**——这是**正确的**：那条正弦在 Hann 窗下
+    的能量摊在 bin **599/600/601** 上，而 599（7019.5 Hz）**在带外**（< f0）⇒ 它没被压。
+    判据因此写成**区间**并把机制写清楚：把 `>=` 改成 `>` 会连 bin 600 也放过，
+    保留的能量明显更多（衰减更浅）⇒ 立刻越界。
+    """
+    f = 7031.25
+    t = np.arange(2 * FS) / FS
+    src = _write(tmp_path / "src.wav", (0.3 * np.sin(2 * np.pi * f * t))[:, None])
+    dst = str(tmp_path / "dst.wav")
+    render_band(src, dst, 0.5, 1.0, f, 9000.0, -40.0, overwrite=True)
+    a, b = _read(src), _read(dst)
+    k0 = int(0.65 * FS)                       # 窗口 16384 ⇒ 7031.25 正好落在整格点上
+    drop = 20 * math.log10(_amp_at(b, f, k0, k0 + 16384) / _amp_at(a, f, k0, k0 + 16384))
+    assert -16.0 < drop < -14.0, (
+        "下界（%g Hz 恰为 bin 中心）应压掉 bin 600（实测 −15.1 dB，邻居 599 在带外）；"
+        "写成严格 `>` 会浅得多，实得 %.2f" % (f, drop))
+
+
+def test_silence_material_reports_no_peak_and_no_floor(tmp_path):
+    """**数字静音**素材：`peak` 与往返残差都是 0 ⇒ 两个字段都必须报 `None`。
+
+    ⚠ 判据写的是 `if peak > 0` / `if floor > 0`：改成 `>= 0` 会去算 `log10(0) = −inf`
+    再 `round(−inf)` ⇒ **直接抛异常**（不是报个错数）。所以这条同时钉住"静音不崩"。
+    """
+    t = np.arange(2 * FS) / FS
+    src = _write(tmp_path / "src.wav", np.zeros((len(t), 1)))
+    audit = render_band(src, str(tmp_path / "dst.wav"), 0.5, 1.0, 7000.0, 9000.0, -40.0)
+    assert audit["peak_out_dbfs"] is None
+    assert audit["roundtrip_floor_dbfs"] is None
+    assert audit["ops"][0]["attenuation_measured_db"] is None      # 带内本来没能量
+
+
+def test_audit_numbers_keep_their_declared_precision(tmp_path):
+    """审计里的每个数都**按声明的位数**落定：小数位多一位、量级换算写错，这里都会红。
+
+    * `duration_s` 是 `round(frames/fs, 6)`：用**帧数不是整秒**的素材（48001 帧）才分得出 6 位与 7 位；
+    * `peak_out_dbfs` / `roundtrip_floor_dbfs` 是 `round(…, 3)`：所以它们必须**自己等于**
+      `round(自己, 3)`（4 位小数就说明写成了 `round(…, 4)`）；
+    * 残差的**量级**由 float64 的舍入决定（≈2e-16 ⇒ −300 dB 量级）：写成 `30·log10` 会跑到 −450 dB
+      那种"好得不像真的"的数上——所以判据钉成 **区间** 而不是"只要很小就行"。
+    """
+    t = np.arange(48001) / FS                                   # 48001 帧 = 1.0000208… s
+    src = _write(tmp_path / "src.wav", (0.5 * np.sin(2 * np.pi * 1000 * t))[:, None],
+                 subtype="DOUBLE", dtype=np.float64)
+    audit = render_band(src, str(tmp_path / "dst.wav"), 0.5, 0.9, 7000.0, 9000.0, -40.12345)
+    assert audit["duration_s"] == round(48001 / FS, 6), audit["duration_s"]
+    assert audit["peak_out_dbfs"] == round(20 * math.log10(0.5), 3), audit["peak_out_dbfs"]
+    floor = audit["roundtrip_floor_dbfs"]
+    assert round(floor, 3) == floor, "残差报了 4 位小数：%r" % floor
+    assert -320.0 < floor < -300.0, (
+        "float64 的往返残差应当在 −300 dB 量级（实测 −307），实得 %r" % floor)
+    m = audit["ops"][0]["attenuation_measured_db"]
+    # 实测值是 `round(…, 3)` ⇒ 只保留 3 位小数（这正是钉住"位数"的那一条）
+    assert round(m, 3) == m and abs(m + 40.12345) < 1e-3, m
+
+
+def test_context_offset_is_right(tmp_path):
+    """"自带上下文的偏移量"错了会**整体挪动一段**（而稳态素材上听不出来）。
+
+    构造：一条只出现在 `[0.6,0.7) s` 的 8 kHz 正弦 + 选区 `[0.5,1.0)`。
+    `buf[lo − src_lo : …] = raw` 的偏移写错 ⇒ 那段音频被挪到别处 ⇒ `[0.6,0.7)` 这个窗口
+    里就**没有**该来的内容了（实测衰减会变成"没有可比对象"）。
+    """
+    from audiocheck.core.edit.metrics import band_gain_db
+
+    src = _write(tmp_path / "src.wav", _tone_mix(parts=((8000.0, 0.3),), gate=(0.6, 0.7)))
+    dst = str(tmp_path / "dst.wav")
+    render_band(src, dst, 0.5, 1.0, 7000.0, 9000.0, -40.0, overwrite=True)
+    a, b = _read(src), _read(dst)
+    k0, k1 = int(0.61 * FS), int(0.69 * FS)
+    got = band_gain_db(a, b, FS, 7000.0, 9000.0, k0, k1)
+    assert got is not None and abs(got + 40.0) < 1.0, (
+        "带内那段（0.61–0.69 s）应该被压 40 dB，实得 %r ⇒ 上下文偏移错了" % got)
+
+
+def test_truncated_wav_is_self_corrected_by_libsndfile(tmp_path):
+    """⚠ **WAV 被截断时 libsndfile 会按文件大小重算帧数**（`f.frames` 就等于实有帧数）。
+
+    实测（本机 libsndfile）：3 s 立体声 PCM_16 WAV 砍到 45% 字节后，
+    `sf.info()` 报的是 **64793 帧**（= 实有），不是 WAV 头里写的 144000 ⇒
+    我们**看不到**"声称 vs 实读"的差 ⇒ `read_incomplete = False` 是**对的**（不误报）。
+    ⚠ 换个容器就不一样：截断的 **FLAC** 仍声称 144000 帧，读到损坏处会**抛**
+    `LibsndfileError`（实测）⇒ 走 `except` 分支、`read_incomplete = True`
+    （见 `test_edit_render.py` 的截断判据）。
+    ⇒ 也就是说 `render._render_band` 里那条"**短读**"分支（`len(raw) < hi − lo`）
+    在**已验证的两种容器上不可达**；它留着是**防御性**的（未穷举其它容器）。
+    """
+    src = str(tmp_path / "src.wav")
+    sf.write(src, _tone_mix(parts=((440.0, 0.3),)).astype(np.float32), FS, subtype="PCM_16")
+    raw = open(src, "rb").read()
+    cut = int(len(raw) * 0.45)
+    open(src, "wb").write(raw[:cut])
+    avail = max(0, (cut - 44) // (2 * 2))            # 44 = 标准 PCM WAV 头；2 声道 × 2B
+    assert sf.info(src).frames == avail, "libsndfile 没有按文件大小重算帧数（假设已变）"
+    audit = render_band(src, str(tmp_path / "dst.wav"), 1.0, 1.4, 7000.0, 9000.0, -30.0,
+                        overwrite=True)
+    assert audit["read_incomplete"] is False, "WAV 截断被误报成'读不满'了"
+    assert audit["frames"] == avail, audit["frames"]
+
+
 def test_band_op_rejects_bad_selection():
     with pytest.raises(ValueError):
         BandGainOp(1.0, 0.5, 100.0, 200.0, -3.0)

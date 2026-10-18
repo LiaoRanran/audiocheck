@@ -194,6 +194,53 @@ EQUIVALENT: dict[str, str] = {
         "`kern = np.ones(w)/w` → `*w`：该核在 ρ̄ 里**同时**出现在分子与分母"
         "（`2Re(mov(ZL·conj ZR)) / (mov(p_l)+mov(p_r))`），同比缩放 ⇒ 比值不变 ⇒ "
         "**可证明**等价。",
+    # --- 2026-10-18（编辑侧测量层这一轮）：编辑三件的等价体（每条都写清了"为什么输出逐位相同"）---
+    "src/audiocheck/core/edit/render.py:58:const:512->513":
+        "`CHUNK_HOPS` 只决定块长，而块长恒为 `chunk_hops*hop`（**永远是 hop 的整数倍**）"
+        "⇒ 跨块的帧网格一致 ⇒ 输出逐位相同（`test_chunk_size_does_not_change_the_result`"
+        "用 4 vs 512 证过）。",
+    "src/audiocheck/core/edit/render.py:90:cmp:<-><=":
+        "`while pos < end` → `<=`：pos==end 时多进一次循环，`min(blocksize, end−pos=0)=0` "
+        "⇒ `f.read(0)` 返回 0 帧 ⇒ 立刻被 `if not len(b): break` 退出 ⇒ 输出逐位相同。",
+    "src/audiocheck/core/edit/render.py:92:bin:-->+":
+        "`min(blocksize, end − pos)` → `end + pos`：`_copy_range` 只在**首段**（pos=0，两式相同）"
+        "与**尾段**（end=claimed）被调用，而 libsndfile 读到 EOF 会截短、循环判据又是 `pos < end`"
+        "⇒ 写出的帧数逐位相同。",
+    "src/audiocheck/core/edit/render.py:221:bin:-->+":
+        "`(ce − cs + 2*n_fft)` → `ce + cs + …`：**只是把缓冲区加长**。真实音频由 "
+        "`buf[lo − src_lo : …] = raw` 按**固定偏移**填入（与总长无关），加长部分全在请求区间 "
+        "`[n_fft, n_fft+(ce−cs))` 之外 ⇒ 输出逐位相同。",
+    "src/audiocheck/core/edit/render.py:231:bin:-->+":
+        "报错**文案**里的 `hi − lo` → `hi + lo`：只进字符串，没有任何判据读它。",
+    "src/audiocheck/core/edit/render.py:233:cmp:<=-><":
+        "`if ce <= cs: break`：这一支只在**源被截断**时走到，而上一行已经把 "
+        "`st[\"read_error\"]` 置上了 ⇒ 无论 break 与否，外层 `while st[\"read_error\"] is None …`"
+        "都会立刻退出（多跑的只是一个长度为 0 的空块）⇒ 输出逐位相同。",
+    "src/audiocheck/core/edit/stft.py:116:cmp:>->>=":
+        "`wss > _WSS_MIN` → `>=`：只有 `wss` **恰好等于** 1e-12 时才分叉，而 `wss` 是固定 Hann 窗"
+        "的平方和（取值只由 `(n_fft, hop)` 决定）⇒ 该等号不可达。",
+    "src/audiocheck/core/edit/stft.py:169:bin:*->/":
+        "`if R * hop == n` → `R / hop == n`：这只决定走**快路径还是通用路径**，两条路径**数学同式**"
+        "（按 (R,hop) 拆开累加 ≡ 逐帧累加），差别只在求和次序 ⇒ 输出最多差浮点末位；"
+        "本仓没有任何判据比较内部 OLA 的逐位结果（那会是无意义的脆弱判据）。",
+    "src/audiocheck/core/edit/stft.py:172:bin:-->+":
+        "`np.zeros((M + R − 1, hop, ch))` → `M + R + 1`：**只是把累加器加长**，多出的行落在 "
+        "`keep` 定界的请求区间之外（`synthesize` 先按 `[n0:n1]` 取用）⇒ 输出逐位相同。",
+    "src/audiocheck/core/edit/stft.py:178:bin:-->+":
+        "`np.zeros(((M − 1) * hop + n, ch))` → `M + 1`：同上（通用路径的累加器加长，"
+        "共享下标的累加结果不变）⇒ 输出逐位相同。",
+    "src/audiocheck/core/edit/stft.py:179:bin:-->+":
+        "`wss = np.zeros((M − 1) * hop + n)` → `M + 1`：同上（归一化分母同步加长，"
+        "`[n0:n1]` 上逐位相同）⇒ 输出逐位相同。",
+    "src/audiocheck/core/edit/render.py:161:cmp:<=-><":
+        "`if k1 <= k0: continue` → `<`：两式只在 `k1 == k0` 时不同，而那一点上 "
+        "`b[k0−pos:k1−pos]` 是**空切片**（`*=` 无操作）、`applied[i] += k1 − k0 = 0` "
+        "⇒ 输出与审计都逐位相同。（`k1 < k0` 时两式都 `continue`。）",
+    "src/audiocheck/core/edit/render.py:232:bin:+->-":
+        "`ce = min(ce, lo + len(raw))` → `lo − len(raw)`：这一支只在**短读**时走到，"
+        "而实测本机 libsndfile：**WAV** 被截断时按文件大小**重算帧数**（`claimed` 就等于实有帧数"
+        "⇒ 永不短读）、**FLAC** 截断后读到损坏处会**抛** `LibsndfileError`（走 `except` 支）"
+        "⇒ 在已验证的两种容器上不可达；留着是**防御性**的（未穷举其它容器）。",
 }
 
 
@@ -328,19 +375,30 @@ def main() -> int:
     ap.add_argument("--max-seconds", type=float, default=300.0,
                     help="限定时长（E1 要求）；超时即停并报当前分数")
     ap.add_argument("--max-mutants", type=int, default=40,
-                    help="每个目标最多生成多少变异体（控制时长）")
+                    help="每个目标最多生成多少变异体（控制时长）。⚠ **截断会在报告里报出来**："
+                         "小上限会让分数**虚高**（实测：同一份代码，40 上限跑 0.864、"
+                         "400 上限跑 0.619）——别把量具口径当测试质量")
+    ap.add_argument("--only", action="append", default=None,
+                    help="只跑路径里含该子串的目标（可重复）；单模块迭代时用")
     ap.add_argument("--mutant-timeout", type=float, default=180.0,
                     help="单个变异体的 pytest 子进程超时（秒）。**必须有**："
                          "病态变异体（让实现非终止）会把整轮探针挂死，"
                          "`--max-seconds` 只在两个变异体之间检查、拦不住。"
                          "超时计为**被杀**（挂起检出），报告单列")
     a = ap.parse_args()
+    targets = {k: v for k, v in TARGETS.items()
+               if not a.only or any(s in k for s in a.only)}
+    if not targets:
+        print("--only 没匹配到任何目标：%r" % a.only)
+        return 2
 
     py = sys.executable
     ws = _build_workspace()
     print("变异测试（自实现 AST 注入；工作区 %s）" % ws)
     print("目标 %d 个模块，时长上限 %.0f s，单体超时 %.0f s\n"
-          % (len(TARGETS), a.max_seconds, a.mutant_timeout), flush=True)
+          % (len(targets), a.max_seconds, a.mutant_timeout), flush=True)
+    if a.only:
+        print("（--only %s ⇒ 只跑：%s）\n" % (a.only, "、".join(sorted(targets))), flush=True)
 
     t0 = time.time()
     killed = 0
@@ -352,7 +410,7 @@ def main() -> int:
     timed_out = False
     capped_any = False                               # 有目标被 --max-mutants 截断 ⇒ 分数是部分的
 
-    for rel, tests in TARGETS.items():
+    for rel, tests in targets.items():
         src = open(os.path.join(_ROOT, rel), encoding="utf-8").read()
         all_cands = _candidates(ast.parse(src))
         cands = all_cands[:a.max_mutants]

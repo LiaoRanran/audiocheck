@@ -184,6 +184,58 @@ def test_truncated_source_is_reported_not_crashed(tmp_path):
     assert got.shape[0] == audit["frames"], "写出的帧数应与实读一致"
 
 
+def test_selection_edge_survives_float_rounded_time(tmp_path):
+    """`_EPS` 的存在理由：`t·fs` 的浮点乘积会**恰好落在整数上方一丁点**，`ceil` 必须压回来。
+
+    实测扫过 `(fs, t)` 网格（`t` 步长 0.0001 s、到 300 s、5 种采样率）：fs=48000 下
+    **第一个可区分**的 t 是 **0.0085**（`0.0085·48000 = 408.00000000000006`）——
+    没有 `_EPS` 时 `ceil` 到 **409**，整段选区向右错一个采样。
+    ⚠ `0.1 s` 那类"看起来典型"的时间**区分不了**（`0.1·48000 = 4800.0` 恰好是整数）——
+    上一版判据就写成了它，于是变异体照样存活（2026-10-18 探针的教训）。
+    """
+    src = _write(tmp_path / "src.wav", _tone())
+    render_gain(src, str(tmp_path / "dst.wav"), 0.0085, 0.05, -6.0)
+    a, b = _read(src), _read(tmp_path / "dst.wav")
+    k0 = _sample_at(0.0085)
+    assert k0 == 408, "0.0085 s @48 kHz 应当是样本 408（不是 409），实得 %d" % k0
+    assert not np.array_equal(a[k0], b[k0]), "左端第一个样本（408）必须受影响"
+    assert np.array_equal(a[k0 - 1], b[k0 - 1]), "前一个样本（407）不该受影响"
+
+
+def test_small_blocksize_and_late_selection(tmp_path):
+    """小块长 + 偏后的选区：`k0/k1` 是**相对当前块**算的（`k0 − pos`），块起点 `pos` 必须在场。
+
+    这条同时钉住三处（都是 2026-10-18 变异探针的存活项）：
+      * `if k1 <= k0: continue` —— 选区**还没到**当前块时要跳过（写成 `<` 会让
+        `applied_frames` 被减去一个块长，变成负数）；
+      * `b[k0 − pos : k1 − pos]` —— 写成 `+ pos` 时，**只有 pos=0 的第一块**看起来是对的，
+        所以小块长必须被真的跑到；
+      * `applied_frames` 在跨块时的累加口径。
+    """
+    src = _write(tmp_path / "src.wav", _tone())              # 2 s
+    k0, k1 = _sample_at(1.0), _sample_at(1.2)                # 48000 / 57600，远在第一个小块之后
+    audit = render(Project(src, [GainOp(1.0, 1.2, -6.0)]), str(tmp_path / "dst.wav"),
+                   blocksize=1024)
+    assert audit["ops"][0]["applied_frames"] == k1 - k0 == 9600
+    a, b = _read(src), _read(tmp_path / "dst.wav")
+    assert np.array_equal(a[:k0], b[:k0]), "选区**之前**的采样被动了"
+    np.testing.assert_allclose(b[k0:k1], a[k0:k1] * 10.0 ** (-6.0 / 20.0), rtol=1e-6)
+    assert np.array_equal(a[k1:], b[k1:])
+
+
+def test_full_scale_samples_are_not_counted_as_clipped(tmp_path):
+    """**满刻度样本本身不算削波**：判据是严格 `> 1.0`（PCM_16 的 ±1.0 是合法码值）。
+
+    ⚠ 写成 `>= 1.0` 会把每一张正常母带里的满刻度样本都报成"被钳位"——那是**误报**，
+    而"削波不静默"这条规矩靠的就是这个计数可信。
+    """
+    x = np.full((2048, 1), -32768, dtype=np.int16)      # −32768 ⇒ 读出恰是 −1.0
+    src = str(tmp_path / "src.wav")
+    sf.write(src, x, FS, subtype="PCM_16")
+    audit = render(Project(src), str(tmp_path / "dst.wav"))     # no-op，只走记账那一段
+    assert audit["clipped_frames"] == 0, "满刻度的合法码值被当成削波了"
+
+
 # --------------------------------------------------- 5. 与测量内核互证
 def test_measurement_crosscheck(tmp_path):
     """**用同一个测量内核再量一次**：证明增益确实只改了选中处。
