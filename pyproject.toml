@@ -40,6 +40,7 @@ Changelog = "https://github.com/LiaoRanran/audiocheck/blob/main/CHANGELOG.md"
 
 [project.scripts]
 audiocheck = "audiocheck.cli:main"
+audiocheck-edit = "audiocheck.edit_cli:main"
 
 [project.gui-scripts]
 audiocheck-gui = "audiocheck.ui.app:main"

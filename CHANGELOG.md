@@ -4,6 +4,38 @@
 
 ## [未发布]
 
+### 新增（编辑器 **CLI 入口** + 编辑器方向的**市场 / 文献 / 数学基础**）
+
+**① CLI 入口 —— 让 P0 内核"能用"**
+
+- 新增 `src/audiocheck/edit_cli.py` 与 `[project.scripts] audiocheck-edit`：
+  `audiocheck-edit <源> <目标> --gain -6 --at 12.5-14.0 [--subtype PCM_16] [--overwrite] [--audit 记录.json]`
+- 退出码：`0` 成功 ｜ `2` 参数/用法 ｜ **`4` 源读不了** ｜ **`5` 目标已存在**（未给 `--overwrite`）；
+  与既有 CLI 同一套"**不许 traceback**"约定（E2.1）。
+- **两个必须显眼的如实上报**：目标编码放不下的**削波帧数**、源**疑似截断**（声称 vs 实读）。
+- 新增 **8 条判据**（`tests/test_edit_cli.py`），含**真子进程**跑坏源 → `rc=4` 且输出无 `Traceback`。
+
+**② 市场 · 文献 · 数学基础 —— 新增 `docs/editor_research.md`**
+
+- **市场**（**二手来源，已逐条标可信度**）：RX 的 Spectral Repair = **模式化插值**；
+  SpectraLayers = **分层 + 谐波/噪声分离**；Audacity"**缺外科级精度**"；
+  以及一句关键的实话——"**文件缺字节不是修复能解决的**"（编辑器要继承判定层这条诚实）。
+  ⚠ **不做**任何份额/用户量的量化断言（无权威源）。
+- **文献（已核到出处）**：**Adler et al., IEEE TASLP 2012《Audio Inpainting》**——把削波/脉冲/丢包
+  统一成"**已知位置的缺失**"，这是所有修复算法的**理论伞**；**PHAIN（IEEE 2024）**指出纯稀疏推广会
+  **压小幅度**、忽略正弦的时间连续性；**Záviška/Rajmic, IEEE JSTSP 2020** 去削波综述
+  （SDR + 感知指标大规模评测），其续作**明确指出"既有基准的削波程度偏温和"** ⇒
+  **我们自建合成语料要用更狠的档**；**Lipshitz/Vanderkooy/Wannamaker** 抖动与噪声整形。
+- **数学基础清单（6 条，待写进 `theory.md`）**：STFT/COLA 与完美重建、窗 sinc 重采样、
+  量化误差谱与整形、削波失真模型、inpainting 的 analysis vs synthesis 稀疏、相位感知/瞬时频率
+  ——**每条都写明"它是判据而不只是知识"**。
+- **落地映射表**：算法簇 → 计划中的 `Op` → **先建的客观判据** → 依赖文献。
+- **未核清单（诚实留白）**：去噪经典出处、重采样理论出处、Godsill & Rayner、STFT 经典出处、
+  市场量化数据——**下一轮补，不许当已核用**。
+
+验证：全量 **774 passed**（+8）；`ruff` 全树绿；
+`test_ui_material::test_burst_does_not_leak` 为**已知 flaky**（单文件 22 passed，与本次无关）。
+
 ### 新增（**编辑内核第一步：非破坏渲染** —— 编辑器四根柱子里的 I/O + 渲染两根）
 
 > `docs/editor_roadmap.md §8` 的第一步。**不先碰 UI**：先把"源 + 操作栈 → 目标文件"
