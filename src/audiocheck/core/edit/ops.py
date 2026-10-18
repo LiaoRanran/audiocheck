@@ -7,8 +7,10 @@
 2. **可审计**：每个操作都能 `to_dict()`（机器可读）与 `describe()`（人可读），
    渲染再返回一份**审计记录**——这是本项目相对闭源工具的那条差别（见
    `docs/editor_roadmap.md §2`："可审计的修复"）。
-3. **只做有判据的**：目前**只有**时间选区增益 `GainOp`。加任何新算法前，先按
-   `docs/editor_roadmap.md §5` 建判据（合成语料 + 客观指标 + 效力边界），否则不加。
+3. **只做有判据的**：目前只有两个操作——时间选区增益 `GainOp`、时频选区增益
+   `BandGainOp`（判据在 `tests/test_edit_render.py` / `tests/test_edit_stft.py`）。
+   加任何新算法前，先按 `docs/editor_roadmap.md §5` 建判据（合成语料 + 客观指标 +
+   效力边界），否则不加。
 """
 from __future__ import annotations
 
@@ -44,14 +46,63 @@ class GainOp:
         return "时间选区 %.3f–%.3f s：%+.1f dB" % (self.t0, self.t1, self.gain_db)
 
 
+@dataclass(frozen=True)
+class BandGainOp:
+    """对**时频选区**施加 `gain_db`：谱点 `(帧, bin)` 被改 ⟺
+
+    * 该帧的**中心时刻** ∈ `[t0, t1)`，且
+    * 该 bin 的**中心频率** ∈ `[f0, f1)`。
+
+    两条都是**半开**、都用"中心"（与 `stft.frame_times` / `stft.bin_freqs` 的口径逐位一致）。
+    帧中心时刻 = `(帧起点 + n_fft/2) / fs`；bin 中心频率 = `k·fs/n_fft`。
+
+    ⚠ **时频编辑不是位精确的**（与时间域增益的根本差别，必须让用户看见）：
+      * 一个谱点被改，其影响会摊到**整窗宽度**上 ⇒ **受影响的采样 = 选区 ± n_fft/2**；
+      * 于是渲染时写出的范围要外扩一个窗宽：**选区 ± n_fft 之外逐位不变**，外扩的那部分里
+        未受影响的采样只有 ~1e-15 的 STFT 往返残差（渲染层把**实测**值报进审计
+        `roundtrip_floor_dbfs`）——不许说"无损"。
+
+    `gain_db == 0.0` 视为 **no-op**（渲染时整条跳过 ⇒ 全轨逐位不变）。
+    """
+
+    t0: float
+    t1: float
+    f0: float
+    f1: float
+    gain_db: float
+
+    def __post_init__(self) -> None:
+        if not (self.t1 > self.t0 >= 0.0):
+            raise ValueError("时间选区非法：需要 0 <= t0 < t1，得到 [%r, %r)" % (self.t0, self.t1))
+        if not (self.f1 > self.f0 >= 0.0):
+            raise ValueError("频率选区非法：需要 0 <= f0 < f1，得到 [%r, %r)" % (self.f0, self.f1))
+
+    @property
+    def is_noop(self) -> bool:
+        return self.gain_db == 0.0
+
+    def to_dict(self) -> dict:
+        return {"kind": "band_gain", "t0": self.t0, "t1": self.t1,
+                "f0": self.f0, "f1": self.f1, "gain_db": self.gain_db}
+
+    def describe(self) -> str:
+        return "时频选区 %.3f–%.3f s × %.1f–%.1f Hz：%+.1f dB" % (
+            self.t0, self.t1, self.f0, self.f1, self.gain_db)
+
+
 @dataclass
 class Project:
-    """一个非破坏编辑项目：源文件 + 操作栈（按加入顺序**依次**作用）。"""
+    """一个非破坏编辑项目：源文件 + 操作栈（按加入顺序**依次**作用）。
+
+    ⚠ 操作栈目前是 `GainOp`（时间域）**或** `BandGainOp`（频域）**二选一**：
+    同一栈里混用时，操作顺序的语义（先按频率改谱、还是先按时间改样点）还没立判据，
+    渲染层直接拒绝（见 `render.render`），不猜。
+    """
 
     source: str
-    ops: list[GainOp] = field(default_factory=list)
+    ops: list = field(default_factory=list)
 
-    def add(self, op: GainOp) -> Project:
+    def add(self, op) -> Project:
         """追加一个操作并返回自身（链式）。操作**按顺序**作用，后加的后作用。"""
         self.ops.append(op)
         return self

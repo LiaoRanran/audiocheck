@@ -95,6 +95,23 @@
 **为什么是它**：把四根柱子里的 **I/O + 渲染**两根先立起来，**立刻可验证**、不依赖播放与 UI，
 且天然产出"可审计修复"的第一条记录。
 
+**状态**：✅ **已完成**（`core/edit/ops.py`、`render.py`、`edit_cli.py`；
+判据 13 条在 `tests/test_edit_render.py`、8 条在 `tests/test_edit_cli.py`）。
+
+### 第二步：**频域通路**（时频选区增益）—— ✅ 已完成（2026-10-18）
+
+`core/edit/stft.py`（WOLA STFT + 覆盖守卫）+ `ops.BandGainOp` + `render.render_band`
++ CLI `--band f0-f1`。这一步的价值不只是"多一个功能"，而是**把时频编辑的效力边界量出来了**
+（写出的跨度要外扩一个窗宽、float32 素材只能承诺 1 个峰值 ULP、分块不许改结果）——
+三条都写进了 `docs/theory.md §12.7` 与 `CHANGELOG`，判据在 `tests/test_edit_stft.py`。
+
+### 第三步（建议）：**先建指标再上平滑**（P2 的前置）
+
+频域掩码现在是**硬刀口**（`-60 dB` 直接砍）。文献一侧（谱减法 → musical noise）指向
+"留**谱底** + 在时间/频率上**平滑增益**"。但按本仓纪律，**上这些之前必须先有指标**：
+musical noise（谱峰起伏 / 帧间增益方差）与瞬态涂改（transient smearing）。
+`docs/editor_research.md §6` 的"下一轮检索清单"就是为这一步准备的。
+
 ---
 
 > 记账要求：本条范围变更须同步 `CHANGELOG.md`，并在 `接手提示词.md` 顶部"从这里继续"

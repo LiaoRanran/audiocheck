@@ -89,7 +89,44 @@
 - **去噪经典出处**（Boll 1979 谱减法 / Ephraim & Malah 1985 MMSE-LSA）：**本次未复核**。
 - **采样率变换理论**（soxr / Julius O. Smith 的 band-limited interpolation）：**本次未核**。
 - **Godsill & Rayner** 原书/论文细节：**未核**。
-- **STFT 经典出处**（Allen & Rabiner 1977 等）：**未核**。
+- **STFT 经典出处**（Allen & Rabiner 1977 等）：**已在 §6 补核**（Allen 1977 / Allen & Rabiner 1977 / Portnoff 1980）。
 - **市场数据**（份额、用户量）：**无权威源** ⇒ 不做量化断言。
 
 > 下一轮把这些逐条补核，能补到同行评审锚点就升格进 §2，补不到就留在本节。
+
+---
+
+## 6. 科研反哺（2026-10-18）：**造时频编辑那一刻，长出来的四个问题**
+
+> 本节不是"又读了几篇文献"，而是**从实现里长出来的问题**：先建内核（`core/edit/stft.py`）
+> → 再接线（`BandGainOp` / `render_band` / CLI）→ 每一处"不对劲"都先用探针量一遍（`out/_diag*.py`）
+> → 再拿问题去检索。每个问题都带一条**可复算的判据**（落在 `tests/test_edit_stft.py`）。
+
+| # | 建设中暴露的问题（**实测**） | 检索到的锚点 | 结论 → 落到哪 |
+|---|---|---|---|
+| 1 | **一条谱点的改动会摊到整窗宽上**：写出的区间不与选区外扩时，选区边界上留一个台阶（实测硬切时边界处 8 kHz 包络 **0.1923 → 0.1167**、逐采样跳变 **7.56e-02**；外扩后 **1.44e-04**，差 523 倍；`packaging/stft_bounds.py case_1`） | **M. R. Portnoff, IEEE TASSP 28(1):55–69, 1980「已核」**：STFT 域的**乘性**修改就是**时变滤波器**（`Y(t,f)=H(t,f)·X(t,f)`）；**J. B. Allen, IEEE TASSP 25(3):235–238, 1977「已核」**：给了"乘性修改谱之后如何合成"的框架 | 时变滤波器的**响应在帧间跳变**时，等价冲激响应要摊到当前窗上 ⇒ "外扩一个窗宽"不是保险，是**定义的一部分**（`docs/theory.md §12.7 ①`）。落地：`render._render_band` 的 span；判据 `test_band_boundary_has_no_step` |
+| 2 | **掩码的边界要不要平滑**：-60 dB 的硬刀口在帧间跳变，会不会像谱减法那样长出 **musical noise** | **S. F. Boll, ICASSP 1979, pp.200–203** 与 **M. Berouti, R. Schwartz, J. Makhoul, ICASSP 1979**（谱减法 + **过减 / 谱底 spectral floor**，正是为压 musical noise）——「二手多处一致，**一手段本轮未取**」 | 已知修法方向：**留谱底**（不把增益压到 0）+ **增益在时间/频率上平滑**。⚠ **本轮没做**（当前是硬刀口），也**还没立判据** ⇒ 挂到 P2：上 `--floor-db` 与增益平滑**之前**先建 musical noise 指标（谱峰起伏 / 帧间增益方差） |
+| 3 | **量化底也在被编辑的谱里**：float32 素材上"带外 −40 dB 掩码"让波形动了 **1.490e-08**（= 素材峰值 0.3 的 float32 ULP 的一半） | 量化误差是**全频段**的、对信号做**加性**叠加（§2 的 Lipshitz/Vanderkooy/Wannamaker「已核」）+ 掩码是**乘性**的（Allen 1977「已核」） | 两张谱一乘，掩码**跨不过**底噪 ⇒ "没被掩码覆盖的采样"也会动。**结论：对 float32 素材只能承诺 ≤ 1 个峰值 ULP**；逐位不变只对 float64 源成立（`docs/theory.md §12.7 ③`）。判据 `test_band_change_on_float32_source_is_at_most_one_peak_ulp` |
+| 4 | **整段 STFT 的内存/时长不可行**：60 s 立体声（44.1 kHz、n_fft=4096、hop=1024）的复数谱 = 2584 帧 × 2049 bin × 2 声道 × 16 B ≈ **170 MB**（**算出来的**，不是量的）⇒ 1 小时素材 = **10 GB 量级** | **J. B. Allen & L. R. Rabiner, Proc. IEEE 65(11):1558–1564, 1977「已核」**（分析/合成统一框架）；分块流式本身是工程常识，**未取到专门文献** | 结论：**分块 + 真实上下文 + 全局 hop 网格**；块内存与素材时长**无关**（实测 10 min 素材：10 s 选区 **1.88 s**、整轨 **24.24 s**、缓冲上界 ~34 MB；`packaging/band_perf.py`）。判据 `test_chunk_size_does_not_change_the_result`（**分块不许改结果**） |
+
+**本轮补核掉的旧挂账（原 §5）**
+- **STFT 经典出处**：`J. B. Allen, "Short-Term Spectral Analysis, Synthesis, and Modification by
+  Discrete Fourier Transform", IEEE TASSP 25(3):235–238, 1977`；`J. B. Allen & L. R. Rabiner,
+  "A Unified Approach to Short-Time Fourier Analysis and Synthesis", Proc. IEEE 65(11):1558–1564, 1977`
+  —— 均「已核」（IEEE/高校库 + Google Scholar 条目三处一致）。
+- **时变滤波锚点**：`M. R. Portnoff, "Time-Frequency Representation of Digital Signals and Systems
+  Based on Short-Time Fourier Analysis", IEEE TASSP 28(1):55–69, 1980` ——「已核」（IEEE Xplore
+  1163359 摘要明确"乘性时频响应 × STFT"；另有 2016 年 Wiley 论文的参考文献列表给出卷期页码）。
+
+**本轮新挂账（不许当已核用）**
+- musical noise 的**一手段**（Boll / Berouti 原文）本轮未取到，只有二手多处一致的转述；
+- "增益在时间上平滑"的**最优核**（平滑长度 ↔ 听感阈值）本轮未检索；
+- **分块流式 STFT** 没找到专门的同行评审出处（工程常识，故按常识处理并如实标注）；
+- 竞品做法只有**厂商文档**：iZotope RX 的 Spectral De-noise 有 `MASKING` 开关，
+  按心理声学模型**软化**压制深度（RX 6 帮助文档，**厂商口径，未做量化、未复现**）。
+
+**下一轮照着这张表去检索**（带着问题去，不泛读）
+1. 频域掩码边界的**瞬态涂改**（transient smearing / pre-echo）——对 punch 类素材的影响有多大；
+2. **增益平滑**与 musical noise 的**量化指标**（我们要先有指标，再谈实现）；
+3. 块式 STFT 的**相位一致性**：我们靠"全局 hop 网格 + 真上下文"绕过，文献里有没有更省的做法；
+4. `--floor-db`（谱底）的选值依据：谱底设多少 dB 才不伤内容。

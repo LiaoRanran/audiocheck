@@ -69,8 +69,13 @@ TARGETS: dict[str, list[str]] = {
     # 编辑内核（2026-10-18，P0 地基）：**导出结果就是用户手里拿到的东西**。
     # 抽样偏移一位、增益算错、区间端点判错，都属于"安静地给错数"——
     # 正是变异测试该抓的形态（`test_edit_render.py` 逐条钉住这些口径）。
-    "src/audiocheck/core/edit/render.py": ["tests/test_edit_render.py"],
+    "src/audiocheck/core/edit/render.py": ["tests/test_edit_render.py",
+                                          "tests/test_edit_stft.py"],
     "src/audiocheck/core/edit/ops.py": ["tests/test_edit_render.py"],
+    # 时频内核（2026-10-18，P0 频谱编辑的数学地基）：**重叠归一化、帧网、覆盖守卫**
+    # 都在这一个文件里。这里的变异体最容易被"看起来还行"的测试放过——所以判据是
+    # `tests/test_edit_stft.py`（往返残差、分块等价性、覆盖守卫、窗平方和恒 >0）。
+    "src/audiocheck/core/edit/stft.py": ["tests/test_edit_stft.py"],
 }
 
 #: 变异分数下限。**三次更正，都写在这里免得后人再踩**：
