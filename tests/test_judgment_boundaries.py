@@ -169,3 +169,114 @@ def test_usability_clip_advice_boundary_is_exclusive():
     above = usability_matrix({**base, "clip_pct": TH.clip_advice_pct + 1e-6}, [], TH)["动态与微动态"]
     assert at["level"] == "可用", "正好等于 clip_advice_pct 不该降级：%s" % at
     assert above["level"] == "不可用", "超过建议线应降级：%s" % above
+
+
+# ============ 第二轮（2026-10-18）：把上一轮残留的 12 条边界翻转钉死 ============
+#
+# 背景：变异探针第二轮仍报 12 条**存活**（`verdict.py` 5 条 + `causes.py` 7 条），
+# 全是 `>=` / `<` / `and` 这类**边界翻转**。根因与第一轮相同：**这些阈值没被"正好等于"过**。
+# 下面这些测试全部走**判定层的纯函数**（`axis_bandwidth` / `cause_candidates`），
+# 直接喂"正好落在阈值上"的测量值。⚠ 不改变任何门限，只钉住现有语义（往哪边倒）。
+
+def _res(**kw) -> dict:
+    """一个"只有我要的字段"的结果字典（`cause_candidates` 用 `.get`，缺的键当 None）。"""
+    return {"cutoff_hz": None, "brickwall_db_per_oct": None, "bands_pct": {},
+            "flatness": None, "bit_padded": False, "clip_pct": 0.0,
+            "true_peak_dbfs": None, "lra": None, "corr": None, "width_db": None, **kw}
+
+
+def _keys(r: dict, fs: int) -> list[str]:
+    return [c["key"] for c in cause_candidates(r, fs, TH)]
+
+
+def test_lossy_threshold_is_inclusive_in_44100_branch():
+    """44.1k 档：`k >= th.lossy` ⇒ 16.0 kHz **整** 落"有损"档（不是"强有损"）。"""
+    lv, txt, _c = axis_bandwidth(44100, TH.lossy * 1000.0, 30.0, TH)
+    assert (lv, txt) == ("bad", "有损溯源（≈192–256kbps 转码）"), (lv, txt)
+
+
+def test_up44_threshold_is_inclusive():
+    """48k 档：`k >= th.up_44` ⇒ 正好 21.0 kHz 就判"疑似 44.1k 升频"，不退化成"带宽偏窄"。"""
+    lv, txt, _c = axis_bandwidth(48000, TH.up_44 * 1000.0, 30.0, TH)
+    assert (lv, txt) == ("bad", "疑似 44.1kHz 升频（内容止于 21.0kHz）"), (lv, txt)
+
+
+def test_ltd_threshold_is_inclusive_in_48k_branch():
+    """48k 档：`k >= th.ltd` ⇒ 正好 19.0 kHz 走"带宽偏窄"，**不许**再往下掉到有损档。"""
+    lv, txt, _c = axis_bandwidth(48000, TH.ltd * 1000.0, 30.0, TH)
+    assert (lv, txt) == ("warn", "带宽偏窄（19.0kHz）——48k 容器里有损/带限"), (lv, txt)
+
+
+def test_lossy_threshold_is_inclusive_in_48k_branch():
+    """48k 档：`k >= th.lossy` ⇒ 正好 16.0 kHz 是"有损"档，不是"强有损"档。"""
+    lv, txt, _c = axis_bandwidth(48000, TH.lossy * 1000.0, 30.0, TH)
+    assert (lv, txt) == ("bad", "有损溯源（≈192–256kbps 转码）"), (lv, txt)
+
+
+def test_conf_low_boundary_counts_as_strong_evidence():
+    """`conf < th.conf_low`：正好等于 `conf_low` 时**算证据够**（走硬判那支）。
+
+    ⚠ 判定层里这**同一条件出现两处**（48k 档的"有损"与"强有损"两条支路），两处都要喂到：
+    区间 `[lossy, ltd)` 走第一处、`< lossy` 走第二处；只测一处，另一处照样会漏。
+
+    `conf = (slope − conf_slope_lo)/conf_slope_span`，取 `slope = 8 + 16/2 = 16`（都能被
+    浮点精确表示）⇒ `conf` 恰好 0.5。若把 `<` 写成 `<=`，或把 `and` 写成 `or`，
+    这两条就会从"bad"掉成"warn（措辞软化）"。
+    """
+    slope = TH.conf_slope_lo + TH.conf_slope_span / 2.0
+    assert (slope - TH.conf_slope_lo) / TH.conf_slope_span == TH.conf_low, "构造不出 conf==conf_low"
+    lv, txt, conf = axis_bandwidth(48000, 17.0e3, slope, TH)      # [lossy, ltd)：第一处
+    assert conf == TH.conf_low, conf
+    assert (lv, txt) == ("bad", "有损溯源（≈192–256kbps 转码）"), (lv, txt)
+    lv, txt, conf = axis_bandwidth(48000, 15.0e3, slope, TH)      # < lossy：第二处
+    assert conf == TH.conf_low, conf
+    assert (lv, txt) == ("bad", "强有损溯源（≤128kbps）"), (lv, txt)
+
+
+def test_hard_brickwall_threshold_is_inclusive():
+    """`slope >= th.brick_db`：正好 24 dB/oct **就是**硬砖墙（不是"中间带"）。
+
+    判据看证据文案与 `ambiguous_with`：退化后会变成"中间带：不构成硬证据"并并列"刻意带限"。
+    """
+    c = [x for x in cause_candidates(_res(cutoff_hz=18.0e3,
+                                          brickwall_db_per_oct=TH.brick_db), 44100, TH)
+         if x["key"] == "有损转码"]
+    assert c, "低截止 + 正好 24 dB/oct 应出「有损转码」"
+    assert "硬砖墙" in c[0]["evidence"][1] and c[0]["ambiguous_with"] == [], c[0]
+
+
+def test_brick_flat_threshold_is_exclusive():
+    """`slope < th.brick_flat_db_per_oct`：正好 15 dB/oct **不算**平缓滚降。
+
+    这一条同时管住 `causes.py` 里的两处（`gentle` 与 `gentle_rolloff`，都在判 `<15`）：
+    退化后"有损转码（中间带）"会消失、"磁带转录"会凭空多出来。
+    """
+    keys = _keys(_res(cutoff_hz=18.0e3, brickwall_db_per_oct=TH.brick_flat_db_per_oct), 44100)
+    assert "有损转码" in keys, "正好 15 dB/oct 仍属中间带，应出「有损转码」：%s" % keys
+    assert "磁带转录" not in keys, "正好 15 dB/oct 不该算平缓滚降：%s" % keys
+
+
+def test_noise_like_flatness_threshold_is_inclusive():
+    """`flat >= th.noise_like_flatness`：正好 0.5 **算**噪声状 ⇒ 占比类候选被守卫拦住。"""
+    r = _res(cutoff_hz=None, bands_pct={"sub": 20.0, "bass": 10.0},
+             flatness=TH.noise_like_flatness)
+    assert "黑胶转录" not in _keys(r, 44100), "正好 0.5 应算噪声状，低频隆隆占比不算证据"
+
+
+def test_vinyl_rumble_threshold_is_inclusive():
+    """`low_pct >= th.vinyl_rumble_pct`：正好 25% **算**低频隆隆（非噪声状时出黑胶候选）。"""
+    r = _res(bands_pct={"sub": 20.0, "bass": 5.0}, flatness=0.1)
+    assert "黑胶转录" in _keys(r, 44100), "sub+bass 正好 25% 应算隆隆"
+
+
+def test_upsample_fs_threshold_is_exclusive():
+    """`fs > th.upsample_fs`：容器正好 88.2 kHz **不算**"超 48k"⇒ 不出升频候选。"""
+    assert "升频" not in _keys(_res(cutoff_hz=20.0e3), int(TH.upsample_fs)), "88.2k 容器不该出升频"
+    assert "升频" in _keys(_res(cutoff_hz=20.0e3), int(TH.upsample_fs) + 2)
+
+
+def test_clip_pct_threshold_is_exclusive():
+    """`clip > th.clip_pct`：正好等于告警线**不**出"母带限幅"（与用途矩阵同口径）。"""
+    r = _res(clip_pct=TH.clip_pct, true_peak_dbfs=0.3)
+    assert "母带限幅" not in _keys(r, 44100), "正好等于 clip_pct 不该出母带限幅候选"
+    assert "母带限幅" in _keys(_res(clip_pct=TH.clip_pct + 1e-6, true_peak_dbfs=0.3), 44100)

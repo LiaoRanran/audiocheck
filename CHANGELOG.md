@@ -4,6 +4,29 @@
 
 ## [未发布]
 
+### 判据补全（**判定层 12 条边界翻转**：第二次变异轮的发现）
+
+- 上一轮**完整**变异探针（`packaging/mutation_probe.py`，162 个有效变异体）在判定层仍报
+  **12 条存活**：`verdict.py` 5 条（`>=`→`>` ×4、`and`→`or` ×1）＋`causes.py` 7 条
+  （`>=` / `<` 的边界翻转 ×7）。**全部是"阈值没被正好等于过"** ⇒ 真·**测试缺失**，
+  不是等价变异体（等价变异体的口径见探针的 `EQUIVALENT` 白名单）。
+- 在 `tests/test_judgment_boundaries.py` 补 **11 条**边界判据，走**判定层纯函数**
+  （`axis_bandwidth` / `cause_candidates`）直接喂"正好落在阈值上"的测量值，逐条钉住
+  "往哪边倒"：`lossy`（44.1k 与 48k 两档）、`up_44`、`ltd`、`conf_low`（构造出
+  `conf == 0.5`，**且两处支路都喂到**——有损档与强有损档）、`brick_db`（正好 24 dB/oct
+  **是**硬砖墙）、`brick_flat_db_per_oct`（正好 15 dB/oct **不算**平缓滚降，一条同时管住
+  `gentle` 与 `gentle_rolloff` 两处）、`noise_like_flatness`（0.5 **算**噪声状）、
+  `vinyl_rumble_pct`（25% **算**隆隆）、`upsample_fs`（正好 88.2k **不算**超 48k）、
+  `clip_pct`（正好等于告警线 **不**触发）。
+  ⚠ **不改任何门限**（`docs/thresholds.md` 的取值口径没动），只把现有语义写成判据。
+- **本轮新增第 2 个校验工具** `packaging/mutant_spotcheck.py`：把"已知存活清单"逐条改回去、
+  跑定向判据看抓不抓得住（20 秒级，配合通用的 `mutation_probe.py` 用；按**行号**定位，
+  行号对不上直接报错，不静默改错地方）。
+- 验证：`tests/test_judgment_boundaries.py` **27 passed**（16 原有 + 11 新增）；
+  `python packaging/mutant_spotcheck.py` ⇒ **12/12 被杀死**（工具的输出即证据）。
+  ⚠ **整体**变异分数由完整探针复核（`packaging/mutation_probe.py --strict`）；本轮只**逐条**
+  钉死了这 12 条，未扩大到别的模块。
+
 ### 新增（**时频编辑内核** —— 频谱编辑的地基 + 三条**实测出来**的效力边界）
 
 > `docs/editor_roadmap.md §8` 第二步。上一步立起了"源 + 操作栈 → 目标文件"这条时间域通路，
