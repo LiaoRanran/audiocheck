@@ -76,6 +76,7 @@ def test_band_knocks_out_the_band(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "时频选区" in out and "改动" in out and "STFT" in out
     assert "时频编辑不是位精确的" in out, "实测往返残差必须显眼打出来（不是藏在 JSON 里）"
+    assert "设定" in out and "实测" in out, "「设定 vs 实测」必须一起打（可审计的修复）"
     a, b = _read(src), _read(dst)
     k0, k1 = int(0.6 * FS), int(1.4 * FS)
     w = np.hanning(k1 - k0)

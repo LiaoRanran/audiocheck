@@ -298,6 +298,24 @@ def test_band_audit_reports_measured_roundtrip_floor(tmp_path):
         "输出峰值应为 0.5 的 −6.02 dBFS，实测 %r" % audit["peak_out_dbfs"])
 
 
+def test_band_audit_reports_measured_attenuation(tmp_path):
+    """审计里的**实测衰减**：设定 −40 dB ⇒ 实测 −40.00 dB（±0.01）。
+
+    ⚠ 口径是"**同一套 STFT 表示**里量"（掩码前/后的带内能量比），不是"在导出信号上再量一次"：
+    后者会被分析窗的泄漏压浅（宽带素材实测 −18.6 vs 设定 −20，见
+    `tests/test_edit_metrics.py::test_band_gain_db_is_shallower_than_set_on_broadband_material`）。
+    "我压了 40 dB"这句话必须有**实测值**撑着——这就是"可审计的修复"。
+    """
+    src = _write(tmp_path / "src.wav", _tone_mix(parts=((8000.0, 0.3),)))     # 带内单频
+    audit = render_band(src, str(tmp_path / "dst.wav"), 0.5, 1.0, 7000.0, 9000.0, -40.0)
+    m = audit["ops"][0]["attenuation_measured_db"]
+    assert m is not None and abs(m + 40.0) < 0.01, m
+
+    # no-op：没跑掩码 ⇒ 报 `None`（不许报 0.0 冒充"量过了"）
+    noop = render_band(src, str(tmp_path / "n.wav"), 0.5, 1.0, 7000.0, 9000.0, 0.0)
+    assert noop["ops"][0]["attenuation_measured_db"] is None
+
+
 def test_chunk_size_does_not_change_the_result(tmp_path):
     """**分块粒度不许改变结果**：把 `chunk_hops` 从默认 512 缩到 4（每块只有 4 个 hop），
     导出必须与单块**逐位相同**。

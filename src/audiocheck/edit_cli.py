@@ -110,11 +110,17 @@ def main(argv=None) -> int:
     print("长度  %d 帧（%.3f s）" % (audit["frames"], audit["duration_s"]))
     if audit["domain"] == "band":
         for op in audit["ops"]:
-            print("操作  时频选区 %.3f–%.3f s × %.1f–%.1f Hz：%+.1f dB ｜ 改动 %d 个时频点"
+            m = op.get("attenuation_measured_db")
+            print("操作  时频选区 %.3f–%.3f s × %.1f–%.1f Hz：设定 %+.1f dB ｜ 实测 %s ｜ 改动 %d 个时频点"
                   % (op["t0"], op["t1"], op["f0"], op["f1"], op["gain_db"],
-                     op["applied_tf_points"]))
+                     "—" if m is None else "%+.2f dB" % m, op["applied_tf_points"]))
         print("STFT  n_fft %d ｜ hop %d ｜ 窗 %s"
               % (audit["n_fft"], audit["hop"], audit["window"]))
+        # 实测为什么可能比设定浅/深：在**同一套 STFT 表示**里量，所以这里报的是
+        # "掩码实际乘下去多少"；带内本来没能量（no-op/静默素材）时报 "—"。
+        if any(o.get("attenuation_measured_db") is not None
+               and abs(o["attenuation_measured_db"] - o["gain_db"]) > 0.01 for o in audit["ops"]):
+            print("注  实测是掩码在时频域**实际乘下去**的量（设定与实测的差来自掩码的边缘 bin/帧）")
     else:
         for op in audit["ops"]:
             print("操作  %+.1f dB @ [%.3f, %.3f) s ｜ 生效 %d 帧"

@@ -71,7 +71,8 @@ TARGETS: dict[str, list[str]] = {
     # 正是变异测试该抓的形态（`test_edit_render.py` 逐条钉住这些口径）。
     "src/audiocheck/core/edit/render.py": ["tests/test_edit_render.py",
                                           "tests/test_edit_stft.py"],
-    "src/audiocheck/core/edit/ops.py": ["tests/test_edit_render.py"],
+    "src/audiocheck/core/edit/ops.py": ["tests/test_edit_render.py",
+                                        "tests/test_edit_stft.py"],
     # 时频内核（2026-10-18，P0 频谱编辑的数学地基）：**重叠归一化、帧网、覆盖守卫**
     # 都在这一个文件里。这里的变异体最容易被"看起来还行"的测试放过——所以判据是
     # `tests/test_edit_stft.py`（往返残差、分块等价性、覆盖守卫、窗平方和恒 >0）。
@@ -349,11 +350,22 @@ def main() -> int:
     equiv = 0
     hangs = 0                                        # 超时=被杀（非终止变异体）
     timed_out = False
+    capped_any = False                               # 有目标被 --max-mutants 截断 ⇒ 分数是部分的
 
     for rel, tests in TARGETS.items():
         src = open(os.path.join(_ROOT, rel), encoding="utf-8").read()
-        cands = _candidates(ast.parse(src))[:a.max_mutants]
-        print("== %s（%d 个变异体候选）==" % (rel, len(cands)), flush=True)
+        all_cands = _candidates(ast.parse(src))
+        cands = all_cands[:a.max_mutants]
+        # ⚠ **截断必须报出来**：`[:max_mutants]` 会让"候选 102 个"变成"候选 40 个"，
+        # 分数**虚高**（本轮实测：同一份代码，小上限跑出 0.864，放到 400 上限是 0.619）。
+        # 只看分数的读者会以为"测试很好"，其实是**量具口径太窄**。
+        capped = len(cands) < len(all_cands)
+        if capped:
+            capped_any = True
+        print("== %s（%d 个变异体候选%s）=="
+              % (rel, len(cands),
+                 "，**被 --max-mutants=%d 截断**，候选共 %d 个" % (a.max_mutants, len(all_cands))
+                 if capped else ""), flush=True)
         target_path = os.path.join(ws, rel)
         for i in range(len(cands)):
             if time.time() - t0 > a.max_seconds:
@@ -414,7 +426,15 @@ def main() -> int:
     print("有效变异体 %d ｜ 杀死 %d（其中超时 %d）｜ 存活 %d ｜ 等价 %d ｜ 无效 %d"
           % (scored, killed, hangs, len(survived), equiv, invalid))
     print("变异分数 = %d/%d = %.3f（下限 %.2f）%s"
-          % (killed, scored, score, MIN_SCORE, "（未跑完，时长上限）" if timed_out else ""))
+          % (killed, scored, score, MIN_SCORE,
+             "（未跑完，时长上限）" if timed_out else ""))
+    if capped_any or timed_out:
+        print("⚠ **这一轮的分数是「部分」结果**：%s%s ——"
+              % ("有目标被 `--max-mutants=%d` 截断（只看各目标前 N 个候选）；" % a.max_mutants
+                 if capped_any else "",
+                 "有目标没过完（时长上限）" if timed_out else ""))
+        print("  报分数时必须写清上限：**同样的代码，小上限会跑出更高的分**"
+              "（本轮实测：小上限 0.864 vs 400 上限 0.619）——别把量具口径当测试质量。")
     if survived:
         print("\n存活变异体（非等价 ⇒ **测试缺失**，逐条列出）：")
         for s in survived:

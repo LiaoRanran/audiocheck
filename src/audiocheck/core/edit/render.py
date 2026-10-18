@@ -183,6 +183,7 @@ def _render_band(project: Project, dest: str, *, subtype: str | None, blocksize:
           "clips_int": False, "floor": 0.0, "floor_samples": 0}
     applied = [0] * len(project.ops)        # 每个操作覆盖的采样数（按其自身时间选区）
     tf_points = [0] * len(project.ops)      # 每个操作**实际改动**的时频点数
+    meas_e = [[0.0, 0.0] for _ in project.ops]   # 每个操作：掩码**前/后**的带内能量
     frames = 0
     claimed = 0
 
@@ -245,7 +246,12 @@ def _render_band(project: Project, dest: str, *, subtype: str | None, blocksize:
                     tm = (times >= o.t0) & (times < o.t1)
                     n_pts = int(band[j].sum()) * int(tm.sum())
                     if n_pts:
-                        S[np.ix_(band[j], tm)] *= gains[j]
+                        # **同一套 STFT 表示里**量一遍"设定 vs 实测"：
+                        # 在这套表示里量，窗泄漏不会被误算成"编辑没做够"（见 metrics 的注意）。
+                        sel = np.ix_(band[j], tm)
+                        meas_e[i][0] += float(np.sum(np.abs(S[sel]) ** 2))
+                        S[sel] *= gains[j]
+                        meas_e[i][1] += float(np.sum(np.abs(S[sel]) ** 2))
                         tf_points[i] += n_pts
                     a0 = max(cs, min(_sample_at(o.t0, fs), claimed))
                     a1 = min(ce, max(_sample_at(o.t1, fs), 0))
@@ -259,13 +265,16 @@ def _render_band(project: Project, dest: str, *, subtype: str | None, blocksize:
 
         frames = pos
 
+    measured = [(round(10.0 * math.log10(a / b0), 3) if b0 > 0 else None)
+                for b0, a in meas_e]
     return _audit(project, dest, "band", fs, ch, sub, frames, claimed, st, applied,
-                  tf_points=tf_points, n_fft=n_fft, hop=hop)
+                  tf_points=tf_points, measured=measured, n_fft=n_fft, hop=hop)
 
 
 def _audit(project: Project, dest: str, domain: str, fs: int, ch: int, sub: str,
            frames: int, claimed: int, st: dict, applied: list,
-           tf_points: list | None, n_fft: int | None = None, hop: int | None = None) -> dict:
+           tf_points: list | None, measured: list | None = None,
+           n_fft: int | None = None, hop: int | None = None) -> dict:
     """组装**审计记录**（两条路径共用；频域多几个字段，都不藏）。"""
     ops = []
     for i, op in enumerate(project.ops):
@@ -274,6 +283,11 @@ def _audit(project: Project, dest: str, domain: str, fs: int, ch: int, sub: str,
             # 时频路径：`applied_frames` 是"选区覆盖的采样数"，**不等于**被改动的量；
             # 真正被改的是时频点数（帧 × bin），单列出来免得读者把它当成编辑幅度。
             rec["applied_tf_points"] = tf_points[i]
+            #: **实测**的带内衰减（在**同一套 STFT 表示**里量的：掩码前/后的带内能量比）。
+            #: `None` = 这个操作是 no-op（没跑掩码）或带内本来没能量。
+            #: ⚠ 与 `gain_db`（设定值）**分开**报：说"我压了 20 dB"必须有实测值支撑。
+            #: ⚠ 多个操作重叠时，这里是**累积作用之后**的结果，不是该操作单独的效果。
+            rec["attenuation_measured_db"] = measured[i] if measured is not None else None
         ops.append(rec)
     audit = {
         "source": os.path.abspath(project.source),
