@@ -77,6 +77,13 @@ TARGETS: dict[str, list[str]] = {
     # 都在这一个文件里。这里的变异体最容易被"看起来还行"的测试放过——所以判据是
     # `tests/test_edit_stft.py`（往返残差、分块等价性、覆盖守卫、窗平方和恒 >0）。
     "src/audiocheck/core/edit/stft.py": ["tests/test_edit_stft.py"],
+    # 去削波（2026-10-18，P3 第一个修复算子）：**改的是真样本**，且判据是"只改饱和样本 +
+    # SDR 必须提升 + 能量不许缩水"。迭代次数、带限守卫、不等式投影、饱和集合口径，
+    # 每一处写错都会"安静地修坏"——正是变异测试该抓的形态。
+    "src/audiocheck/core/edit/declip.py": ["tests/test_edit_declip.py"],
+    # 合成语料（2026-10-18，修复算法的判据地基）：**它是"真值"本身**——
+    # 削波电平、饱和集合、带宽真值、脉冲位置，任一处写错都会让上层的"修复判据"失去意义。
+    "src/audiocheck/core/edit/corpus.py": ["tests/test_edit_corpus.py"],
 }
 
 #: 变异分数下限。**三次更正，都写在这里免得后人再踩**：
@@ -241,6 +248,19 @@ EQUIVALENT: dict[str, str] = {
         "而实测本机 libsndfile：**WAV** 被截断时按文件大小**重算帧数**（`claimed` 就等于实有帧数"
         "⇒ 永不短读）、**FLAC** 截断后读到损坏处会**抛** `LibsndfileError`（走 `except` 支）"
         "⇒ 在已验证的两种容器上不可达；留着是**防御性**的（未穷举其它容器）。",
+    # --- 2026-10-18（P3 去削波这一轮）：新模块 declip.py / corpus.py 的等价体 ---
+    "src/audiocheck/core/edit/declip.py:134:cmp:>=->>":
+        "`sign = np.where(a >= 0.0, 1, −1)` → `>`：两者只在 `a == 0.0` 时分叉，而 `sign` **只**在"
+        "饱和样本处被读（`sg[s]`），饱和样本满足 `|a| ≥ ceiling > 0` ⇒ 恒非 0 ⇒ 该等号不可达。",
+    "src/audiocheck/core/edit/corpus.py:55:cmp:>->>=":
+        "`x = x/peak*amp if peak > 0 else x` → `>=`：**防御性守卫**，`else` 支在定义域内不可达"
+        "——40 条随机相位正弦之和不可能恒为 0（`n > 0` 时 `max|x| > 0`）。",
+    "src/audiocheck/core/edit/corpus.py:75:cmp:>->>=":
+        "同上的**防御性守卫**（`band_limited_noise` 的 `peak > 0`）：定义域 `0 < bandwidth < fs/2` 下"
+        "带内至少留一条 bin ⇒ 输出恒非零 ⇒ `else` 支不可达。",
+    "src/audiocheck/core/edit/corpus.py:189:bin:*->/":
+        "`amp * sign` → `amp / sign`：本函数的 `sign` 语义是**脉冲极性**（`±1`），"
+        "而 `±1` 的倒数等于自身 ⇒ 两种写法逐位相同（判据 `test_click_train_*` 用的是 `sign=1`）。",
 }
 
 

@@ -15,6 +15,7 @@ import soundfile as sf
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
+from audiocheck.core.edit import corpus  # noqa: E402
 from audiocheck.edit_cli import _parse_freq, _parse_range, main  # noqa: E402
 
 FS = 48000
@@ -145,6 +146,44 @@ def test_clip_warning_is_printed(tmp_path, capsys):
                "--subtype", "PCM_16"])
     assert rc == 0
     assert "削波" in capsys.readouterr().out
+
+
+# ------------------------------------------------------------------ 去削波路径
+def _clipped(seconds: float = 1.0) -> np.ndarray:
+    return corpus.clipped(corpus.default_clean(seconds, fs=FS, seed=1), "moderate")["clipped"]
+
+
+def test_declip_cli_reports_the_measurements(tmp_path, capsys):
+    """`--declip` 把**实测**摊在台面上：饱和样本数、能量比、带外变化（可审计的修复）。"""
+    src = _write(tmp_path / "a.wav", _clipped())
+    aud = str(tmp_path / "audit.json")
+    rc = main([src, str(tmp_path / "b.wav"), "--declip", "--at", "0.0-1.0",
+               "--bandwidth", "21600", "--audit", aud])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "去削波" in out and "饱和" in out and "能量比" in out and "带外变化" in out
+    rec = json.loads(open(aud, encoding="utf-8").read())
+    assert rec["domain"] == "declip" and rec["algorithm"] == "pocs_declip"
+    op = rec["ops"][0]
+    assert op["ceiling_source"] == "auto_max" and op["replaced_samples"] > 0
+    assert op["energy_ratio_measured_db"] > -0.5
+
+
+def test_declip_needs_bandwidth(tmp_path, capsys):
+    src = _write(tmp_path / "a.wav", _clipped())
+    assert main([src, str(tmp_path / "b.wav"), "--declip", "--at", "0.0-1.0"]) == 2
+    assert "bandwidth" in capsys.readouterr().out
+
+
+def test_exactly_one_mode_is_required(tmp_path, capsys):
+    src = _write(tmp_path / "a.wav", _clipped())
+    dst = str(tmp_path / "b.wav")
+    assert main([src, dst, "--at", "0.0-1.0"]) == 2                  # 一种都没给
+    assert main([src, dst, "--gain", "-6", "--declip", "--bandwidth", "21600",
+                 "--at", "0.0-1.0"]) == 2                            # 给了两种
+    assert main([src, dst, "--declip", "--bandwidth", "21600", "--band", "4000-8000",
+                 "--at", "0.0-1.0"]) == 2                            # --band 只对 gain 有效
+    assert "参数错误" in capsys.readouterr().out
 
 
 # ------------------------------------------------------------------ 错误路径

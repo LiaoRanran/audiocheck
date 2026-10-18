@@ -23,11 +23,14 @@
   会在边界处**留一个台阶**（实测：边界两侧 8 kHz 成分幅度从 1.0 掉到 0.61 ⇒ 一声 click）。
   外扩后，窗外自然恢复原样（窗本身是锥形的），跨度之内**未受影响**的采样仍只有
   ~1e-15 的往返残差、跨度之外逐位不变。
-* 因此频域编辑的**效力边界**是：**受影响的采样 = 选区 ± n_fft/2**；"选区外逐位不变"
-  成立的范围是 **跨度之外**（= 选区 ± n_fft）。这条与 `roundtrip_floor_dbfs` 一起报给用户。
-
-两条路径**不许混用**（见 `render` 的分发）：顺序语义还没立判据，宁可不做。
-两条都遵守：**削波不静默**、**截断源不许 traceback**（沿用 E2.1 规矩）。
+* **修复**（`ops.DeclipOp`）：**逐选区整段载入**，POCS 重建（带限投影 + 削波不等式投影，
+  见 `declip.py`）。**只改饱和样本**：选区之外与选区内的非饱和样本都**逐位不变**。
+  ⚠ 这一条**不能分块**（"带限"是全局约束，切块会在接缝上留台阶）⇒ 它把**选区**整段进内存，
+  内存 ≈ `选区采样 × 声道 × 8 B × ~4`，这条边界写在 `_render_declip` 的 docstring 里。
+  ⚠ `bandwidth ≥ 奈奎斯特` 时没有约束可利用 ⇒ **逐位不变**（如实记 `noop`）。
+* 三条路径**不许混用**（见 `render` 的分发）：顺序语义都还没立判据，宁可不做。
+  多个 `DeclipOp` 的选区之间也不许重叠（同理）。
+* 三条都遵守：**削波不静默**、**截断源不许 traceback**（沿用 E2.1 规矩）。
 """
 from __future__ import annotations
 
@@ -38,8 +41,9 @@ import numpy as np
 import soundfile as sf
 
 from ..context import io_path
-from . import stft
-from .ops import BandGainOp, GainOp, Project
+from . import declip, stft
+from .metrics import band_gain_db, energy_ratio_db
+from .ops import BandGainOp, DeclipOp, GainOp, Project
 
 #: 一次读入的帧数（与 `analyzers/basic.py` 的读块同量级）。
 BLOCKSIZE = 1 << 16
@@ -120,7 +124,10 @@ def render(project: Project, dest: str, *, subtype: str | None = None,
     if all(isinstance(o, BandGainOp) for o in ops):
         return _render_band(project, dest, subtype=subtype, blocksize=blocksize,
                             overwrite=overwrite, n_fft=n_fft, hop=hop, chunk_hops=chunk_hops)
-    raise ValueError("同一项目里混用时间域与频域操作：顺序语义尚未立判据（宁可不做）")
+    if all(isinstance(o, DeclipOp) for o in ops):
+        return _render_declip(project, dest, subtype=subtype, blocksize=blocksize,
+                              overwrite=overwrite)
+    raise ValueError("同一项目里混用时间域/频域/去削波操作：顺序语义尚未立判据（宁可不做）")
 
 
 def _render_time(project: Project, dest: str, *, subtype: str | None,
@@ -271,11 +278,106 @@ def _render_band(project: Project, dest: str, *, subtype: str | None, blocksize:
                   tf_points=tf_points, measured=measured, n_fft=n_fft, hop=hop)
 
 
+def _declip_record(seg: np.ndarray, out: np.ndarray, sstat: dict, op: DeclipOp,
+                   fs: int) -> dict:
+    """去削波的**如实记账**：除了饱和样本数与 `c`，还报两条**实测**（同一把尺子）：
+
+    * `energy_ratio_measured_db` = 输出/输入的**能量比**——PHAIN 警告的"变安静被当成修好"
+      就靠它防（`docs/theory.md §12.2`）；
+    * `out_of_band_measured_db` = `> bandwidth` 那段的能量变化——它证明"带限投影**确实生效**"
+      （削波会在带外造出能量，重建把它收了回去；实测为负值）。
+    """
+    rec = dict(sstat)
+    rec["energy_ratio_measured_db"] = _round_db(energy_ratio_db(out, seg))
+    nyq = fs / 2.0
+    rec["out_of_band_measured_db"] = (
+        _round_db(band_gain_db(seg, out, fs, op.bandwidth, nyq))
+        if op.bandwidth < nyq else None)
+    return rec
+
+
+def _round_db(v: float | None) -> float | None:
+    return None if v is None else round(float(v), 3)
+
+
+def _render_declip(project: Project, dest: str, *, subtype: str | None,
+                   blocksize: int, overwrite: bool) -> dict:
+    """去削波路径：**逐选区整段载入**，POCS 重建，只改饱和样本。
+
+    ⚠ **不做分块**（与时间域/频域路径的差别，必须让用户看见）：POCS 的核心是
+    "带限"这条**全局**约束（对整个选区做一次 FFT），分块会把约束切断、接缝处必然出现
+    台阶。所以本路径把**选区**整段载入内存：内存 ≈ `选区采样 × 声道 × 8 B × ~4`。
+    选区之外**逐位不变**（原样拷贝）；选区之内**非饱和样本逐位不变**。
+    ⚠ 多个去削波的选区**不许重叠**（顺序语义未立判据）⇒ 这里先校验完再动目标文件，
+    免得留下半截输出。
+    """
+    src, dst = _check_dest(project.source, dest, overwrite)
+    ops = list(project.ops)
+    st = {"read_error": None, "peak": 0.0, "clipped": 0, "clips_int": False,
+          "floor": 0.0, "floor_samples": 0}
+    applied = [0] * len(ops)          # 每个操作被选区**覆盖**的采样数
+    recs = [None] * len(ops)
+    frames = 0
+    claimed = 0
+
+    with sf.SoundFile(src) as f:
+        fs = int(f.samplerate)
+        ch = int(f.channels)
+        sub = subtype or f.subtype
+        st["clips_int"] = sub in _INT_SUBTYPES
+        claimed = int(f.frames or 0)
+        spans = [(max(0, min(_sample_at(o.t0, fs), claimed)),
+                  max(0, min(_sample_at(o.t1, fs), claimed))) for o in ops]
+        order = sorted(range(len(ops)), key=lambda i: spans[i][0])
+        end = 0
+        for i in order:
+            if spans[i][0] < end:
+                raise ValueError("多个去削波选区**重叠**：先改哪段没有定义（宁可不做）")
+            end = spans[i][1]
+
+        with sf.SoundFile(dst, "w", samplerate=fs, channels=ch, subtype=sub) as g:
+            cursor = 0
+            pos = 0
+            for i in order:
+                k0, k1 = spans[i]
+                if k1 <= k0:
+                    continue
+                pos = cursor = _copy_range(f, g, cursor, k0, blocksize, st)
+                if st["read_error"] is not None:
+                    break
+                f.seek(k0)
+                try:
+                    seg = f.read(k1 - k0, dtype="float64", always_2d=True)
+                except Exception as e:                # noqa: BLE001 —— libsndfile 形形色色
+                    st["read_error"] = e
+                    break
+                if len(seg) < k1 - k0:                # 声称有、实际读不满 ⇒ 截断
+                    st["read_error"] = OSError(
+                        "声称 %d 帧，向后读时只拿到 %d 帧" % (k1 - k0, len(seg)))
+                    if not len(seg):
+                        break
+                op = ops[i]
+                out, sstat = declip.reconstruct(seg, op.ceiling, fs, op.bandwidth,
+                                                iterations=op.iterations)
+                recs[i] = _declip_record(seg, out, sstat, op, fs)
+                applied[i] = int(seg.shape[0])
+                _account(out, st)
+                g.write(out)
+                pos = cursor = k0 + int(out.shape[0])
+            if st["read_error"] is None:
+                pos = _copy_range(f, g, cursor, claimed, blocksize, st)
+        frames = pos
+
+    return _audit(project, dest, "declip", fs, ch, sub, frames, claimed, st, applied,
+                  tf_points=None, declip_recs=recs)
+
+
 def _audit(project: Project, dest: str, domain: str, fs: int, ch: int, sub: str,
            frames: int, claimed: int, st: dict, applied: list,
            tf_points: list | None, measured: list | None = None,
-           n_fft: int | None = None, hop: int | None = None) -> dict:
-    """组装**审计记录**（两条路径共用；频域多几个字段，都不藏）。"""
+           n_fft: int | None = None, hop: int | None = None,
+           declip_recs: list | None = None) -> dict:
+    """组装**审计记录**（三条路径共用；域特有的字段都不藏）。"""
     ops = []
     for i, op in enumerate(project.ops):
         rec = {**op.to_dict(), "applied_frames": applied[i]}
@@ -288,6 +390,10 @@ def _audit(project: Project, dest: str, domain: str, fs: int, ch: int, sub: str,
             #: ⚠ 与 `gain_db`（设定值）**分开**报：说"我压了 20 dB"必须有实测值支撑。
             #: ⚠ 多个操作重叠时，这里是**累积作用之后**的结果，不是该操作单独的效果。
             rec["attenuation_measured_db"] = measured[i] if measured is not None else None
+        if declip_recs is not None and declip_recs[i] is not None:
+            # 去削波：`applied_frames` 是**选区覆盖**的采样数；真正被改的是 `replaced_samples`
+            # （饱和样本数）。另外带上**实测**的能量比与带外变化（`_declip_record`）。
+            rec.update(declip_recs[i])
         ops.append(rec)
     audit = {
         "source": os.path.abspath(project.source),
@@ -315,6 +421,9 @@ def _audit(project: Project, dest: str, domain: str, fs: int, ch: int, sub: str,
             round(20.0 * math.log10(st["floor"]), 3) if st["floor"] > 0 else None)
         #: 上面那个残差是在多少个采样上实测出来的（口径可查，不是拍脑袋的数）
         audit["roundtrip_floor_samples"] = st["floor_samples"]
+    if domain == "declip":
+        #: 用的是哪套重建（可复算的口径名）：带限投影 + 削波不等式投影，见 `declip.py`
+        audit["algorithm"] = "pocs_declip"
     return audit
 
 
@@ -328,3 +437,9 @@ def render_band(source: str, dest: str, t0: float, t1: float, f0: float, f1: flo
                 gain_db: float, **kw) -> dict:
     """便捷入口：单个**时频选区**增益（`render()` 的薄封装，参数同它）。"""
     return render(Project(source, [BandGainOp(t0, t1, f0, f1, gain_db)]), dest, **kw)
+
+
+def render_declip(source: str, dest: str, t0: float, t1: float, bandwidth: float,
+                  ceiling: float | None = None, **kw) -> dict:
+    """便捷入口：单个**去削波**选区（`render()` 的薄封装；`bandwidth`/`ceiling` 见 `DeclipOp`）。"""
+    return render(Project(source, [DeclipOp(t0, t1, bandwidth, ceiling)]), dest, **kw)

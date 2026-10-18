@@ -4,6 +4,55 @@
 
 ## [未发布]
 
+### 新增（**P3 第一个修复算子：去削波** —— 判据先行；量出来的关键结果是"插值会把 SDR 修坏"）
+
+> `docs/editor_roadmap.md §8` 第四步。循环照旧：**先建判据（合成语料）→ 把候选量一遍 →
+> 拿量出来的"不对劲"去检索 → 才落地**。全过程记在 `docs/editor_research.md §8`，
+> 数学判据在 `docs/theory.md §12.8`，决策实验在 `packaging/declip_probe.py`。
+
+- 新增 `core/edit/corpus.py`：**有真值的合成语料**（修复算法的判据地基）——带宽已知的干净信号
+  （`harmonic_tone` / `band_limited_noise`，带宽是**真值**，可核）、**硬削波三档** `CLIP_TIERS`
+  （相对峰值 0.85/0.55/0.28；severe 档饱和占比实测 **22.7%（噪声）/ 47.9%（谐波音）**——
+  把 Záviška/Rajmic 2021「既有基准太软」那条教训钉成**语料设计判据**：severe > 5%）、
+  位置已知的脉冲 `click_train`（给 `DeclickOp` 备料）。`ceiling_of` = 从数据里**量回**削波电平
+  `c` 的入口（**可测输入，不是猜**，`docs/theory.md §12.2`）。
+- 新增 `packaging/declip_probe.py`（**决策实验**：四种候选、同一把尺子 `sdr_db` + `energy_ratio_db`）：
+  局部插值（线性 / 三次多项式 / 三次样条）**把 SDR 修坏**（带限白噪：light 43.5→**21.3**、
+  moderate 23.3→**8.5**、severe 10.1→**1.6**）；纯 Papoulis–Gerchberg 用真值带宽很好，
+  但**带宽取窄会反伤**（severe ×0.5 ⇒ **0.47 dB**）；**POCS**（pg + 削波**不等式** `|x| ≥ c` 同号）
+  全面最优（**312.8 / 42.8 / 14.1**），且带宽取窄**只退化到"不改"**。
+  ⇒ **落地 POCS**、插值族**不进内核**（工程界的 Audacity ClipFix 正是被否决的这一族）。
+  机制：饱和样本的 `±c` 其误差被"**越出 `c` 多少**"限住，插值拿**不相关**的锚点去猜 ⇒ 越修越远。
+- 新增 `core/edit/declip.py` + `ops.DeclipOp` + `render` 的 declip 路径 + CLI `--declip`：
+  **只改饱和样本**（已知样本每轮写回 ⇒ 逐位不变），选区之外**原样拷贝**。两个输入都**可测**：
+  `ceiling`（`None` ⇒ 取**本段观测峰值**，审计记 `ceiling_source`）、`bandwidth`（**必填**；
+  `≥ 奈奎斯特` ⇒ 无约束可利用 ⇒ **逐位不变**、记 `noop`）。审计新增两条**实测**：
+  能量比（防"变安静被当成修好"，PHAIN 的警告）与带外变化（证明带限投影确实生效，实测 **−15.5 dB**）。
+- **效力边界**（全部实测，写进审计 / CLI / 文档）：`B` 由调用方给（本模块**不估**）；
+  提升随饱和变密而变小（light **+269** / moderate **+19.5** / severe **+4.0 dB**——与
+  Záviška/Rajmic/Mokrý, *Signal Processing* 192 (2022)「提升随输入 SDR 增大而增大」同向）；
+  `c` 必须取自**被编辑文件自己**的样本（float32 存回后是**量化**的 ⇒ 拿写入前的理论电平去比会把
+  饱和集合**判空**，实测 `|y| ≥ 0.5225` 一个都匹配不到）；**不能分块**（带限是**全局**约束）
+  ⇒ 选区整段载入内存（内存 ≈ 选区采样 × 声道 × 8 B × ~4）。
+- **两条新拒绝**（顺序语义未立判据 ⇒ 宁可不做）：多个去削波选区**重叠**；
+  与 `GainOp`/`BandGainOp` **同栈混用**。
+- 新增判据 **45 条**：`tests/test_edit_corpus.py`（20）+ `tests/test_edit_declip.py`（22）
+  + `tests/test_edit_cli.py`（3）。语料的**常量与默认值都钉死**（改一个数就是换一把尺子），
+  生成器按文档式子**独立重算 → 逐位相同**（可复算）。
+- 文档：`docs/theory.md §12.8`（去削波的判据 + "插值为什么错"）、`docs/editor_research.md §8`
+  （实测表 + 带问题检索到的锚点：Papoulis 1975 / Gerchberg 1974 / Rajmic et al. Axioms 2019 /
+  Záviška et al. JSTSP 2021 / Signal Processing 2022）、`docs/editor_roadmap.md` 第四步收口
+  + 第五步（给 `B` 找"不猜"的来源、密集削波那一族）。
+- 探针 `TARGETS` 新增 `core/edit/declip.py` + `corpus.py`（前者改的是**真样本**，
+  后者是**真值本身**）。首次跑出 **0.906（58/64，6 存活）**，把其中 2 条补成判据、
+  4 条登记为**可证明的等价体**（`sign` 只在饱和样本处被读／两条防御性 `peak > 0` 守卫／
+  `sign ∈ {±1}` 的乘法与除法同值）后复跑：
+  **60/60 = 1.000，存活 0，等价 4**（`packaging/mutation_probe.py --only core/edit/declip
+  --only core/edit/corpus`）。补的两条判据：语料的**最长段口径**（段长 = `e − s`）与
+  `click_train` 的**默认 `amp`**（原先测试总是显式传参 ⇒ 默认值没被测到）。
+  ⚠ 口径如实记：本次单目标上限 `--max-mutants 200`（两模块候选 17 + 47 = 64，
+  **无截断**：等效体单列，故分母是 60）。
+
 ### 判据补全（**编辑三件的 27 条存活**：把"导出结果"这条通路钉到 0 存活）
 
 - 上一轮的**完整**变异探针（`--max-mutants 400`，653 个有效变异体）里，`core/edit/` 三件

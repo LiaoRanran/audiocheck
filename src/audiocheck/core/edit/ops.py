@@ -7,14 +7,17 @@
 2. **可审计**：每个操作都能 `to_dict()`（机器可读）与 `describe()`（人可读），
    渲染再返回一份**审计记录**——这是本项目相对闭源工具的那条差别（见
    `docs/editor_roadmap.md §2`："可审计的修复"）。
-3. **只做有判据的**：目前只有两个操作——时间选区增益 `GainOp`、时频选区增益
-   `BandGainOp`（判据在 `tests/test_edit_render.py` / `tests/test_edit_stft.py`）。
+3. **只做有判据的**：目前三个操作——时间选区增益 `GainOp`、时频选区增益
+   `BandGainOp`（判据在 `tests/test_edit_render.py` / `tests/test_edit_stft.py`）、
+   去削波 `DeclipOp`（判据在 `tests/test_edit_declip.py`）。
    加任何新算法前，先按 `docs/editor_roadmap.md §5` 建判据（合成语料 + 客观指标 +
    效力边界），否则不加。
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+
+from .declip import DEFAULT_ITERATIONS
 
 
 @dataclass(frozen=True)
@@ -90,13 +93,68 @@ class BandGainOp:
             self.t0, self.t1, self.f0, self.f1, self.gain_db)
 
 
+@dataclass(frozen=True)
+class DeclipOp:
+    """对时间选区 `[t0, t1)` 做**去削波**：只改饱和样本，其余逐位不变。
+
+    两个输入都是**可测的**（`docs/theory.md §12.2`：削波对饱和样本只给"越过了 ±c"，
+    位置/个数与 `c` 都可测 ⇒ 不是猜）：
+
+    * `bandwidth` —— 内容**带宽上界** `B`（Hz）**必须给**。去削波靠"信号带限"这条先验
+      （`declip.py` 实测：否认这条先验的方法——局部插值——会把 SDR **修坏**）。
+      `B ≥ 奈奎斯特` 时没有约束可利用 ⇒ 渲染层**直接跳过**（逐位不变），如实记 `noop`。
+    * `ceiling` —— 削波电平 `c`（线性幅度）。给了就用它（量它的入口 = `corpus.ceiling_of`）；
+      `None` ⇒ 取**本段观测峰值** `max|y|`（审计记 `ceiling_source="auto_max"`）。
+      ⚠ 自动取值不是偷懒：素材存成 float32/整型后样本值是**量化过**的，拿"写入前的理论
+      电平"去比会把饱和集合判空（已在 `declip.py` 的 docstring 里实测记录）。代价是
+      **区间本来没有削波**时会把最响的样本当成饱和去重建——给准确值更好。
+
+    算法与实测依据见 `declip.py`（POCS 交替投影）。选区口径与 `GainOp` **逐位一致**
+    （半开 `[t0, t1)`；样本 `k` 受影响 ⟺ `t0 ≤ k/fs < t1`）。
+
+    ⚠ 两条**拒绝**规则（宁可不做，见 `render.render`）：① 与 `GainOp`/`BandGainOp` 同栈
+    混用；② 多个 `DeclipOp` 的选区**互相重叠**——两种情况的顺序语义都还没立判据。
+    """
+
+    t0: float
+    t1: float
+    bandwidth: float
+    ceiling: float | None = None
+    iterations: int = DEFAULT_ITERATIONS
+
+    def __post_init__(self) -> None:
+        if not (self.t1 > self.t0 >= 0.0):
+            raise ValueError("时间选区非法：需要 0 <= t0 < t1，得到 [%r, %r)" % (self.t0, self.t1))
+        if self.ceiling is not None and not self.ceiling > 0.0:
+            raise ValueError("削波电平必须 > 0 或为 None（自动取观测峰值），得到 %r" % self.ceiling)
+        if not self.bandwidth > 0.0:
+            raise ValueError("带宽必须 > 0，得到 %r" % self.bandwidth)
+        if not self.iterations >= 1:
+            raise ValueError("迭代次数必须 >= 1，得到 %r" % self.iterations)
+
+    @property
+    def is_noop(self) -> bool:
+        """去削波**没有"设定值 0 ⇒ no-op"的形态**：改不改要等渲染时看有没有饱和样本、
+        以及 `bandwidth` 是否 < 奈奎斯特 ⇒ 这里**恒返回 False**（不假装知道答案）。"""
+        return False
+
+    def to_dict(self) -> dict:
+        return {"kind": "declip", "t0": self.t0, "t1": self.t1, "ceiling": self.ceiling,
+                "bandwidth": self.bandwidth, "iterations": self.iterations}
+
+    def describe(self) -> str:
+        c = "自动（观测峰值）" if self.ceiling is None else "%.4f" % self.ceiling
+        return "去削波 %.3f–%.3f s：削波电平 %s ｜ 带宽 %.0f Hz ｜ 迭代 %d" % (
+            self.t0, self.t1, c, self.bandwidth, self.iterations)
+
+
 @dataclass
 class Project:
     """一个非破坏编辑项目：源文件 + 操作栈（按加入顺序**依次**作用）。
 
-    ⚠ 操作栈目前是 `GainOp`（时间域）**或** `BandGainOp`（频域）**二选一**：
-    同一栈里混用时，操作顺序的语义（先按频率改谱、还是先按时间改样点）还没立判据，
-    渲染层直接拒绝（见 `render.render`），不猜。
+    ⚠ 操作栈目前是 `GainOp`（时间域）**或** `BandGainOp`（频域）**或** `DeclipOp`（去削波）
+    **三选一**：同一栈里混用时，操作顺序的语义（先按频率改谱、还是先按时间改样点）还没立判据，
+    渲染层直接拒绝（见 `render.render`），不猜。多个 `DeclipOp` 之间也不许重叠选区。
     """
 
     source: str

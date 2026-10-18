@@ -2,12 +2,17 @@
 
     audiocheck-edit <源> <目标> --gain -6 --at 12.5-14.0 [--subtype PCM_16] [--overwrite] [--audit 记录.json]
     audiocheck-edit <源> <目标> --gain -20 --at 12.5-14.0 --band 4000-8000     # 时频选区
+    audiocheck-edit <源> <目标> --declip --at 3.0-3.5 --bandwidth 18000 [--ceiling 0.98]   # 去削波
+
+三种操作**必须给且只给一种**：`--gain`（时间选区增益 / 加 `--band` 变时频选区）
+或 `--declip`（去削波；`--bandwidth` 必填，`--ceiling` 省略时自动取区间观测峰值，见 `DeclipOp`）。
 
 三条约定（与 `core/edit/render.py` 一致，不在这一层偷改）
 --------------------------------------------------------
 * **非破坏**：目标 == 源一律拒绝（渲染层硬保证）；目标已存在时默认不覆盖（`--overwrite` 才覆盖）。
 * **可审计**：跑完把审计记录**打出来**；`--audit` 再另存一份 JSON（"可审计的修复"的第一片）。
   频域编辑还会打出**实测的 STFT 往返残差**——"频谱编辑不是位精确的"这条要摆到台面上。
+  去削波还会打出**实测的能量比**与**带外变化**——证明"没把它修安静了"、且带限投影确实生效。
 * **不许 traceback**：源读不了 / 参数非法 → **一行可读信息** + 明确退出码。
 
 退出码：`0` 成功 ｜ `2` 参数或用法问题 ｜ `4` 源读不了 ｜ `5` 目标已存在且未给 `--overwrite`。
@@ -19,7 +24,7 @@ import json
 import sys
 
 from .cli import _setup_console
-from .core.edit import BandGainOp, GainOp, Project, render
+from .core.edit import BandGainOp, DeclipOp, GainOp, Project, render
 
 
 def _parse_range(s: str) -> tuple[float, float]:
@@ -55,8 +60,16 @@ def build_parser() -> argparse.ArgumentParser:
                                  description="非破坏编辑：把操作渲染到新文件，并给出审计记录")
     ap.add_argument("source", help="源音频（只读，永不修改）")
     ap.add_argument("dest", help="输出文件（不许等于源）")
-    ap.add_argument("--gain", type=float, required=True,
+    ap.add_argument("--gain", type=float, default=None,
                     help="选区增益（dB）。0 = 无操作（no-op，逐位不变）")
+    ap.add_argument("--declip", action="store_true",
+                    help="去削波（只改饱和样本）。需配合 --ceiling 与 --bandwidth")
+    ap.add_argument("--ceiling", type=float, default=None,
+                    help="削波电平 c（线性幅度，0 < c <= 1；可测输入，见 --declip）")
+    ap.add_argument("--bandwidth", type=float, default=None,
+                    help="内容带宽上界 B（Hz；去削波靠『信号带限』这条先验，必填）")
+    ap.add_argument("--iterations", type=int, default=None,
+                    help="去削波的 POCS 迭代次数（默认 128；更多更准但更慢，见 declip.py）")
     ap.add_argument("--at", required=True, help="时间选区（秒，半开区间），形如 12.5-14.0")
     ap.add_argument("--band", default=None,
                     help="频段（Hz，半开区间），给了就走**时频**路径，形如 4000-8000")
@@ -74,6 +87,20 @@ def main(argv=None) -> int:
     _setup_console()
     a = build_parser().parse_args(argv)
 
+    n_modes = (1 if a.gain is not None else 0) + (1 if a.declip else 0)
+    if n_modes != 1:
+        print("参数错误：必须且**只**给一种操作：`--gain`（增益，可加 `--band`）"
+              "或 `--declip`（去削波）")
+        return 2
+    if a.declip:
+        if a.bandwidth is None:
+            print("参数错误：`--declip` 需要 `--bandwidth`（带宽上界 B）——去削波靠「信号带限」"
+                  "这条先验，没有它就没有约束可利用")
+            return 2
+        if a.band or a.n_fft is not None or a.hop is not None:
+            print("参数错误：`--band` / `--n-fft` / `--hop` 只对 `--gain` 有效")
+            return 2
+
     try:
         t0, t1 = _parse_range(a.at)
         f0, f1 = _parse_freq(a.band) if a.band else (None, None)
@@ -89,8 +116,12 @@ def main(argv=None) -> int:
         if a.hop is not None:
             kw["hop"] = a.hop
     try:
-        op = (BandGainOp(t0, t1, f0, f1, a.gain) if a.band
-              else GainOp(t0, t1, a.gain))
+        if a.declip:
+            dkw = {} if a.iterations is None else {"iterations": a.iterations}
+            op = DeclipOp(t0, t1, a.bandwidth, a.ceiling, **dkw)
+        else:
+            op = (BandGainOp(t0, t1, f0, f1, a.gain) if a.band
+                  else GainOp(t0, t1, a.gain))
         audit = render(Project(a.source, [op]), a.dest,
                        subtype=a.subtype, overwrite=a.overwrite, **kw)
     except FileExistsError as e:
@@ -121,6 +152,23 @@ def main(argv=None) -> int:
         if any(o.get("attenuation_measured_db") is not None
                and abs(o["attenuation_measured_db"] - o["gain_db"]) > 0.01 for o in audit["ops"]):
             print("注  实测是掩码在时频域**实际乘下去**的量（设定与实测的差来自掩码的边缘 bin/帧）")
+    elif audit["domain"] == "declip":
+        for op in audit["ops"]:
+            e = op.get("energy_ratio_measured_db")
+            ob = op.get("out_of_band_measured_db")
+            print("操作  去削波 %.3f–%.3f s：削波电平 %.4f（%s ｜ 区内峰值 %.4f）｜ 带宽 %.0f Hz ｜ 迭代 %d"
+                  % (op["t0"], op["t1"], op["ceiling"],
+                     "给定" if op.get("ceiling_source") == "given" else "自动=观测峰值",
+                     op["peak_in"], op["bandwidth"], op["iterations"]))
+            print("     饱和 %d / %d 采样（%.2f%% ｜ %d 段 ｜ 最长 %d）｜ 实际替换 %d 帧"
+                  % (op["saturated_samples"], op["total_samples"], 100.0 * op["fraction"],
+                     op["runs"], op["longest_run"], op["replaced_samples"]))
+            # 「设定 vs 实测」+ 两条守卫：能量比防「修安静了」，带外变化证明带限投影真生效
+            print("     实测  能量比 %s dB（防『变安静被当成修好』）｜ 带外变化 %s dB ｜ %s"
+                  % ("—" if e is None else "%+.3f" % e,
+                     "—" if ob is None else "%+.3f" % ob,
+                     "无带限约束（逐位不变）" if op.get("noop") else "带限投影生效"))
+        print("算法  %s（带限投影 + 削波不等式投影）" % audit["algorithm"])
     else:
         for op in audit["ops"]:
             print("操作  %+.1f dB @ [%.3f, %.3f) s ｜ 生效 %d 帧"

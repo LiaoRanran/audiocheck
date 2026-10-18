@@ -7,7 +7,8 @@
   * `stft` 是**编辑专用**的时频内核（`docs/theory.md §12.1` 的 COLA/NOLA 落地），
     与 `dsp`（测量）各有一套：测量的 Welch 参数要统计平滑，编辑的 STFT 参数要局部性。
 """
-from .ops import BandGainOp, GainOp, Project
-from .render import render, render_band, render_gain
+from .ops import BandGainOp, DeclipOp, GainOp, Project
+from .render import render, render_band, render_declip, render_gain
 
-__all__ = ["BandGainOp", "GainOp", "Project", "render", "render_band", "render_gain"]
+__all__ = ["BandGainOp", "DeclipOp", "GainOp", "Project",
+           "render", "render_band", "render_declip", "render_gain"]

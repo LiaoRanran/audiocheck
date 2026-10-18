@@ -115,14 +115,30 @@
 ⇒ **结论：软掩码不进内核**（`docs/editor_research.md §7`、`docs/theory.md §12.7 ⑤`）。
 ⚠ 这一项在编辑升级到"**挖点/补点**"（时频修音 / declip / declick）时要**重开**。
 
-### 第四步（建议）：**P3 修复算法的判据骨架**
+### 第四步（**已完成**）：**P3 修复算法的判据骨架 + 第一个修复算子** —— ✅ 2026-10-18
 
-`metrics.py` 里的 `sdr_db` + `energy_ratio_db` 就是为这一步准备的（`docs/theory.md §12.2/§12.3`
-要求"修复"必须用 **SDR + 能量比**两条一起验收，防"变安静被误当修好了"）。
-第一个该做的不是算法，而是**合成语料 + 判据**：
-① 合成削波（位置/个数/深度 `c` 都已知），② 合成咔哒（位置已知），
-③ 用 **Záviška 的教训**把削波档做得**够狠**（既有基准偏温和）。
-先把这三样立起来，再写 `DeclipOp` / `DeclickOp`。
+**先建判据再写算法**（`docs/editor_research.md §8` 记全过程）：
+1. `core/edit/corpus.py` —— **有真值的合成语料**：带宽已知的干净信号（`harmonic_tone` /
+   `band_limited_noise`）、**硬削波三档**（`CLIP_TIERS`，severe 档饱和占比实测 22.7%，
+   把 Záviška "既有基准太软"那条教训钉成语料判据）、脉冲位置已知的 `click_train`。
+2. `packaging/declip_probe.py` —— **先量四种候选重建**（插值 / 样条 / Papoulis–Gerchberg /
+   POCS），同一把尺子（`sdr_db` + `energy_ratio_db`）。
+3. `core/edit/declip.py` + `ops.DeclipOp` + render 的 declip 路径 + CLI `--declip`：
+   **POCS 三相交替投影**（带限 + 已知样本 + **削波不等式** `|x| ≥ c` 同号），**只改饱和样本**。
+
+**这一轮的关键结果是负面的**：局部插值（工程界 Audacity ClipFix 那一族）**把 SDR 修坏**
+（light 43.5→21.3、severe 10.1→1.6）⇒ **不进内核**；POCS 是四种里唯一全面提升且"带宽取窄
+只退化不反伤"的 ⇒ 落地。效力边界（`B` 必须由调用方给、`B ≥ 奈奎斯特` 时逐位不变、
+密集削波只 +4 dB 量级）全部写进审计与 CLI。判据 **42 条**在
+`tests/test_edit_corpus.py`（20）+ `tests/test_edit_declip.py`（22），另加 CLI 侧 3 条。
+
+### 第五步（建议）：**给 `B` 找一个"不猜"的来源 + 密集削波那一族**
+
+第四步把内容带宽 `B` 当**输入**收下（编辑层不估），但真实素材上 `B` 得有人量 ⇒
+下一轮该做的是**测量层**的一条"内容带宽估计"（现有截止点判定器是入口），并量"估偏"对
+去削波 SDR 的影响（本轮只量了"给真值 / 给窄"两种，`docs/editor_research.md §8.4`）。
+同时 **severe 档（饱和 >20%）** 是本方法族的边界：要上**稀疏/相位感知**那一族
+（Záviška 的 SPADE 谱系 / PHAIN 的相位约束）——**只挂账，未实现**，落地前照旧先建判据。
 
 ---
 
