@@ -66,6 +66,11 @@ TARGETS: dict[str, list[str]] = {
     "src/audiocheck/core/analyzers/causes.py": [
         "tests/test_c4_granularity.py", "tests/test_verdict.py",
         "tests/test_judgment_boundaries.py"],
+    # 编辑内核（2026-10-18，P0 地基）：**导出结果就是用户手里拿到的东西**。
+    # 抽样偏移一位、增益算错、区间端点判错，都属于"安静地给错数"——
+    # 正是变异测试该抓的形态（`test_edit_render.py` 逐条钉住这些口径）。
+    "src/audiocheck/core/edit/render.py": ["tests/test_edit_render.py"],
+    "src/audiocheck/core/edit/ops.py": ["tests/test_edit_render.py"],
 }
 
 #: 变异分数下限。**三次更正，都写在这里免得后人再踩**：
