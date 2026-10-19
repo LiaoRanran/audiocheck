@@ -129,8 +129,9 @@
 **这一轮的关键结果是负面的**：局部插值（工程界 Audacity ClipFix 那一族）**把 SDR 修坏**
 （light 43.5→21.3、severe 10.1→1.6）⇒ **不进内核**；POCS 是四种里唯一全面提升且"带宽取窄
 只退化不反伤"的 ⇒ 落地。效力边界（`B` 必须由调用方给、`B ≥ 奈奎斯特` 时逐位不变、
-密集削波只 +4 dB 量级）全部写进审计与 CLI。判据 **42 条**在
-`tests/test_edit_corpus.py`（20）+ `tests/test_edit_declip.py`（22），另加 CLI 侧 3 条。
+密集削波只 +4 dB 量级）全部写进审计与 CLI。判据 **46 条**在
+`tests/test_edit_corpus.py`（20）+ `tests/test_edit_declip.py`（26），另加 CLI 侧 3 条；
+编辑侧四个模块变异**逐模块 1.000**（`docs/../CHANGELOG.md` 本轮的"探针维护"一节）。
 
 ### 第五步（建议）：**给 `B` 找一个"不猜"的来源 + 密集削波那一族**
 

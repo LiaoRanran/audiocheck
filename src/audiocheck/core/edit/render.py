@@ -284,15 +284,17 @@ def _declip_record(seg: np.ndarray, out: np.ndarray, sstat: dict, op: DeclipOp,
 
     * `energy_ratio_measured_db` = 输出/输入的**能量比**——PHAIN 警告的"变安静被当成修好"
       就靠它防（`docs/theory.md §12.2`）；
-    * `out_of_band_measured_db` = `> bandwidth` 那段的能量变化——它证明"带限投影**确实生效**"
-      （削波会在带外造出能量，重建把它收了回去；实测为负值）。
+    * `out_of_band_measured_db` = "`> bandwidth` 那一段"的能量变化——它证明"带限投影
+      **确实生效**"（削波会在带外造出能量，重建把它收了回去；实测为负值）。
+      ⚠ 上界取 `fs`（半开区间 ⇒ **含奈奎斯特那条 bin**）：若写成 `fs/2`，在"奈奎斯特那条
+      bin 上有内容"的素材上会漏掉它 ⇒ 口径不一致。判据：
+      `test_out_of_band_measurement_covers_the_nyquist_bin`。
     """
     rec = dict(sstat)
     rec["energy_ratio_measured_db"] = _round_db(energy_ratio_db(out, seg))
-    nyq = fs / 2.0
     rec["out_of_band_measured_db"] = (
-        _round_db(band_gain_db(seg, out, fs, op.bandwidth, nyq))
-        if op.bandwidth < nyq else None)
+        _round_db(band_gain_db(seg, out, fs, op.bandwidth, float(fs)))
+        if op.bandwidth < fs / 2.0 else None)
     return rec
 
 

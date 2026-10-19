@@ -36,7 +36,7 @@
   ⇒ 选区整段载入内存（内存 ≈ 选区采样 × 声道 × 8 B × ~4）。
 - **两条新拒绝**（顺序语义未立判据 ⇒ 宁可不做）：多个去削波选区**重叠**；
   与 `GainOp`/`BandGainOp` **同栈混用**。
-- 新增判据 **45 条**：`tests/test_edit_corpus.py`（20）+ `tests/test_edit_declip.py`（22）
+- 新增判据 **49 条**：`tests/test_edit_corpus.py`（20）+ `tests/test_edit_declip.py`（26）
   + `tests/test_edit_cli.py`（3）。语料的**常量与默认值都钉死**（改一个数就是换一把尺子），
   生成器按文档式子**独立重算 → 逐位相同**（可复算）。
 - 文档：`docs/theory.md §12.8`（去削波的判据 + "插值为什么错"）、`docs/editor_research.md §8`
@@ -52,6 +52,25 @@
   `click_train` 的**默认 `amp`**（原先测试总是显式传参 ⇒ 默认值没被测到）。
   ⚠ 口径如实记：本次单目标上限 `--max-mutants 200`（两模块候选 17 + 47 = 64，
   **无截断**：等效体单列，故分母是 60）。
+- ⚠ **探针维护（同一轮，两条坑都留了记录）**：
+  ① `render.py` 加了 declip 路径 ⇒ **8 条等价体的行号全部漂移**，按探针自己的教训
+     （"行号键会漂，改被覆盖的源码后必须重跑核对"）重新对齐并**重跑核对**；
+  ② `ops.py` / `render.py` 的测试子集**补挂 `tests/test_edit_declip.py`**——新算子的
+     `__post_init__` / `to_dict` / `describe` 与 declip 渲染路径**只被它构造到**，
+     不挂就会"全假存活"（同型坑先前在 `test_edit_stft.py` 上踩过一次）。
+  首次跑 `--only core/edit/render --only core/edit/ops` 出 **0.904（85/94，9 存活）**；
+  补齐 6 条判据 + 1 条文案等价体后复跑 ⇒ **93/93 = 1.000，存活 0，等价 9**。
+  补的判据：`DeclipOp` 三个边界（`ceiling=0` / `bandwidth=0` 拒、`t1<=t0` 拒、`iterations=1` 允）、
+  审计两条**实测**的小数位（与重算值同 3 位）、**带外上界含奈奎斯特那条 bin**、
+  选区落在文件之外＝no-op、审计报**算法名与域**。另修一处**口径**：`_declip_record` 的
+  带外上界由 `fs/2` 改成 `fs`（半开区间 ⇒ 含奈奎斯特 bin），并补了对应判据。
+- ⚠ **整体分挂账**：本轮 `TARGETS` 由 7 模块变 9、且 `render.py` 行号变了 ⇒ 项目**完整**
+  变异分要用**新集合**重跑（`--max-mutants 400` 口径），**本轮不做**；旧记录
+  `404/653 = 0.619` 仍是最近一次**完整**测量的值（见下文"上限口径"一节），**不许当成
+  本轮分数**。编辑侧四个模块（`declip` / `corpus` / `render` / `ops`）本轮已逐模块复跑至 **1.000**。
+- 验证：编辑侧 6 个测试文件 **116 passed**；`ruff` 全树绿；全量 **881 收集 / 880 passed**
+  （唯一失败仍是 `tests/test_ui_material.py::TestToastLifecycle::test_burst_does_not_leak`
+  那条**已知 flaky**——全量负载下动画慢，单独跑必过，与本次改动无关）。
 
 ### 判据补全（**编辑三件的 27 条存活**：把"导出结果"这条通路钉到 0 存活）
 

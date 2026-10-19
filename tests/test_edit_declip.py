@@ -33,7 +33,7 @@ from audiocheck.core.edit import (  # noqa: E402
     render,
     render_declip,
 )
-from audiocheck.core.edit.metrics import sdr_db  # noqa: E402
+from audiocheck.core.edit.metrics import band_gain_db, energy_ratio_db, sdr_db  # noqa: E402
 
 FS = 48000
 B = 0.9 * FS / 2.0            # 干净素材的带宽真值（`corpus.default_clean`）
@@ -197,6 +197,7 @@ def test_bandwidth_at_nyquist_is_a_noop(tmp_path):
     rec = audit["ops"][0]
     assert rec["noop"] is True and rec["band_limited"] is False
     assert rec["replaced_samples"] == 0
+    assert rec["out_of_band_measured_db"] is None, "B = 奈奎斯特时没有'带外'可量 ⇒ 必须是 None"
     assert np.array_equal(_read(src), _read(dst))
 
 
@@ -253,6 +254,15 @@ def test_internal_run_finder_agrees_with_the_public_one():
     assert declip._runs(m) == corpus.saturation_runs(m) == [(1, 3), (5, 6)]
 
 
+def test_audit_names_the_algorithm_and_the_domain(tmp_path):
+    """审计必须报**用的是哪套重建**（可复算的口径名）——"可审计的修复"的一部分。"""
+    p = _pack()
+    src = _write(tmp_path / "a.wav", p["clipped"])
+    audit = render_declip(src, str(tmp_path / "b.wav"), 0.0, 1.0, B, overwrite=True)
+    assert audit["domain"] == "declip"
+    assert audit["algorithm"] == "pocs_declip"
+
+
 def test_stats_report_the_saturated_geometry(tmp_path):
     """审计里的几何量必须**对得上**：占比、段数、最长段、"真改了几帧"。"""
     p = _pack("moderate")
@@ -265,6 +275,47 @@ def test_stats_report_the_saturated_geometry(tmp_path):
     assert rec["longest_run"] == max(e - s for s, e in runs)
     # 真正被改的帧数**不超过**饱和帧数（削波不等式可能把某些饱和样本钳回原值）
     assert 0 < rec["replaced_samples"] <= rec["saturated_samples"]
+    # 两条**实测**必须等于"同一把尺子重算、保留 3 位"的值（口径可复算，小数位也钉住）
+    a, b = _read(src), _read(str(tmp_path / "b.wav"))
+    assert rec["energy_ratio_measured_db"] == round(float(energy_ratio_db(b, a)), 3)
+    assert rec["out_of_band_measured_db"] == round(float(band_gain_db(a, b, FS, B, float(FS))), 3)
+
+
+def test_out_of_band_measurement_covers_the_nyquist_bin(tmp_path):
+    """带外能量的上界取 `fs`（半开 ⇒ **含奈奎斯特那条 bin**）——这条口径只有"奈奎斯特上
+    有内容"的素材才分得出来（普通带限素材上两种写法一模一样）。
+
+    构造：带限白噪 + 一条**恰好 ±奈奎斯特**的谱线（`(-1)**n`），削一刀后去削波；
+    审计里的 `out_of_band_measured_db` 必须等于"按 `[B, fs)` 重算"的值。
+    """
+    x = corpus.default_clean(1.0, fs=FS, seed=1)[:, 0] + 0.3 * ((-1.0) ** np.arange(FS))
+    src = _write(tmp_path / "a.wav", corpus.clipped(x[:, None], ceiling=0.5)["clipped"])
+    dst = str(tmp_path / "b.wav")
+    audit = render_declip(src, dst, 0.0, 1.0, B, overwrite=True)
+    a, b = _read(src), _read(dst)
+    got = audit["ops"][0]["out_of_band_measured_db"]
+    assert got is not None and got == round(float(band_gain_db(a, b, FS, B, float(FS))), 3)
+
+
+def test_a_selection_past_the_end_is_a_noop(tmp_path):
+    """选区完全落在文件之外（`k0 == k1 == 帧数`）⇒ **什么都不做**、逐位不变（不许崩）。"""
+    p = _pack()
+    src = _write(tmp_path / "a.wav", p["clipped"])
+    dst = str(tmp_path / "b.wav")
+    audit = render_declip(src, dst, 5.0, 6.0, B, overwrite=True)      # 文件只有 1 s
+    assert audit["ops"][0]["applied_frames"] == 0
+    assert np.array_equal(_read(src), _read(dst))
+
+
+def test_declip_op_validates_its_inputs():
+    """三个边界都是**闭**的：`ceiling=0` / `bandwidth=0` / `t1<=t0` 拒绝，`iterations=1` 允许。"""
+    with pytest.raises(ValueError):
+        DeclipOp(0.0, 1.0, B, 0.0)                     # ceiling = 0（闭区间下界）
+    with pytest.raises(ValueError):
+        DeclipOp(0.0, 1.0, 0.0)                        # bandwidth = 0
+    with pytest.raises(ValueError):
+        DeclipOp(1.0, 0.5, B)                          # t1 <= t0
+    assert DeclipOp(0.0, 1.0, B, None, 1).iterations == 1
 
 
 def test_one_iteration_is_allowed():

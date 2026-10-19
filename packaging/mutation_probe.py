@@ -69,10 +69,15 @@ TARGETS: dict[str, list[str]] = {
     # 编辑内核（2026-10-18，P0 地基）：**导出结果就是用户手里拿到的东西**。
     # 抽样偏移一位、增益算错、区间端点判错，都属于"安静地给错数"——
     # 正是变异测试该抓的形态（`test_edit_render.py` 逐条钉住这些口径）。
+    # ⚠ 子集必须**包含判据所在的那个文件**：2026-10-18 加去削波后，`DeclipOp` 的
+    # `__post_init__` / `to_dict` / `describe` 只被 `tests/test_edit_declip.py` 构造到
+    # ⇒ 不挂它就会"全假存活"（这条坑先前在 `test_edit_stft.py` 上踩过一次）。
     "src/audiocheck/core/edit/render.py": ["tests/test_edit_render.py",
-                                          "tests/test_edit_stft.py"],
+                                          "tests/test_edit_stft.py",
+                                          "tests/test_edit_declip.py"],
     "src/audiocheck/core/edit/ops.py": ["tests/test_edit_render.py",
-                                        "tests/test_edit_stft.py"],
+                                        "tests/test_edit_stft.py",
+                                        "tests/test_edit_declip.py"],
     # 时频内核（2026-10-18，P0 频谱编辑的数学地基）：**重叠归一化、帧网、覆盖守卫**
     # 都在这一个文件里。这里的变异体最容易被"看起来还行"的测试放过——所以判据是
     # `tests/test_edit_stft.py`（往返残差、分块等价性、覆盖守卫、窗平方和恒 >0）。
@@ -202,24 +207,24 @@ EQUIVALENT: dict[str, str] = {
         "（`2Re(mov(ZL·conj ZR)) / (mov(p_l)+mov(p_r))`），同比缩放 ⇒ 比值不变 ⇒ "
         "**可证明**等价。",
     # --- 2026-10-18（编辑侧测量层这一轮）：编辑三件的等价体（每条都写清了"为什么输出逐位相同"）---
-    "src/audiocheck/core/edit/render.py:58:const:512->513":
+    "src/audiocheck/core/edit/render.py:62:const:512->513":
         "`CHUNK_HOPS` 只决定块长，而块长恒为 `chunk_hops*hop`（**永远是 hop 的整数倍**）"
         "⇒ 跨块的帧网格一致 ⇒ 输出逐位相同（`test_chunk_size_does_not_change_the_result`"
         "用 4 vs 512 证过）。",
-    "src/audiocheck/core/edit/render.py:90:cmp:<-><=":
+    "src/audiocheck/core/edit/render.py:94:cmp:<-><=":
         "`while pos < end` → `<=`：pos==end 时多进一次循环，`min(blocksize, end−pos=0)=0` "
         "⇒ `f.read(0)` 返回 0 帧 ⇒ 立刻被 `if not len(b): break` 退出 ⇒ 输出逐位相同。",
-    "src/audiocheck/core/edit/render.py:92:bin:-->+":
+    "src/audiocheck/core/edit/render.py:96:bin:-->+":
         "`min(blocksize, end − pos)` → `end + pos`：`_copy_range` 只在**首段**（pos=0，两式相同）"
         "与**尾段**（end=claimed）被调用，而 libsndfile 读到 EOF 会截短、循环判据又是 `pos < end`"
         "⇒ 写出的帧数逐位相同。",
-    "src/audiocheck/core/edit/render.py:221:bin:-->+":
+    "src/audiocheck/core/edit/render.py:228:bin:-->+":
         "`(ce − cs + 2*n_fft)` → `ce + cs + …`：**只是把缓冲区加长**。真实音频由 "
         "`buf[lo − src_lo : …] = raw` 按**固定偏移**填入（与总长无关），加长部分全在请求区间 "
         "`[n_fft, n_fft+(ce−cs))` 之外 ⇒ 输出逐位相同。",
-    "src/audiocheck/core/edit/render.py:231:bin:-->+":
+    "src/audiocheck/core/edit/render.py:238:bin:-->+":
         "报错**文案**里的 `hi − lo` → `hi + lo`：只进字符串，没有任何判据读它。",
-    "src/audiocheck/core/edit/render.py:233:cmp:<=-><":
+    "src/audiocheck/core/edit/render.py:240:cmp:<=-><":
         "`if ce <= cs: break`：这一支只在**源被截断**时走到，而上一行已经把 "
         "`st[\"read_error\"]` 置上了 ⇒ 无论 break 与否，外层 `while st[\"read_error\"] is None …`"
         "都会立刻退出（多跑的只是一个长度为 0 的空块）⇒ 输出逐位相同。",
@@ -239,11 +244,11 @@ EQUIVALENT: dict[str, str] = {
     "src/audiocheck/core/edit/stft.py:179:bin:-->+":
         "`wss = np.zeros((M − 1) * hop + n)` → `M + 1`：同上（归一化分母同步加长，"
         "`[n0:n1]` 上逐位相同）⇒ 输出逐位相同。",
-    "src/audiocheck/core/edit/render.py:161:cmp:<=-><":
+    "src/audiocheck/core/edit/render.py:168:cmp:<=-><":
         "`if k1 <= k0: continue` → `<`：两式只在 `k1 == k0` 时不同，而那一点上 "
         "`b[k0−pos:k1−pos]` 是**空切片**（`*=` 无操作）、`applied[i] += k1 − k0 = 0` "
         "⇒ 输出与审计都逐位相同。（`k1 < k0` 时两式都 `continue`。）",
-    "src/audiocheck/core/edit/render.py:232:bin:+->-":
+    "src/audiocheck/core/edit/render.py:239:bin:+->-":
         "`ce = min(ce, lo + len(raw))` → `lo − len(raw)`：这一支只在**短读**时走到，"
         "而实测本机 libsndfile：**WAV** 被截断时按文件大小**重算帧数**（`claimed` 就等于实有帧数"
         "⇒ 永不短读）、**FLAC** 截断后读到损坏处会**抛** `LibsndfileError`（走 `except` 支）"
@@ -261,6 +266,9 @@ EQUIVALENT: dict[str, str] = {
     "src/audiocheck/core/edit/corpus.py:189:bin:*->/":
         "`amp * sign` → `amp / sign`：本函数的 `sign` 语义是**脉冲极性**（`±1`），"
         "而 `±1` 的倒数等于自身 ⇒ 两种写法逐位相同（判据 `test_click_train_*` 用的是 `sign=1`）。",
+    "src/audiocheck/core/edit/render.py:358:bin:-->+":
+        "`_render_declip` 报错**文案**里的 `k1 − k0` → `k1 + k0`：只进字符串，"
+        "没有任何判据读它（与 band 路径的同型条目一致）。",
 }
 
 
