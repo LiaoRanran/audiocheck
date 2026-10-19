@@ -207,6 +207,17 @@ def main(argv=None) -> int:
                   % ("—" if e is None else "%+.3f" % e,
                      "—" if ob is None else "%+.3f" % ob,
                      "无带限约束（逐位不变）" if op.get("noop") else "带限投影生效"))
+            if op.get("ambiguity_margin") is not None:
+                if op["ambiguous"]:
+                    print("⚠ **解不唯一（欠定）**：可辨识性余量 %+.3f ≤ 0（饱和 %.1f%% 超过 "
+                          "1−B/(fs/2)）⇒ 迭代在解集里漂，**加迭代也逼近不了真值**"
+                          "（实测 400→20000 次 SDR 13.9→14.2 dB 不动）"
+                          % (op["ambiguity_margin"], 100.0 * op["fraction"]))
+                else:
+                    print("可辨识性  余量 %+.3f > 0（定解）｜ 迭代末步 %s dB%s"
+                          % (op["ambiguity_margin"], op["step_rms_db"],
+                             "（已到浮点精度）" if op.get("converged")
+                             else "（还能动 ⇒ 想要更准可加 --iterations）"))
         print("算法  %s（带限投影 + 削波不等式投影）" % audit["algorithm"])
     else:
         for op in audit["ops"]:

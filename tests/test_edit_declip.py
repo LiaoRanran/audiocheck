@@ -242,6 +242,57 @@ def test_declip_mixed_with_gain_is_refused(tmp_path):
 
 
 # ------------------------------------------------------------------ 5. 内核守卫
+def test_ambiguity_margin_predicts_whether_more_iterations_help(tmp_path):
+    """**可辨识性预判**（算出来的）：`f > 1 − B/(fs/2)` ⇒ 解不唯一 ⇒ **加迭代也没用**。
+
+    实测（`packaging/sparse_declip_probe.py` / `docs/editor_research.md §10`）同一份 severe 素材
+    （f≈22.4%）：
+    * 给**真值** `B=18 kHz`（余量 +0.026 > 0，定解）⇒ 400→2000 次**确实**在涨；
+    * 给**偏大**的 `B=21.6 kHz`（余量 −0.124 ≤ 0，欠定）⇒ 两侧全程钉住不动。
+    这条判据钉的就是"这个标志位**真的能预测**"，不是"多个字段好看"。
+    """
+    p = corpus.clipped(corpus.band_limited_noise(1.0, fs=FS, bandwidth=18000.0, seed=1), "severe")
+    y, c, clean = p["clipped"], p["ceiling"], p["clean"]
+
+    det = [declip.reconstruct(y, c, FS, 18000.0, iterations=it) for it in (400, 2000)]
+    assert det[0][1]["ambiguity_margin"] > 0.0 and det[0][1]["ambiguous"] is False
+    assert sdr_db(det[1][0], clean) - sdr_db(det[0][0], clean) > 1.0, "定解却没随迭代变好？"
+
+    amb = [declip.reconstruct(y, c, FS, 21600.0, iterations=it) for it in (400, 2000)]
+    assert amb[0][1]["ambiguity_margin"] <= 0.0 and amb[0][1]["ambiguous"] is True
+    assert abs(sdr_db(amb[1][0], clean) - sdr_db(amb[0][0], clean)) < 0.5, "欠定却随迭代变好了？"
+
+
+def test_step_and_converged_are_measured_not_guessed():
+    """`step_rms_db` = 迭代**末步**相对本段的 dB；`converged` = 末步**恰好为 0**（精确判据）。
+
+    ⚠ 值也是**钉住的**（同一输入下 `20·log10(step/scale)` 只能得到一个数）：这样
+    "dB 系数""比值方向""分母"这类改动**都跑不掉**（实测 moderate/B=21.6k/128 次 ⇒ **−89.0 dB**）。
+    """
+    p = corpus.band_limited_noise(1.0, fs=FS, bandwidth=21600.0, seed=1)
+    q = corpus.clipped(p, "light")                  # 轻削波：迭代很快到**精确**不动点
+    few = declip.reconstruct(q["clipped"], q["ceiling"], FS, 21600.0, iterations=4)[1]
+    many = declip.reconstruct(q["clipped"], q["ceiling"], FS, 21600.0, iterations=3000)[1]
+    assert few["converged"] is False and few["step_rms_db"] is not None
+    assert many["converged"] is True and many["step_rms_db"] is None, "末步为 0 就该报 None"
+
+    m = corpus.clipped(p, "moderate")
+    st = declip.reconstruct(m["clipped"], m["ceiling"], FS, 21600.0, iterations=128)[1]
+    assert st["converged"] is False
+    assert -89.5 < st["step_rms_db"] < -88.5, st["step_rms_db"]
+
+
+def test_ambiguity_fields_are_none_when_nothing_was_constrained(tmp_path):
+    """no-op（没有带限约束 / 没有削波 / 静音）时，可辨识性与步长**不许编一个数**出来。"""
+    p = _pack()
+    src = _write(tmp_path / "a.wav", p["clipped"])
+    audit = render_declip(src, str(tmp_path / "b.wav"), 0.0, 1.0, NYQ, overwrite=True)
+    rec = audit["ops"][0]
+    assert rec["noop"] is True
+    assert rec["ambiguity_margin"] is None and rec["ambiguous"] is None
+    assert rec["step_rms_db"] is None and rec["converged"] is None
+
+
 def test_default_iterations_is_pinned_to_the_measured_choice():
     """迭代次数的默认值是**实测**定的（128 ≈ 400 次的 93%）⇒ 钉住，别让它悄悄漂。"""
     assert declip.DEFAULT_ITERATIONS == 128

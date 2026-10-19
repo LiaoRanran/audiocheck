@@ -260,9 +260,16 @@ EQUIVALENT: dict[str, str] = {
         "⇒ 永不短读）、**FLAC** 截断后读到损坏处会**抛** `LibsndfileError`（走 `except` 支）"
         "⇒ 在已验证的两种容器上不可达；留着是**防御性**的（未穷举其它容器）。",
     # --- 2026-10-18（P3 去削波这一轮）：新模块 declip.py / corpus.py 的等价体 ---
-    "src/audiocheck/core/edit/declip.py:134:cmp:>=->>":
+    "src/audiocheck/core/edit/declip.py:162:cmp:>=->>":
         "`sign = np.where(a >= 0.0, 1, −1)` → `>`：两者只在 `a == 0.0` 时分叉，而 `sign` **只**在"
         "饱和样本处被读（`sg[s]`），饱和样本满足 `|a| ≥ ceiling > 0` ⇒ 恒非 0 ⇒ 该等号不可达。",
+    "src/audiocheck/core/edit/declip.py:158:cmp:<=-><":
+        "`ambiguous = bool(margin <= 0.0)` → `<`：两者只在 `margin` **恰好等于 0.0** 时分叉，"
+        "而 margin = `(1−f) − B/(fs/2)` 是两个连续量之差 ⇒ 该等号**概率为 0**（不可区分；"
+        "门槛两侧的语义都是「边界」）。",
+    "src/audiocheck/core/edit/declip.py:160:bool:or->and":
+        "`scale = … or 1.0` → `and`：`scale == 0` 只在**整段全零**时发生，而全零素材在更早的"
+        "`if peak_in <= 0.0` 处就早退（`noop`）了 ⇒ 这一支**不可达**。",
     "src/audiocheck/core/edit/corpus.py:55:cmp:>->>=":
         "`x = x/peak*amp if peak > 0 else x` → `>=`：**防御性守卫**，`else` 支在定义域内不可达"
         "——40 条随机相位正弦之和不可能恒为 0（`n > 0` 时 `max|x| > 0`）。",

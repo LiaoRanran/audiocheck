@@ -175,6 +175,29 @@ def test_declip_cli_reports_the_measurements(tmp_path, capsys):
     assert op["energy_ratio_measured_db"] > -0.5
 
 
+def test_declip_cli_warns_when_the_solution_is_not_unique(tmp_path, capsys):
+    """欠定（`f > 1 − B/(fs/2)`）时必须**在台面上**报"解不唯一 ⇒ 加迭代也没用"。"""
+    p = corpus.clipped(corpus.band_limited_noise(2.0, fs=FS, bandwidth=18000.0, seed=1), "severe")
+    src = _write(tmp_path / "a.wav", p["clipped"])
+    aud = str(tmp_path / "audit.json")
+    assert main([src, str(tmp_path / "b.wav"), "--declip", "--at", "0.0-2.0",
+                 "--bandwidth", "21600", "--audit", aud]) == 0
+    assert "解不唯一" in capsys.readouterr().out
+    rec = json.loads(open(aud, encoding="utf-8").read())["ops"][0]
+    assert rec["ambiguous"] is True and rec["ambiguity_margin"] <= 0.0
+    assert rec["bandwidth_source"] == "given"
+
+
+def test_declip_cli_reports_the_convergence_state_when_determined(tmp_path, capsys):
+    """定解时要报**还能不能动**（末步 dB / 是否已到浮点精度），而不是让用户猜。"""
+    p = corpus.clipped(corpus.band_limited_noise(2.0, fs=FS, bandwidth=18000.0, seed=1), "moderate")
+    src = _write(tmp_path / "a.wav", p["clipped"])
+    assert main([src, str(tmp_path / "b.wav"), "--declip", "--at", "0.0-2.0",
+                 "--bandwidth", "18000"]) == 0
+    out = capsys.readouterr().out
+    assert "可辨识性" in out and "余量" in out and "迭代末步" in out
+
+
 def test_declip_auto_bandwidth_reads_the_measurement_layer(tmp_path, capsys):
     """`--bandwidth` 省略 ⇒ **自动调测量层**：砖墙素材上读出 ≈ 真实带宽，审计记下来源。"""
     src = _write(tmp_path / "a.wav", _clipped_bandlimited())          # 2 s，砖墙在 18 kHz

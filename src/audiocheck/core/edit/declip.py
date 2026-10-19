@@ -28,6 +28,8 @@
 """
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 #: 默认迭代次数。**实测据**（`packaging/declip_probe.py` 的收敛表，moderate 档 SDR）：
@@ -76,6 +78,18 @@ def reconstruct(y: np.ndarray, ceiling: float | None, fs: int, bandwidth: float,
 
     ⚠ `bandwidth >= fs/2` ⇒ ① 是恒等映射 ⇒ 没有任何可利用的约束 ⇒ **早退为原样返回**
     （`stats["noop"]=True`），不许假装修过。
+
+    ⚠ **可辨识性（算出来的，不是拟合）**：可行的解集 = {带限(B)} ∩ {已知样本 = y}。
+    带限子空间的**实维数** ≈ `2·#bins(f ≤ B) ≈ (B/(fs/2))·N`，已知样本给 `(1−f)·N` 条独立线性
+    约束（`f` = 饱和占比）⇒ **解集维数 ≈ ((B/(fs/2)) − (1−f))·N** ⇒
+    **欠定（解不唯一）⟺ `f > 1 − B/(fs/2)`**（48 kHz、B=18 kHz ⇒ f>25%；B=21.6 kHz ⇒ f>10%）。
+    实测印证（`packaging/sparse_declip_probe.py` 与 `docs/editor_research.md §10`）：
+    **同一份 severe 素材**（f≈22.4%）给真值 `B=18 kHz`（定解）时 POCS 8000 次迭代收敛到
+    **23.1 dB 且还在升**；给偏大的 `B=21.6 kHz`（欠定）时 400→8000 次全程钉在 **13.7 dB**
+    ——**欠定不是"迭代不够"，是"目标点不止一个"**。
+    ⇒ `stats["ambiguity_margin"]` 报 `(1−f) − B/(fs/2)`（**正 = 定解**），并据此给 `ambiguous`。
+    ⚠ **欠定时这两个量会互相打架、必须一起读**：实测欠定侧 step 从 −75 dB 走到 −141 dB
+    （"还在动"），而 SDR 钉在 14 dB（"没变好"）⇒ 只报 step 会误导，故 CLI 把两者**并列打出来**。
     """
     a = _as2d(y)
     n, ch = a.shape
@@ -104,6 +118,15 @@ def reconstruct(y: np.ndarray, ceiling: float | None, fs: int, bandwidth: float,
         "band_limited": False,
         "noop": False,
         "replaced_samples": 0,
+        #: 可辨识性预判（见 docstring 的推导）：`(1−f) − B/(fs/2)`，**正 = 定解**。
+        #: `None` = 这个操作根本没跑带限投影（no-op），无从谈起。
+        "ambiguity_margin": None,
+        "ambiguous": None,
+        #: 迭代**末步**的步长（RMS，相对本段 RMS 的 dB）：看**还能不能动**。
+        #: `None` = 末步恰好为 0（已到不动点）。`converged` = 末步**恰好为 0**——
+        #: **精确判据**（不设"小于某个数"那种凭空门限）。
+        "step_rms_db": None,
+        "converged": None,
     }
 
     if peak_in <= 0.0:                               # 全零 / 纯静音：没有削波可言
@@ -129,20 +152,35 @@ def reconstruct(y: np.ndarray, ceiling: float | None, fs: int, bandwidth: float,
         stats["noop"] = True
         return a.copy(), stats
     stats["band_limited"] = True
+    # 可辨识性预判（**算出来的**）：解集维数 / N ≈ B/(fs/2) − (1−f) ⇒ 正 = 欠定。见 docstring。
+    margin = (1.0 - stats["fraction"]) - bandwidth / (fs / 2.0)
+    stats["ambiguity_margin"] = margin
+    stats["ambiguous"] = bool(margin <= 0.0)
 
+    scale = float(np.sqrt(np.mean(a ** 2))) or 1.0        # 本段 RMS（步长拿它做相对口径）
     out = a.copy()
     sign = np.where(a >= 0.0, 1.0, -1.0)
+    step_last = 0.0
     for c in range(ch):
         x = a[:, c].copy()
         k = known[:, c]
         s = sat[:, c]
         sg = sign[:, c]
+        d = 0.0
         for _ in range(int(iterations)):
+            before = x
             X = np.fft.rfft(x)
             X[~keep] = 0.0
             x = np.fft.irfft(X, n=n)
             x[k] = a[k, c]                           # 已知样本逐位写回
             x[s] = sg[s] * np.maximum(np.abs(x[s]), ceiling)   # 削波不等式投影
+            d = float(np.sqrt(np.mean((x - before) ** 2)))
+        step_last = max(step_last, d)                # 跨声道取**末步**最坏那个
         out[:, c] = x
+    # 「还能不能动」如实记账：末步相对本段的 dB；`converged` = 末步**恰好为 0**（到了不动点）。
+    # ⚠ 用**精确 0**而不是"小于某个数"：后者是凭空造的门限。代价是"欠定时仍在漂（末步极小但非 0）"
+    # 会记成 `converged=False`——这正是想要的（它**确实**还在动，只是不变好，见 docstring 的 ⚠）。
+    stats["step_rms_db"] = round(20.0 * math.log10(step_last / scale), 1) if step_last > 0 else None
+    stats["converged"] = bool(step_last == 0.0)
     stats["replaced_samples"] = int((out != a).any(axis=1).sum())
     return out, stats
