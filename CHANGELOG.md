@@ -4,6 +4,50 @@
 
 ## [未发布]
 
+### 新增（**"编辑要的 `B` 谁给"** —— 测量层加了一条内容带宽出口，口径用真值量出来）
+
+> `docs/editor_roadmap.md §8` 第五步的 ①。上一轮把 `B`（内容带宽）当**输入**收下、但把真值带宽
+> **白给**了（`docs/editor_research.md §8.4` 挂的那笔账）。这一轮还账：**先量两条现成读数 →
+> 定口径 → 才接线**。全部数字出自 `packaging/bandwidth_probe.py`（2 s 素材，48 kHz）。
+
+- 新增 `spectrum.content_bandwidth(f, db, fs, thresholds)`：**内容带宽 `B` 的单一出口**
+  （编辑层仍**不** import 测量层 ⇒ 由 CLI 在边界层接起来）。口径**实测定的**：
+  **有砖墙截止 ⇒ `B = cutoff`**（`detect_cutoff` 已校准；本轮实测 48 kHz 的 6–21 kHz 网格
+  最大偏差 **0.49%**，**moderate 削波后仍 +0.0%**）；**量不到 ⇒ `B = 奈奎斯特`**
+  = "没有可用的带限先验" ⇒ 去削波**逐位不变**（如实记 `noop`）。
+- **实测否掉两条"看起来能用"的读数**（本轮的负结果，正是它定死了口径）：
+  ① **能量滚降点**（`rolloff95`，即文献里的 *spectral rolloff point*——"总能量 95% 落在其下的
+     那个频率"）系统**偏低**：砖墙素材 −4.9%、谐波音 **−17.5%**、自然滚降素材给出 12.5 kHz
+     而真实内容到 ~20 kHz ⇒ 拿它当 `B` 会把 SDR **修坏 −1.5 dB**（用 `cutoff` / 真值是 **+34.2 dB**）；
+  ② "只用**没有饱和样本的帧**量谱" ⇒ **0/10 帧可用**（饱和样本沿波形峰散布，任何长度的帧
+     几乎都含至少一个）⇒ 不可行。
+- `DeclipOp` 新增 `bandwidth_source`（**来源记账，不参与任何算式**）+ CLI **`--bandwidth` 省略即自动**
+  ⇒ 审计记 `bandwidth_source ∈ {given, auto_cutoff, auto_nyquist}`——"依据哪条测量"入账。
+- **效力边界（全部实测；进拒绝路径与文档）**：**severe 削波**（饱和 >20%）后砖墙证据被削波谐波
+  **填掉** ⇒ 自动读数退回奈奎斯特（去削波逐位不变；想修 severe 得显式给 `B`，与"提升随饱和变密
+  而变小"同源）；**canonical 谱的长度门槛实测在 0.90–0.95 s 之间**（0.95 s 有、0.90 s 无）
+  ⇒ 量不出谱时**明确拒绝**自动定带宽（不猜一个 `B`）。
+- 新增判据 **9 条**：`tests/test_bandwidth.py`（7：砖墙网格 ≤2%／moderate 保住证据／
+  severe 如实拒绝／满带宽与自然滚降都退奈奎斯特／谱缺失回落／`thresholds` 真生效／
+  闭环"量出来的 `B` 真能修好"）+ `tests/test_edit_cli.py`（+2：自动路径端到端、太短明确拒绝）。
+- 探针 `TARGETS`：`spectrum.py` 子集补挂 `tests/test_bandwidth.py`、`ops.py` 子集补挂
+  `tests/test_edit_cli.py`（新增代码的判据必须挂上，否则那一族变异体"全假存活"——这条坑本轮
+  又在 `spectrum.py` 上复查了一遍）。
+- 文档：`docs/theory.md §12.9`（口径 + 三条边界）、`docs/editor_research.md §9`
+  （实测表 + 检索锚点：*spectral rolloff point* 的通行 85%/95% 能量定义「二手」；
+  BWE/语音超分一脉把这个对象叫 **effective bandwidth / `f_eff`**「arXiv 预印本，只作术语依据」）、
+  `docs/editor_roadmap.md` 第五步 ① 收口。
+- 变异复跑（`--only core/analyzers/spectrum --only core/edit/ops`）：
+  **`ops.py` 6/6 全杀 = 1.000**（含新加的 `bandwidth_source`；子集补挂了 `tests/test_edit_cli.py`）。
+  ⚠ **`spectrum.py` = 0.695（66/95，29 存活，等价 16）——但 29 条存活里没有一条是本轮的代码**：
+  `content_bandwidth` 的 4 个变异体**全被杀**，存活的是该文件**既有的债务**
+  （截止点判据的内部常量、`band_size`/`band_balance`/`SpectrumAnalyzer.run` 的边界），
+  与 CHANGELOG 里"整体 0.619 ／ spectrum/dsp/causes/verdict 剩 ~210 条**未还债务**"那节**同源**。
+  ⇒ 本轮**只报数、不动它**：填这批缺口要把 `packaging/cutoff_calib.py`（§1.6 那张误差曲面）
+  升级成**判据**，属一次专门的"判据补全"轮 ⇒ **挂账**。
+  （对照：若不把 `tests/test_bandwidth.py` 挂进该模块的子集，这 4 个变异体会**假存活**
+  ⇒ 本轮实际是把该模块的分**抬**了，不是压了。）
+
 ### 新增（**P3 第一个修复算子：去削波** —— 判据先行；量出来的关键结果是"插值会把 SDR 修坏"）
 
 > `docs/editor_roadmap.md §8` 第四步。循环照旧：**先建判据（合成语料）→ 把候选量一遍 →

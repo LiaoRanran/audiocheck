@@ -153,6 +153,12 @@ def _clipped(seconds: float = 1.0) -> np.ndarray:
     return corpus.clipped(corpus.default_clean(seconds, fs=FS, seed=1), "moderate")["clipped"]
 
 
+def _clipped_bandlimited(seconds: float = 2.0, b: float = 18000.0) -> np.ndarray:
+    """2 s、**砖墙带限**到 18 kHz 再削一刀（`--bandwidth` 自动路径的判据素材）。"""
+    return corpus.clipped(corpus.band_limited_noise(seconds, fs=FS, bandwidth=b, seed=1),
+                          "moderate")["clipped"]
+
+
 def test_declip_cli_reports_the_measurements(tmp_path, capsys):
     """`--declip` 把**实测**摊在台面上：饱和样本数、能量比、带外变化（可审计的修复）。"""
     src = _write(tmp_path / "a.wav", _clipped())
@@ -169,10 +175,35 @@ def test_declip_cli_reports_the_measurements(tmp_path, capsys):
     assert op["energy_ratio_measured_db"] > -0.5
 
 
-def test_declip_needs_bandwidth(tmp_path, capsys):
-    src = _write(tmp_path / "a.wav", _clipped())
-    assert main([src, str(tmp_path / "b.wav"), "--declip", "--at", "0.0-1.0"]) == 2
-    assert "bandwidth" in capsys.readouterr().out
+def test_declip_auto_bandwidth_reads_the_measurement_layer(tmp_path, capsys):
+    """`--bandwidth` 省略 ⇒ **自动调测量层**：砖墙素材上读出 ≈ 真实带宽，审计记下来源。"""
+    src = _write(tmp_path / "a.wav", _clipped_bandlimited())          # 2 s，砖墙在 18 kHz
+    aud = str(tmp_path / "audit.json")
+    assert main([src, str(tmp_path / "b.wav"), "--declip", "--at", "0.0-2.0",
+                 "--audit", aud]) == 0
+    assert "自动＝砖墙截止" in capsys.readouterr().out
+    op = json.loads(open(aud, encoding="utf-8").read())["ops"][0]
+    assert op["bandwidth_source"] == "auto_cutoff"
+    assert abs(op["bandwidth"] / 18000.0 - 1.0) < 0.03, op["bandwidth"]     # 已校准的截止读数
+    assert op["replaced_samples"] > 0
+
+
+def test_declip_auto_bandwidth_on_full_band_degrades_to_noop(tmp_path, capsys):
+    """量不到带限（满带宽素材）⇒ `B = 奈奎斯特` ⇒ 去削波**逐位不变**（如实记，不假装修）。"""
+    full = corpus.clipped(corpus.band_limited_noise(2.0, fs=FS, bandwidth=FS / 2, seed=4),
+                          "moderate")
+    src = _write(tmp_path / "a.wav", full["clipped"])
+    dst = str(tmp_path / "b.wav")
+    assert main([src, dst, "--declip", "--at", "0.0-2.0"]) == 0
+    assert "自动＝奈奎斯特" in capsys.readouterr().out
+    assert np.array_equal(_read(src), _read(dst))
+
+
+def test_declip_auto_bandwidth_refuses_short_material(tmp_path, capsys):
+    """素材太短（canonical 谱量不出来）⇒ **明确拒绝**，不猜一个 `B` 出来。"""
+    src = _write(tmp_path / "a.wav", _clipped(0.5))                    # 0.5 s
+    assert main([src, str(tmp_path / "b.wav"), "--declip", "--at", "0.0-0.5"]) == 2
+    assert "太短" in capsys.readouterr().out
 
 
 def test_exactly_one_mode_is_required(tmp_path, capsys):

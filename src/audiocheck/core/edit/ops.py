@@ -121,6 +121,11 @@ class DeclipOp:
     bandwidth: float
     ceiling: float | None = None
     iterations: int = DEFAULT_ITERATIONS
+    #: **来源记账**（provenance，**不影响任何算式**）：这个 `B` 是谁给的。
+    #: `"given"` = 调用方直接给；`"auto_cutoff"` / `"auto_nyquist"` = 由测量层的
+    #: `spectrum.content_bandwidth` 读出（砖墙截止 / 量不到 ⇒ 奈奎斯特 ⇒ 逐位不变）。
+    #: 进审计记录 —— "可审计的修复"要求写清**依据哪条测量**。
+    bandwidth_source: str = "given"
 
     def __post_init__(self) -> None:
         if not (self.t1 > self.t0 >= 0.0):
@@ -140,12 +145,13 @@ class DeclipOp:
 
     def to_dict(self) -> dict:
         return {"kind": "declip", "t0": self.t0, "t1": self.t1, "ceiling": self.ceiling,
-                "bandwidth": self.bandwidth, "iterations": self.iterations}
+                "bandwidth": self.bandwidth, "bandwidth_source": self.bandwidth_source,
+                "iterations": self.iterations}
 
     def describe(self) -> str:
         c = "自动（观测峰值）" if self.ceiling is None else "%.4f" % self.ceiling
-        return "去削波 %.3f–%.3f s：削波电平 %s ｜ 带宽 %.0f Hz ｜ 迭代 %d" % (
-            self.t0, self.t1, c, self.bandwidth, self.iterations)
+        return "去削波 %.3f–%.3f s：削波电平 %s ｜ 带宽 %.0f Hz（%s）｜ 迭代 %d" % (
+            self.t0, self.t1, c, self.bandwidth, self.bandwidth_source, self.iterations)
 
 
 @dataclass

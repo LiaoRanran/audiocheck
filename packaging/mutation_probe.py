@@ -53,7 +53,10 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #: 是**量具口径太窄**（引擎/判定层才是截止点的真实消费者）。
 TARGETS: dict[str, list[str]] = {
     "src/audiocheck/core/analyzers/spectrum.py": [
-        "tests/test_cutoff.py", "tests/test_engine.py", "tests/test_verdict.py"],
+        "tests/test_cutoff.py", "tests/test_engine.py", "tests/test_verdict.py",
+        # 2026-10-19：新增 `content_bandwidth`（内容带宽 `B` 的单一出口）⇒ 判据必须挂上，
+        # 否则那一族变异体"全假存活"（同型坑在 ops.py 上踩过）。
+        "tests/test_bandwidth.py"],
     "src/audiocheck/core/dsp.py": [
         "tests/test_dsp.py", "tests/test_dsp_standard.py",
         "tests/test_truepeak.py", "tests/test_timeline_loudness.py"],
@@ -77,7 +80,10 @@ TARGETS: dict[str, list[str]] = {
                                           "tests/test_edit_declip.py"],
     "src/audiocheck/core/edit/ops.py": ["tests/test_edit_render.py",
                                         "tests/test_edit_stft.py",
-                                        "tests/test_edit_declip.py"],
+                                        "tests/test_edit_declip.py",
+                                        # 2026-10-19：`DeclipOp.bandwidth_source` 的来源记账
+                                        # 走 CLI 的自动带宽路径 ⇒ 挂上 CLI 判据。
+                                        "tests/test_edit_cli.py"],
     # 时频内核（2026-10-18，P0 频谱编辑的数学地基）：**重叠归一化、帧网、覆盖守卫**
     # 都在这一个文件里。这里的变异体最容易被"看起来还行"的测试放过——所以判据是
     # `tests/test_edit_stft.py`（往返残差、分块等价性、覆盖守卫、窗平方和恒 >0）。

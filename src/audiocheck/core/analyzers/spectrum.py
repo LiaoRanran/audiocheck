@@ -207,6 +207,43 @@ def detect_cutoff(f: np.ndarray, db: np.ndarray, min_drop_db: float = _DEFAULTS.
     return cut, (float(s[j0] - s[j1]) if j1 > j0 else 0.0)
 
 
+def content_bandwidth(f: np.ndarray, db: np.ndarray, fs: int,
+                      thresholds: Thresholds | None = None) -> dict:
+    """**内容带宽上界 `B`**：把"这段音频的内容到哪儿为止"翻成**编辑侧要当先验用**的那个数。
+
+    为什么要有这一层（而不是让编辑内核自己猜）
+    ------------------------------------------
+    `core/edit/declip.py`（带限重建 + 削波不等式）**必须有 `B`**，但编辑层**不 import 测量层**
+    （`core/edit/__init__.py` 的模块边界）⇒ 由调用方（`edit_cli`）在**边界层**把测量结果喂进去。
+    本函数就是那个"测量结果"的**单一出口**：口径写在这里，不许在 CLI 里再抄一遍。
+
+    口径（**实测定的**，`packaging/bandwidth_probe.py`，2026-10-19）
+    ----------------------------------------------------------------
+    * **有砖墙截止** ⇒ `B = cutoff`。`detect_cutoff` 已校准（合成砖墙网格最大相对偏差 ≤1.3%，
+      `docs/theory.md §1.6`）；实测干净砖墙素材上 +0.2%…+0.4%，**削过一刀（moderate）后仍 +0.0%**
+      （削波谐波没把阻带填到推翻砖墙证据）。
+    * **没有砖墙** ⇒ `B = 奈奎斯特`，`source="nyquist"` —— 意思是"**没有可用的带限先验**"，
+      去削波会如实退化成**逐位不变**（`DeclipOp` 的 `noop`），而不是假装修了。
+      ⚠ **不许**拿 `dsp.spectral_features` 的**能量滚降点**当 `B`：它系统**偏低**
+      （砖墙素材 −4.9%、谐波音 −17.5%、自然滚降素材给出 12.5 kHz 而真实内容到 ~20 kHz），
+      而拿它当 `B` 去做去削波会把 SDR **修坏**（端到端实测 **−1.5 dB**；用真值/`cutoff` 都是 +34.2 dB）。
+      ⚠ "只用没有饱和样本的帧量谱"这条替代路**本轮也量过**：**0/10 帧可用**（饱和样本沿波形峰
+      散布，任何长度的帧几乎都含至少一个）⇒ 不可行，别再试。
+
+    ⚠ **边界**：`f` 为 `None`/太短 ⇒ 回落到奈奎斯特（`detect_cutoff` 的既有行为），
+    调用方**必须**把 `source` 如实报出去（去削波会把 `noop` 记进审计）。
+    """
+    th = _DEFAULTS if thresholds is None else thresholds
+    nyq = float(fs) / 2.0
+    cut, slope = detect_cutoff(f, db, min_drop_db=th.min_drop_db, min_hz=th.cutoff_min_hz,
+                              need=th.cutoff_need, min_stop_db=th.min_stop_db)
+    if cut is None or float(cut) >= nyq:            # 没有砖墙（含"f 太短"这条既有回落）
+        return {"bandwidth_hz": nyq, "source": "nyquist", "cutoff_hz": None,
+                "slope_db_per_oct": None, "nyquist_hz": nyq}
+    return {"bandwidth_hz": float(cut), "source": "cutoff", "cutoff_hz": float(cut),
+            "slope_db_per_oct": round(float(slope), 1), "nyquist_hz": nyq}
+
+
 def band_balance(f: np.ndarray, linear_power: np.ndarray) -> dict:
     """七频段能量占比（%）。"""
     if f is None:

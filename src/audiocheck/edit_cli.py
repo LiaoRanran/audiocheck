@@ -2,10 +2,11 @@
 
     audiocheck-edit <源> <目标> --gain -6 --at 12.5-14.0 [--subtype PCM_16] [--overwrite] [--audit 记录.json]
     audiocheck-edit <源> <目标> --gain -20 --at 12.5-14.0 --band 4000-8000     # 时频选区
-    audiocheck-edit <源> <目标> --declip --at 3.0-3.5 --bandwidth 18000 [--ceiling 0.98]   # 去削波
+    audiocheck-edit <源> <目标> --declip --at 3.0-3.5 [--bandwidth 18000] [--ceiling 0.98]   # 去削波
 
 三种操作**必须给且只给一种**：`--gain`（时间选区增益 / 加 `--band` 变时频选区）
-或 `--declip`（去削波；`--bandwidth` 必填，`--ceiling` 省略时自动取区间观测峰值，见 `DeclipOp`）。
+或 `--declip`（去削波）。去削波的两个输入**都可省略**：`--ceiling` 省略 ⇒ 取区间**观测峰值**；
+`--bandwidth` 省略 ⇒ **调测量层**读砖墙截止（量不到 ⇒ 奈奎斯特 ⇒ 逐位不变），见 `DeclipOp`。
 
 三条约定（与 `core/edit/render.py` 一致，不在这一层偷改）
 --------------------------------------------------------
@@ -55,6 +56,33 @@ def _parse_freq(s: str) -> tuple[float, float]:
     return f0, f1
 
 
+def _bw_src_cn(src: str | None) -> str:
+    """带宽来源的**人话**（与 `DeclipOp.bandwidth_source` 的取值一一对应）。"""
+    return {"given": "给定",
+            "auto_cutoff": "自动＝砖墙截止（测量层读数）",
+            "auto_nyquist": "自动＝奈奎斯特（量不到带限 ⇒ 不作约束）"}.get(src, "%s" % src)
+
+
+def _auto_bandwidth(source: str) -> tuple[float, str]:
+    """`--bandwidth` 省略时的**自动读数**，返回 `(B, 来源标签)`。
+
+    ⚠ 编辑层**不 import 测量层**（模块边界，见 `core/edit/__init__.py`）⇒ 由**这一层**
+    （CLI = 边界层）把两边接起来：调 `spectrum.content_bandwidth`（口径写在那里，不在这里抄）。
+    实测定的口径：**有砖墙截止 ⇒ 用它；量不到 ⇒ 奈奎斯特**（= 没有可用的带限先验，
+    去削波会如实退化成逐位不变）。⚠ `canonical` 谱要求素材 ≥ ~1.4 s
+    （`AnalysisContext.spectrum()` 的三分位取样）⇒ 太短就**明确拒绝**，不猜一个 `B` 出来。
+    """
+    from .core.analyzers.spectrum import content_bandwidth
+    from .core.context import AnalysisContext, io_path
+    ctx = AnalysisContext(path=io_path(source), deep=False, src_path=source)
+    f, db = ctx.spectrum()
+    if f is None:
+        raise ValueError("素材太短，量不出 canonical 谱（三分位取样要求采样足够长）"
+                         "⇒ 无法自动定带宽；请显式给 `--bandwidth`")
+    info = content_bandwidth(f, db, ctx.fs, ctx.thresholds)
+    return info["bandwidth_hz"], "auto_" + info["source"]
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="audiocheck-edit",
                                  description="非破坏编辑：把操作渲染到新文件，并给出审计记录")
@@ -63,11 +91,12 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--gain", type=float, default=None,
                     help="选区增益（dB）。0 = 无操作（no-op，逐位不变）")
     ap.add_argument("--declip", action="store_true",
-                    help="去削波（只改饱和样本）。需配合 --ceiling 与 --bandwidth")
+                    help="去削波（只改饱和样本）。`--ceiling` 与 `--bandwidth` 都可省略（自动）")
     ap.add_argument("--ceiling", type=float, default=None,
                     help="削波电平 c（线性幅度，0 < c <= 1；可测输入，见 --declip）")
     ap.add_argument("--bandwidth", type=float, default=None,
-                    help="内容带宽上界 B（Hz；去削波靠『信号带限』这条先验，必填）")
+                    help="内容带宽上界 B（Hz）。**省略 ⇒ 自动**：调测量层读砖墙截止；"
+                         "量不到带限 ⇒ 奈奎斯特（= 不作约束，去削波逐位不变）")
     ap.add_argument("--iterations", type=int, default=None,
                     help="去削波的 POCS 迭代次数（默认 128；更多更准但更慢，见 declip.py）")
     ap.add_argument("--at", required=True, help="时间选区（秒，半开区间），形如 12.5-14.0")
@@ -93,10 +122,6 @@ def main(argv=None) -> int:
               "或 `--declip`（去削波）")
         return 2
     if a.declip:
-        if a.bandwidth is None:
-            print("参数错误：`--declip` 需要 `--bandwidth`（带宽上界 B）——去削波靠「信号带限」"
-                  "这条先验，没有它就没有约束可利用")
-            return 2
         if a.band or a.n_fft is not None or a.hop is not None:
             print("参数错误：`--band` / `--n-fft` / `--hop` 只对 `--gain` 有效")
             return 2
@@ -108,6 +133,18 @@ def main(argv=None) -> int:
         print("参数错误：%s" % e)
         return 2
 
+    # 去削波：`--bandwidth` 省略时走**自动**——读数由**测量层**给（编辑层只接受输入）。
+    bw, bw_src = a.bandwidth, "given"
+    if a.declip and a.bandwidth is None:
+        try:
+            bw, bw_src = _auto_bandwidth(a.source)
+        except ValueError as e:
+            print("参数错误：%s" % e)
+            return 2
+        except Exception as e:                   # noqa: BLE001 —— 源读不了 / 容器怪
+            print("**源读不了**：%s" % e)
+            return 4
+
     kw = {}
     if a.band:
         # 默认值由 `core/edit/render.py` 决定，这一层不重复一遍（免得两处默认值分叉）
@@ -118,7 +155,7 @@ def main(argv=None) -> int:
     try:
         if a.declip:
             dkw = {} if a.iterations is None else {"iterations": a.iterations}
-            op = DeclipOp(t0, t1, a.bandwidth, a.ceiling, **dkw)
+            op = DeclipOp(t0, t1, bw, a.ceiling, bandwidth_source=bw_src, **dkw)
         else:
             op = (BandGainOp(t0, t1, f0, f1, a.gain) if a.band
                   else GainOp(t0, t1, a.gain))
@@ -156,10 +193,12 @@ def main(argv=None) -> int:
         for op in audit["ops"]:
             e = op.get("energy_ratio_measured_db")
             ob = op.get("out_of_band_measured_db")
-            print("操作  去削波 %.3f–%.3f s：削波电平 %.4f（%s ｜ 区内峰值 %.4f）｜ 带宽 %.0f Hz ｜ 迭代 %d"
+            print("操作  去削波 %.3f–%.3f s：削波电平 %.4f（%s ｜ 区内峰值 %.4f）｜ "
+                  "带宽 %.0f Hz（%s）｜ 迭代 %d"
                   % (op["t0"], op["t1"], op["ceiling"],
                      "给定" if op.get("ceiling_source") == "given" else "自动=观测峰值",
-                     op["peak_in"], op["bandwidth"], op["iterations"]))
+                     op["peak_in"], op["bandwidth"], _bw_src_cn(op.get("bandwidth_source")),
+                     op["iterations"]))
             print("     饱和 %d / %d 采样（%.2f%% ｜ %d 段 ｜ 最长 %d）｜ 实际替换 %d 帧"
                   % (op["saturated_samples"], op["total_samples"], 100.0 * op["fraction"],
                      op["runs"], op["longest_run"], op["replaced_samples"]))
