@@ -175,6 +175,37 @@ def test_declip_cli_reports_the_measurements(tmp_path, capsys):
     assert op["energy_ratio_measured_db"] > -0.5
 
 
+def _smooth_clicked(seconds: float = 2.0) -> np.ndarray:
+    """2 s 平滑滑音 + 三处已知咔哒（`--declick` 端到端判据的素材）。"""
+    t = np.arange(int(seconds * FS)) / FS
+    f = 300.0 + 450.0 * t / seconds
+    ph = 2 * np.pi * np.cumsum(f) / FS
+    clean = ((0.7 * np.sin(ph) + 0.25 * np.sin(ph * 1.01)) / 0.95)[:, None]
+    return corpus.click_train(clean, [0.5, 1.0, 1.5], fs=FS, amp=0.9)["clicked"]
+
+
+def test_declick_cli_end_to_end(tmp_path, capsys):
+    """`--declick` 走 CLI：把检出数 / 阈值 / 能量比打在台面上，审计落盘且域与算法名可查。"""
+    src = _write(tmp_path / "a.wav", _smooth_clicked())
+    aud = str(tmp_path / "audit.json")
+    assert main([src, str(tmp_path / "b.wav"), "--declick", "--at", "0.0-2.0",
+                 "--audit", aud]) == 0
+    out = capsys.readouterr().out
+    assert "去咔哒" in out and "检出" in out and "MAD" in out
+    rec = json.loads(open(aud, encoding="utf-8").read())
+    assert rec["domain"] == "declick" and rec["algorithm"] == "residual2_mad_linear"
+    op = rec["ops"][0]
+    assert op["threshold"] == 5.0 and op["detected_samples"] >= 3
+    assert op["fraction"] <= 2e-3, "改动面过大（误报区）"
+
+
+def test_declick_refuses_flags_that_are_not_its_own(tmp_path, capsys):
+    src = _write(tmp_path / "a.wav", _clipped())
+    assert main([src, str(tmp_path / "b.wav"), "--declick", "--at", "0.0-1.0",
+                 "--ceiling", "0.5"]) == 2
+    assert "参数错误" in capsys.readouterr().out
+
+
 def test_declip_cli_warns_when_the_solution_is_not_unique(tmp_path, capsys):
     """欠定（`f > 1 − B/(fs/2)`）时必须**在台面上**报"解不唯一 ⇒ 加迭代也没用"。"""
     p = corpus.clipped(corpus.band_limited_noise(2.0, fs=FS, bandwidth=18000.0, seed=1), "severe")

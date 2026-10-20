@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .declick import DEFAULT_THRESHOLD
 from .declip import DEFAULT_ITERATIONS
 
 
@@ -154,13 +155,54 @@ class DeclipOp:
             self.t0, self.t1, c, self.bandwidth, self.bandwidth_source, self.iterations)
 
 
+@dataclass(frozen=True)
+class DeclickOp:
+    """对时间选区 `[t0, t1)` 做**去咔哒**：检出样本按两侧邻居线性插值，**只改检出样本**。
+
+    * `threshold` —— 检测阈值 `α`（`|r| > α·s`，`r` = 两点预测残差、`s` = 全段 MAD 尺子）。
+      **实测标定**过（`packaging/declick_probe.py`）：默认 `5.0` 时**谐波音 / 带限白噪 /
+      合法瞬态三种素材的误报均为 0**，且四种素材 ΔSDR 全为正；**往下调会掉进"修坏"**
+      （α=3 白噪 −13 dB）——**误报的代价是不对称的**。
+    * 选区口径与 `GainOp` **逐位一致**（半开 `[t0, t1)`；样本 `k` 受影响 ⟺ `t0 ≤ k/fs < t1`）。
+
+    ⚠ 两条**拒绝**规则（与 `DeclipOp` 同款，宁可不做）：① 与其它域的算子同栈混用；
+    ② 多个 `DeclickOp` 的选区**互相重叠**。
+
+    效力边界（**实测**，见 `declick.py` 的 docstring）：**素材决定收益**——
+    平滑 +40 dB、谐波音 +14、合法瞬态 +6.5、**带限白噪只 +1.0**（噪声本身不可预测）；
+    而**误报会修坏**（FPR ~1e-3 ⇒ ΔSDR 翻负）⇒ 阈值取保守侧。
+    """
+
+    t0: float
+    t1: float
+    threshold: float = DEFAULT_THRESHOLD
+
+    def __post_init__(self) -> None:
+        if not (self.t1 > self.t0 >= 0.0):
+            raise ValueError("时间选区非法：需要 0 <= t0 < t1，得到 [%r, %r)" % (self.t0, self.t1))
+        if not self.threshold > 0.0:
+            raise ValueError("检测阈值必须 > 0，得到 %r" % self.threshold)
+
+    @property
+    def is_noop(self) -> bool:
+        """去咔哒**改不改要等渲染时看检出结果** ⇒ 这里恒返回 `False`（不假装知道）。"""
+        return False
+
+    def to_dict(self) -> dict:
+        return {"kind": "declick", "t0": self.t0, "t1": self.t1, "threshold": self.threshold}
+
+    def describe(self) -> str:
+        return "去咔哒 %.3f–%.3f s：检测阈值 %.2f×MAD" % (self.t0, self.t1, self.threshold)
+
+
 @dataclass
 class Project:
     """一个非破坏编辑项目：源文件 + 操作栈（按加入顺序**依次**作用）。
 
     ⚠ 操作栈目前是 `GainOp`（时间域）**或** `BandGainOp`（频域）**或** `DeclipOp`（去削波）
-    **三选一**：同一栈里混用时，操作顺序的语义（先按频率改谱、还是先按时间改样点）还没立判据，
-    渲染层直接拒绝（见 `render.render`），不猜。多个 `DeclipOp` 之间也不许重叠选区。
+    **或** `DeclickOp`（去咔哒）**四选一**：同一栈里混用时，操作顺序的语义（先按频率改谱、
+    还是先按时间改样点）还没立判据，渲染层直接拒绝（见 `render.render`），不猜。
+    同类算子之间也不许重叠选区。
     """
 
     source: str

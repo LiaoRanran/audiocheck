@@ -77,13 +77,16 @@ TARGETS: dict[str, list[str]] = {
     # ⇒ 不挂它就会"全假存活"（这条坑先前在 `test_edit_stft.py` 上踩过一次）。
     "src/audiocheck/core/edit/render.py": ["tests/test_edit_render.py",
                                           "tests/test_edit_stft.py",
-                                          "tests/test_edit_declip.py"],
+                                          "tests/test_edit_declip.py",
+                                          "tests/test_edit_declick.py"],
     "src/audiocheck/core/edit/ops.py": ["tests/test_edit_render.py",
                                         "tests/test_edit_stft.py",
                                         "tests/test_edit_declip.py",
                                         # 2026-10-19：`DeclipOp.bandwidth_source` 的来源记账
                                         # 走 CLI 的自动带宽路径 ⇒ 挂上 CLI 判据。
-                                        "tests/test_edit_cli.py"],
+                                        # 2026-10-20：`DeclickOp` 同理挂上它的判据。
+                                        "tests/test_edit_cli.py",
+                                        "tests/test_edit_declick.py"],
     # 时频内核（2026-10-18，P0 频谱编辑的数学地基）：**重叠归一化、帧网、覆盖守卫**
     # 都在这一个文件里。这里的变异体最容易被"看起来还行"的测试放过——所以判据是
     # `tests/test_edit_stft.py`（往返残差、分块等价性、覆盖守卫、窗平方和恒 >0）。
@@ -95,6 +98,10 @@ TARGETS: dict[str, list[str]] = {
     # 合成语料（2026-10-18，修复算法的判据地基）：**它是"真值"本身**——
     # 削波电平、饱和集合、带宽真值、脉冲位置，任一处写错都会让上层的"修复判据"失去意义。
     "src/audiocheck/core/edit/corpus.py": ["tests/test_edit_corpus.py"],
+    # 去咔哒（2026-10-20，P3 第二个修复算子）：**检测阈值是标定过的输入**，
+    # 写错方向会"把误报引进来 ⇒ 把信号修坏"（实测白噪 −13 dB）⇒ 判据必须钉住
+    # "只改检出样本"与"合法瞬态不被误伤"。
+    "src/audiocheck/core/edit/declick.py": ["tests/test_edit_declick.py"],
 }
 
 #: 变异分数下限。**三次更正，都写在这里免得后人再踩**：
@@ -224,13 +231,13 @@ EQUIVALENT: dict[str, str] = {
         "`min(blocksize, end − pos)` → `end + pos`：`_copy_range` 只在**首段**（pos=0，两式相同）"
         "与**尾段**（end=claimed）被调用，而 libsndfile 读到 EOF 会截短、循环判据又是 `pos < end`"
         "⇒ 写出的帧数逐位相同。",
-    "src/audiocheck/core/edit/render.py:228:bin:-->+":
+    "src/audiocheck/core/edit/render.py:231:bin:-->+":
         "`(ce − cs + 2*n_fft)` → `ce + cs + …`：**只是把缓冲区加长**。真实音频由 "
         "`buf[lo − src_lo : …] = raw` 按**固定偏移**填入（与总长无关），加长部分全在请求区间 "
         "`[n_fft, n_fft+(ce−cs))` 之外 ⇒ 输出逐位相同。",
-    "src/audiocheck/core/edit/render.py:238:bin:-->+":
+    "src/audiocheck/core/edit/render.py:241:bin:-->+":
         "报错**文案**里的 `hi − lo` → `hi + lo`：只进字符串，没有任何判据读它。",
-    "src/audiocheck/core/edit/render.py:240:cmp:<=-><":
+    "src/audiocheck/core/edit/render.py:243:cmp:<=-><":
         "`if ce <= cs: break`：这一支只在**源被截断**时走到，而上一行已经把 "
         "`st[\"read_error\"]` 置上了 ⇒ 无论 break 与否，外层 `while st[\"read_error\"] is None …`"
         "都会立刻退出（多跑的只是一个长度为 0 的空块）⇒ 输出逐位相同。",
@@ -250,11 +257,11 @@ EQUIVALENT: dict[str, str] = {
     "src/audiocheck/core/edit/stft.py:179:bin:-->+":
         "`wss = np.zeros((M − 1) * hop + n)` → `M + 1`：同上（归一化分母同步加长，"
         "`[n0:n1]` 上逐位相同）⇒ 输出逐位相同。",
-    "src/audiocheck/core/edit/render.py:168:cmp:<=-><":
+    "src/audiocheck/core/edit/render.py:171:cmp:<=-><":
         "`if k1 <= k0: continue` → `<`：两式只在 `k1 == k0` 时不同，而那一点上 "
         "`b[k0−pos:k1−pos]` 是**空切片**（`*=` 无操作）、`applied[i] += k1 − k0 = 0` "
         "⇒ 输出与审计都逐位相同。（`k1 < k0` 时两式都 `continue`。）",
-    "src/audiocheck/core/edit/render.py:239:bin:+->-":
+    "src/audiocheck/core/edit/render.py:242:bin:+->-":
         "`ce = min(ce, lo + len(raw))` → `lo − len(raw)`：这一支只在**短读**时走到，"
         "而实测本机 libsndfile：**WAV** 被截断时按文件大小**重算帧数**（`claimed` 就等于实有帧数"
         "⇒ 永不短读）、**FLAC** 截断后读到损坏处会**抛** `LibsndfileError`（走 `except` 支）"
@@ -279,9 +286,35 @@ EQUIVALENT: dict[str, str] = {
     "src/audiocheck/core/edit/corpus.py:189:bin:*->/":
         "`amp * sign` → `amp / sign`：本函数的 `sign` 语义是**脉冲极性**（`±1`），"
         "而 `±1` 的倒数等于自身 ⇒ 两种写法逐位相同（判据 `test_click_train_*` 用的是 `sign=1`）。",
-    "src/audiocheck/core/edit/render.py:358:bin:-->+":
+    "src/audiocheck/core/edit/render.py:361:bin:-->+":
         "`_render_declip` 报错**文案**里的 `k1 − k0` → `k1 + k0`：只进字符串，"
         "没有任何判据读它（与 band 路径的同型条目一致）。",
+    "src/audiocheck/core/edit/render.py:429:bin:-->+":
+        "`_render_declick` 报错**文案**里的 `k1 − k0` → `k1 + k0`：同上，只进字符串。",
+    # --- 2026-10-20（去咔哒这一轮）：declick.py 的等价体 ---
+    "src/audiocheck/core/edit/declick.py:69:cmp:>->>=":
+        "判据 `|r| > α·s` → `>=`：两者只在 `|r|` **恰好等于** `α·s` 时分叉，而 r 与 s 都是连续量"
+        "算出来的 ⇒ 该等号概率为 0（不可区分）。",
+    "src/audiocheck/core/edit/declick.py:81:cmp:<-><=":
+        "`while j < mask.shape[0] and mask[j]` → `<=`：多走一步会读 `mask[n]` 越界，"
+        "但那要求**检出段一直延伸到最后一个样本**——而 `residual` 把**首尾样本置 0**"
+        "（`r[-1] == 0`）⇒ 尾样本永不被检出 ⇒ 不可达。",
+    "src/audiocheck/core/edit/declick.py:84:cmp:>=->>":
+        "`left = out[a] if a >= 0 else None` → `>`：只在 `a == 0`（**检出段从样本 0 开始**）时分叉，"
+        "同上因 `r[0] == 0` 而不可达。",
+    "src/audiocheck/core/edit/declick.py:85:cmp:<-><=":
+        "`right = out[b] if b < out.shape[0] else None` → `<=`：只在 `b == n` 时分叉 ⇒ 同上不可达。",
+    "src/audiocheck/core/edit/declick.py:86:bool:and->or":
+        "`if left is not None and right is not None` → `or`：两个 `None` 分支（只在检出段含首/尾样本时"
+        "才走到）**都不可达**（首尾残差恒 0）⇒ 该分支在可达域内永不执行。",
+    "src/audiocheck/core/edit/render.py:416:cmp:<=-><":
+        "`_render_declick` 的 `if k1 <= k0: continue` → `<`：两式只在 `k1 == k0`（空选区）时不同，"
+        "而那一点上 `f.read(0)` 返回空数组、`declick.declick` 对空数组不产出任何样本、"
+        "`_copy_range(cursor, k0)` 也不写任何字节 ⇒ 输出与审计都逐位相同。",
+    "src/audiocheck/core/edit/declick.py:118:bin:*->/":
+        "**守卫那一处**的 `if n * ch` → `if n / ch`：两者都只在 `n == 0` 时为假（`ch ≥ 1`）⇒ "
+        "走同一分支 ⇒ 不可区分。（同一行**分母**那一处的 `*`→`/` 是**被判据杀死的**，见 "
+        "`test_only_detected_samples_change` 的占比断言。）",
 }
 
 

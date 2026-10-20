@@ -41,9 +41,9 @@ import numpy as np
 import soundfile as sf
 
 from ..context import io_path
-from . import declip, stft
+from . import declick, declip, stft
 from .metrics import band_gain_db, energy_ratio_db
-from .ops import BandGainOp, DeclipOp, GainOp, Project
+from .ops import BandGainOp, DeclickOp, DeclipOp, GainOp, Project
 
 #: 一次读入的帧数（与 `analyzers/basic.py` 的读块同量级）。
 BLOCKSIZE = 1 << 16
@@ -127,7 +127,10 @@ def render(project: Project, dest: str, *, subtype: str | None = None,
     if all(isinstance(o, DeclipOp) for o in ops):
         return _render_declip(project, dest, subtype=subtype, blocksize=blocksize,
                               overwrite=overwrite)
-    raise ValueError("同一项目里混用时间域/频域/去削波操作：顺序语义尚未立判据（宁可不做）")
+    if all(isinstance(o, DeclickOp) for o in ops):
+        return _render_declick(project, dest, subtype=subtype, blocksize=blocksize,
+                               overwrite=overwrite)
+    raise ValueError("同一项目里混用时间域/频域/去削波/去咔哒操作：顺序语义尚未立判据（宁可不做）")
 
 
 def _render_time(project: Project, dest: str, *, subtype: str | None,
@@ -371,15 +374,83 @@ def _render_declip(project: Project, dest: str, *, subtype: str | None,
         frames = pos
 
     return _audit(project, dest, "declip", fs, ch, sub, frames, claimed, st, applied,
-                  tf_points=None, declip_recs=recs)
+                  tf_points=None, op_recs=recs)
+
+
+def _render_declick(project: Project, dest: str, *, subtype: str | None,
+                    blocksize: int, overwrite: bool) -> dict:
+    """去咔哒路径：**逐选区整段载入**（探测器的 MAD 尺子是**全段**统计量 ⇒ **不分块**），
+
+    只改**检出样本**：选区之外**逐位不变**，选区之内**未被检出的样本逐位不变**。
+    ⚠ 多个去咔哒的选区**不许重叠**（顺序语义未立判据）⇒ 先校验完再动目标文件。
+    """
+    src, dst = _check_dest(project.source, dest, overwrite)
+    ops = list(project.ops)
+    st = {"read_error": None, "peak": 0.0, "clipped": 0, "clips_int": False,
+          "floor": 0.0, "floor_samples": 0}
+    applied = [0] * len(ops)
+    recs = [None] * len(ops)
+    frames = 0
+    claimed = 0
+
+    with sf.SoundFile(src) as f:
+        fs = int(f.samplerate)
+        ch = int(f.channels)
+        sub = subtype or f.subtype
+        st["clips_int"] = sub in _INT_SUBTYPES
+        claimed = int(f.frames or 0)
+        spans = [(max(0, min(_sample_at(o.t0, fs), claimed)),
+                  max(0, min(_sample_at(o.t1, fs), claimed))) for o in ops]
+        order = sorted(range(len(ops)), key=lambda i: spans[i][0])
+        end = 0
+        for i in order:
+            if spans[i][0] < end:
+                raise ValueError("多个去咔哒选区**重叠**：先改哪段没有定义（宁可不做）")
+            end = spans[i][1]
+
+        with sf.SoundFile(dst, "w", samplerate=fs, channels=ch, subtype=sub) as g:
+            cursor = 0
+            pos = 0
+            for i in order:
+                k0, k1 = spans[i]
+                if k1 <= k0:
+                    continue
+                pos = cursor = _copy_range(f, g, cursor, k0, blocksize, st)
+                if st["read_error"] is not None:
+                    break
+                f.seek(k0)
+                try:
+                    seg = f.read(k1 - k0, dtype="float64", always_2d=True)
+                except Exception as e:                # noqa: BLE001 —— libsndfile 形形色色
+                    st["read_error"] = e
+                    break
+                if len(seg) < k1 - k0:                # 声称有、实际读不满 ⇒ 截断
+                    st["read_error"] = OSError(
+                        "声称 %d 帧，向后读时只拿到 %d 帧" % (k1 - k0, len(seg)))
+                    if not len(seg):
+                        break
+                op = ops[i]
+                out, sstat = declick.declick(seg, op.threshold)
+                recs[i] = {**sstat, "energy_ratio_measured_db":
+                           _round_db(energy_ratio_db(out, seg))}
+                applied[i] = int(seg.shape[0])
+                _account(out, st)
+                g.write(out)
+                pos = cursor = k0 + int(out.shape[0])
+            if st["read_error"] is None:
+                pos = _copy_range(f, g, cursor, claimed, blocksize, st)
+        frames = pos
+
+    return _audit(project, dest, "declick", fs, ch, sub, frames, claimed, st, applied,
+                  tf_points=None, op_recs=recs)
 
 
 def _audit(project: Project, dest: str, domain: str, fs: int, ch: int, sub: str,
            frames: int, claimed: int, st: dict, applied: list,
            tf_points: list | None, measured: list | None = None,
            n_fft: int | None = None, hop: int | None = None,
-           declip_recs: list | None = None) -> dict:
-    """组装**审计记录**（三条路径共用；域特有的字段都不藏）。"""
+           op_recs: list | None = None) -> dict:
+    """组装**审计记录**（四条路径共用；域特有的字段都不藏）。"""
     ops = []
     for i, op in enumerate(project.ops):
         rec = {**op.to_dict(), "applied_frames": applied[i]}
@@ -392,10 +463,10 @@ def _audit(project: Project, dest: str, domain: str, fs: int, ch: int, sub: str,
             #: ⚠ 与 `gain_db`（设定值）**分开**报：说"我压了 20 dB"必须有实测值支撑。
             #: ⚠ 多个操作重叠时，这里是**累积作用之后**的结果，不是该操作单独的效果。
             rec["attenuation_measured_db"] = measured[i] if measured is not None else None
-        if declip_recs is not None and declip_recs[i] is not None:
-            # 去削波：`applied_frames` 是**选区覆盖**的采样数；真正被改的是 `replaced_samples`
-            # （饱和样本数）。另外带上**实测**的能量比与带外变化（`_declip_record`）。
-            rec.update(declip_recs[i])
+        if op_recs is not None and op_recs[i] is not None:
+            # 去削波 / 去咔哒：`applied_frames` 是**选区覆盖**的采样数；真正被改的是
+            # `replaced_samples` / `changed_samples`。另外带上各自的**实测**（见各自的构造处）。
+            rec.update(op_recs[i])
         ops.append(rec)
     audit = {
         "source": os.path.abspath(project.source),
@@ -426,6 +497,9 @@ def _audit(project: Project, dest: str, domain: str, fs: int, ch: int, sub: str,
     if domain == "declip":
         #: 用的是哪套重建（可复算的口径名）：带限投影 + 削波不等式投影，见 `declip.py`
         audit["algorithm"] = "pocs_declip"
+    if domain == "declick":
+        #: 检测口径（可复算的名字）：两点预测残差 + 全段 MAD 尺子 + 线性插值，见 `declick.py`
+        audit["algorithm"] = "residual2_mad_linear"
     return audit
 
 
@@ -445,3 +519,10 @@ def render_declip(source: str, dest: str, t0: float, t1: float, bandwidth: float
                   ceiling: float | None = None, **kw) -> dict:
     """便捷入口：单个**去削波**选区（`render()` 的薄封装；`bandwidth`/`ceiling` 见 `DeclipOp`）。"""
     return render(Project(source, [DeclipOp(t0, t1, bandwidth, ceiling)]), dest, **kw)
+
+
+def render_declick(source: str, dest: str, t0: float, t1: float, threshold: float | None = None,
+                   **kw) -> dict:
+    """便捷入口：单个**去咔哒**选区（`render()` 的薄封装；`threshold` 见 `DeclickOp`）。"""
+    op = (DeclickOp(t0, t1) if threshold is None else DeclickOp(t0, t1, threshold))
+    return render(Project(source, [op]), dest, **kw)

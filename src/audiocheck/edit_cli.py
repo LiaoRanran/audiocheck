@@ -3,10 +3,10 @@
     audiocheck-edit <源> <目标> --gain -6 --at 12.5-14.0 [--subtype PCM_16] [--overwrite] [--audit 记录.json]
     audiocheck-edit <源> <目标> --gain -20 --at 12.5-14.0 --band 4000-8000     # 时频选区
     audiocheck-edit <源> <目标> --declip --at 3.0-3.5 [--bandwidth 18000] [--ceiling 0.98]   # 去削波
+    audiocheck-edit <源> <目标> --declick --at 1.0-2.0 [--threshold 4.0]                    # 去咔哒
 
-三种操作**必须给且只给一种**：`--gain`（时间选区增益 / 加 `--band` 变时频选区）
-或 `--declip`（去削波）。去削波的两个输入**都可省略**：`--ceiling` 省略 ⇒ 取区间**观测峰值**；
-`--bandwidth` 省略 ⇒ **调测量层**读砖墙截止（量不到 ⇒ 奈奎斯特 ⇒ 逐位不变），见 `DeclipOp`。
+四种操作**必须给且只给一种**：`--gain`（时间选区增益 / 加 `--band` 变时频选区）、
+`--declip`（去削波）或 `--declick`（去咔哒）。
 
 三条约定（与 `core/edit/render.py` 一致，不在这一层偷改）
 --------------------------------------------------------
@@ -25,7 +25,7 @@ import json
 import sys
 
 from .cli import _setup_console
-from .core.edit import BandGainOp, DeclipOp, GainOp, Project, render
+from .core.edit import BandGainOp, DeclickOp, DeclipOp, GainOp, Project, render
 
 
 def _parse_range(s: str) -> tuple[float, float]:
@@ -92,6 +92,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="选区增益（dB）。0 = 无操作（no-op，逐位不变）")
     ap.add_argument("--declip", action="store_true",
                     help="去削波（只改饱和样本）。`--ceiling` 与 `--bandwidth` 都可省略（自动）")
+    ap.add_argument("--declick", action="store_true",
+                    help="去咔哒（只改检出样本）。`--threshold` 可省略（实测标定默认 5.0）")
+    ap.add_argument("--threshold", type=float, default=None,
+                    help="去咔哒的检测阈值 α（|r| > α·MAD）。**调小会把误报引进来**（实测会修坏）")
     ap.add_argument("--ceiling", type=float, default=None,
                     help="削波电平 c（线性幅度，0 < c <= 1；可测输入，见 --declip）")
     ap.add_argument("--bandwidth", type=float, default=None,
@@ -116,15 +120,21 @@ def main(argv=None) -> int:
     _setup_console()
     a = build_parser().parse_args(argv)
 
-    n_modes = (1 if a.gain is not None else 0) + (1 if a.declip else 0)
+    n_modes = ((1 if a.gain is not None else 0) + (1 if a.declip else 0)
+               + (1 if a.declick else 0))
     if n_modes != 1:
-        print("参数错误：必须且**只**给一种操作：`--gain`（增益，可加 `--band`）"
-              "或 `--declip`（去削波）")
+        print("参数错误：必须且**只**给一种操作：`--gain`（增益，可加 `--band`）／"
+              "`--declip`（去削波）／`--declick`（去咔哒）")
         return 2
-    if a.declip:
-        if a.band or a.n_fft is not None or a.hop is not None:
-            print("参数错误：`--band` / `--n-fft` / `--hop` 只对 `--gain` 有效")
-            return 2
+    if a.declip and (a.band or a.n_fft is not None or a.hop is not None):
+        print("参数错误：`--band` / `--n-fft` / `--hop` 只对 `--gain` 有效")
+        return 2
+    if a.declick and (a.band or a.n_fft is not None or a.hop is not None
+                      or a.ceiling is not None or a.bandwidth is not None
+                      or a.iterations is not None):
+        print("参数错误：`--band` / `--n-fft` / `--hop` / `--ceiling` / `--bandwidth` / "
+              "`--iterations` 都不是去咔哒的参数（它只有 `--threshold`）")
+        return 2
 
     try:
         t0, t1 = _parse_range(a.at)
@@ -156,6 +166,8 @@ def main(argv=None) -> int:
         if a.declip:
             dkw = {} if a.iterations is None else {"iterations": a.iterations}
             op = DeclipOp(t0, t1, bw, a.ceiling, bandwidth_source=bw_src, **dkw)
+        elif a.declick:
+            op = DeclickOp(t0, t1) if a.threshold is None else DeclickOp(t0, t1, a.threshold)
         else:
             op = (BandGainOp(t0, t1, f0, f1, a.gain) if a.band
                   else GainOp(t0, t1, a.gain))
@@ -219,6 +231,19 @@ def main(argv=None) -> int:
                              "（已到浮点精度）" if op.get("converged")
                              else "（还能动 ⇒ 想要更准可加 --iterations）"))
         print("算法  %s（带限投影 + 削波不等式投影）" % audit["algorithm"])
+    elif audit["domain"] == "declick":
+        for op in audit["ops"]:
+            e = op.get("energy_ratio_measured_db")
+            print("操作  去咔哒 %.3f–%.3f s：检测阈值 %.2f×MAD ｜ 残差尺子 %s"
+                  % (op["t0"], op["t1"], op["threshold"], op["residual_scale"]))
+            print("     检出 %d / %d 采样（%.4f%%）｜ 实际替换 %d 帧 ｜ 实测 能量比 %s dB"
+                  % (op["detected_samples"], op["applied_frames"] * audit["channels"],
+                     100.0 * op["fraction"], op["changed_samples"],
+                     "—" if e is None else "%+.3f" % e))
+            if op["changed_samples"] * 100.0 / max(1, op["applied_frames"] * audit["channels"]) > 0.5:
+                print("⚠ **改动面偏大**（>0.5% 的采样）：阈值可能压到了误报区——实测"
+                      "误报率到 ~1e-3 时修复会**把信号修坏**（白噪 −13 dB）⇒ 宁可漏、不可错")
+        print("算法  %s（两点预测残差 + 全段 MAD 尺子 + 线性插值）" % audit["algorithm"])
     else:
         for op in audit["ops"]:
             print("操作  %+.1f dB @ [%.3f, %.3f) s ｜ 生效 %d 帧"
