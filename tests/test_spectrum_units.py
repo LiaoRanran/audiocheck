@@ -80,6 +80,33 @@ def test_drop_gate_counts_exactly_min_drop_db():
     assert slope > 0.0        # 陡度为正（功率域平滑会把 10 dB 台阶压到 ~7 dB/oct）
 
 
+def test_sloped_passband_pins_the_search_windows_and_the_edge_index():
+    """**倾斜通带 + 缓边**：把粗搜索的窗口常数与边缘下标一次钉住。
+
+    平坦通带上中位数对窗口不敏感，所以 `coarse/2.56`、`coarse/1.6`、`cur*0.04`
+    与 `j0 = i+need-1` 这几处改动**读数一模一样**——必须用倾斜通带才量得出差别。
+    本节实测（`f = 0..24k` 16385 点、−1 dB/kHz 通带、18k 起 1 kHz 内降 60 dB）：
+
+    | 版本 | 读数 |
+    |---|---|
+    | 原实现 | **18810.06** |
+    | `coarse/2.56 → 3.84` | 18796.88（−13.2 Hz） |
+    | `coarse/1.6 → 2.4` | 18789.55（−20.5 Hz） |
+    | `cur*0.04 → *0.06` | 18798.34（−11.7 Hz） |
+    | `j0 = i+need-1 → +1` | 18812.99（+2.9 Hz） |
+
+    ⚠ **量不出来的**（如实记）：中位数切片的端点 ±1（`raw[jl:jc-1]` /
+    `raw[jc:jh-1]`）在几百点的窗里改变的是 1/2N 的分位位置，实测位移 < 0.1 Hz
+    ⇒ 这一族**没有**升格成等价体，只是**判据抓不住**（探针报告里如实列着）。
+    """
+    f = np.linspace(0.0, 24000.0, 16385)
+    db = -1.0 * f / 1000.0
+    t = np.clip((f - 18000.0) / 1000.0, 0.0, 1.0)
+    db = db - 60.0 * t - 40.0 * (f > 19000.0)
+    cut, _slope = detect_cutoff(f, db)
+    assert cut == pytest.approx(18810.06, abs=1.0), "实得 %r" % (cut,)
+
+
 def test_band_balance_bands_are_half_open():
     """`band_balance` 的频段是**左闭右开** `[lo, hi)`：每个边界点只归一个频段。
 
