@@ -173,6 +173,35 @@ def test_true_peak_scan_spans_locate_hot_region(tmp_path):
     assert got[0] < got[2]
 
 
+def test_true_peak_scan_spans_across_blocks_match_single_block(tmp_path):
+    """★ **2026-10-21 修的真 bug**：多块扫描时，落在第 1 块之后的 span 全是 `None`。
+
+    根因：`seg` 的索引是**相对本块起点 `pos`** 的，而早先写的是
+    `max(s0, pos) * TP_OS - lo`（`lo` 是**相对读窗口起点 a**）——两套坐标混用。
+    第 2 块起 `i0 - lo` 大于 `seg` 的长度 ⇒ 切片为空 ⇒ 该段 `span_pk` 永远不更新。
+
+    为什么此前没抓到：`context.true_peak_scan` 用默认块 `2^21` 帧（44.1k 下 ≈ 47 s），
+    而所有 span 测试的视频素材都短于一个块（`a == pos == 0`，两套坐标重合）。
+
+    判据：**同一文件、同一批 span**，多块读数必须与单块读数**逐段一致**。
+    """
+    n = 200_000
+    x = np.zeros(n, dtype=np.float32)
+    hot = [(1000, 0.9), (70_000, 0.6), (196_700, 0.3)]      # 三个块里各放一个尖峰
+    for pos, amp in hot:
+        x[pos] = amp
+    p = str(tmp_path / "spans.wav")
+    sf.write(p, np.column_stack([x, x]), FS, subtype="FLOAT")
+    spans = [(0, 2000), (70_000, 70_010), (196_700, 196_750)]
+    one = dsp.true_peak_scan(p, spans, chunk=1 << 22)["spans"]     # 单块（参照）
+    many = dsp.true_peak_scan(p, spans, chunk=1 << 16)["spans"]    # 4 块
+    for i, (a, b) in enumerate(zip(one, many)):
+        assert a is not None, "参照段 %d 都测不到峰，素材有问题" % i
+        assert b is not None, "第 %d 段在分块扫描里丢了（多块坐标 mixup 回归）" % i
+        assert abs(a - b) < 0.02, "第 %d 段 单块 %.2f vs 多块 %.2f" % (i, a, b)
+    assert many == pytest.approx([-0.92, -4.44, -10.46], abs=0.05)
+
+
 def test_true_peak_scan_reports_truncation(tmp_path):
     """读不满（截断）⇒ `incomplete=True` + `frames_read` < 头部声称；不许当完好。"""
     x = _sine(int(FS * 30), 440, 0.2)

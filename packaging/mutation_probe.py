@@ -56,19 +56,27 @@ TARGETS: dict[str, list[str]] = {
         "tests/test_cutoff.py", "tests/test_engine.py", "tests/test_verdict.py",
         # 2026-10-19：新增 `content_bandwidth`（内容带宽 `B` 的单一出口）⇒ 判据必须挂上，
         # 否则那一族变异体"全假存活"（同型坑在 ops.py 上踩过）。
-        "tests/test_bandwidth.py"],
+        "tests/test_bandwidth.py",
+        # 2026-10-21：补 29 条缺口（平滑向量化 / 截止点常数 / 展示字段口径）。
+        "tests/test_spectrum_units.py"],
     "src/audiocheck/core/dsp.py": [
         "tests/test_dsp.py", "tests/test_dsp_standard.py",
-        "tests/test_truepeak.py", "tests/test_timeline_loudness.py"],
+        "tests/test_truepeak.py", "tests/test_timeline_loudness.py",
+        # 2026-10-21：补 116 条存活里的守卫/等号侧/舍入位数（打桩喂格子）。
+        "tests/test_dsp_edges.py"],
     # 判定层（2026-10-17 夜间包）：**产品结论就在这两个文件里**，此前从未被变异测试
     # 覆盖过——内核的测量再好，结论判错一样没用。子集取"直接钉判定的两个测试文件"
     # （80 用例 / ~12 s，`-x` 早停后单个体通常几秒）。
     "src/audiocheck/core/analyzers/verdict.py": [
         "tests/test_verdict.py", "tests/test_c4_granularity.py",
-        "tests/test_judgment_boundaries.py"],
+        "tests/test_judgment_boundaries.py",
+        # 2026-10-21：补 31 条缺口（等号侧 / 短路顺序 / 文案里的单位）。
+        "tests/test_verdict_edges.py"],
     "src/audiocheck/core/analyzers/causes.py": [
         "tests/test_c4_granularity.py", "tests/test_verdict.py",
-        "tests/test_judgment_boundaries.py"],
+        "tests/test_judgment_boundaries.py",
+        # 2026-10-22：补 33 条存活里的粗档强度 / 门限等号侧（纯 dict 输入）。
+        "tests/test_causes_edges.py"],
     # 编辑内核（2026-10-18，P0 地基）：**导出结果就是用户手里拿到的东西**。
     # 抽样偏移一位、增益算错、区间端点判错，都属于"安静地给错数"——
     # 正是变异测试该抓的形态（`test_edit_render.py` 逐条钉住这些口径）。
@@ -315,6 +323,48 @@ EQUIVALENT: dict[str, str] = {
         "**守卫那一处**的 `if n * ch` → `if n / ch`：两者都只在 `n == 0` 时为假（`ch ≥ 1`）⇒ "
         "走同一分支 ⇒ 不可区分。（同一行**分母**那一处的 `*`→`/` 是**被判据杀死的**，见 "
         "`test_only_detected_samples_change` 的占比断言。）",
+    # --- 2026-10-21/22 大包：`dsp.py`（116 条存活）里**可证明**语义不变的几条 ---
+    # 说明：`_gated_loudness` 里三处 `+ 1e-30` 的加/减与 `1e-30 -> 0.0`。z 是均方和，
+    # **恒 ≥ 0**；z > 0 时 1e-30 在 float64 下低于 1 ulp（gated 读数的量级都 > 1e-7），
+    # z = 0 时 `log10(±1e-30)` 分别是 −300 / nan，**两者都 < ABS_GATE(−70)** ⇒ 同一 `None`。
+    "src/audiocheck/core/dsp.py:59:bin:+->-":
+        "`log10(z + 1e-30)` 的 `+`→`-`：z ≥ 0；z=0 时 −300 与 nan 都低于绝对门限 ⇒ 同一个 None；"
+        "z>0 时 ±1e-30 低于 double 的 1 ulp（本函数输出的量级均 > 1e-6）。",
+    "src/audiocheck/core/dsp.py:59:const:1e-30->0.0":
+        "同上的 `1e-30 -> 0.0`：只在 z=0 时分叉（−inf vs −300），两者都低于绝对门限 ⇒ 同为 None。",
+    "src/audiocheck/core/dsp.py:63:bin:+->-":
+        "相对门限 `log10(mean + 1e-30)` 的 `+`→`-`：mean 是 keep 的均值 ≥ 0，同上不可分辨。",
+    "src/audiocheck/core/dsp.py:63:const:1e-30->0.0":
+        "相对门限的 `1e-30 -> 0.0`：mean=0 时绝对门限已先返回 None ⇒ 不可区分。",
+    "src/audiocheck/core/dsp.py:67:bin:+->-":
+        "积分响度 `log10(mean + 1e-30)` 的 `+`→`-`：走到这里必有 lv > −70 ⇒ z > 1e-7 ⇒ "
+        "1e-30 远低于 1 ulp ⇒ 逐位相同。",
+    "src/audiocheck/core/dsp.py:67:const:1e-30->0.0":
+        "同上：`z[keep].mean() > 1e-7` ⇒ 加 1e-30 与加 0 逐位相同。",
+    "src/audiocheck/core/dsp.py:87:bin:*->/":
+        "`total < hop * 4` 的 `*`→`/`：`total < hop/4` 更弱，会放行进函数体；"
+        "但 `si = total // hop` 在 `total < 4·hop` 时必 < 4 ⇒ 末尾 `if si < 4: return {}` "
+        "给同一个 `{}`（不写 step_ms：`si < nsteps` 为假）。",
+    "src/audiocheck/core/dsp.py:122:cmp:<-><=":
+        "`if si < nsteps` 的 `<`→`<=`：`si == nsteps` 意味着 nsteps 个满块已全部消费、"
+        "剩余采样 < hop ⇒ `acc_n` 再也到不了 hop ⇒ 该等号分支不可达。",
+    "src/audiocheck/core/dsp.py:207:bin:+->-":
+        "相关系数分母的 `+ 1e-30`→`- 1e-30`：两声道全零时分母 0，"
+        "0/(+1e-30) 与 0/(−1e-30) 分别是 0.0 与 −0.0（**比较相等**，档位也相同）；"
+        "否则 1e-30 低于 1 ulp。",
+    "src/audiocheck/core/dsp.py:261:cmp:==->!=":
+        "`if slot == \"L\"` 的 `==`→`!=`（L/R 互换）：ρ 的分子 `Re(L·conj(R))` 在互换下是共轭"
+        "（实部不变），`undef` 用 min/max ⇒ 对称；两个数组被完整算出、只是装进对方的名字。",
+    "src/audiocheck/core/dsp.py:443:cmp:<=-><":
+        "`if total <= 0` 的 `<=`→`<`：total=0 时 `while pos < total` 一次也不进循环，"
+        "之后 `_db(0.0)` 返回 None ⇒ 与提前 return 的 out **逐键相同**。",
+    "src/audiocheck/core/dsp.py:482:cmp:>->>=":
+        "`if i1 > i0` 的 `>`→`>=`：i1 == i0 时 `seg[i0:i0]` 是空切片，`if sub.size` 为假 ⇒ "
+        "`span_pk` 不更新，与跳过分支逐位相同。",
+    "src/audiocheck/core/analyzers/causes.py:80:bin:/->*":
+        "`(slope - conf_slope_lo) / conf_slope_span` 的 `/`→`*`：该式只在 "
+        "`low_cut and hard`（slope ≥ th.brick_db = 24）里求值 ⇒ 原式 (24−8)/16 = 1 "
+        "已顶到 `min(1.0, ·)`；改成乘（≥16·16）同样是 1.0，`max(0,·)` 也不变 ⇒ 逐位相同。",
 }
 
 

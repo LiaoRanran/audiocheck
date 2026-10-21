@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .declick import DEFAULT_THRESHOLD
+from .declick import DEFAULT_MAX_RUN, DEFAULT_THRESHOLD
 from .declip import DEFAULT_ITERATIONS
 
 
@@ -176,12 +176,17 @@ class DeclickOp:
     t0: float
     t1: float
     threshold: float = DEFAULT_THRESHOLD
+    #: **宽度守卫**（第二级复核）：只接受宽度 ≤ `max_run` 的检出段。`None` = 不设守卫。
+    #: 实测依据见 `declick.DEFAULT_MAX_RUN` 的代价表（4 = 保住 1–2 采样咔哒的最小值）。
+    max_run: int | None = DEFAULT_MAX_RUN
 
     def __post_init__(self) -> None:
         if not (self.t1 > self.t0 >= 0.0):
             raise ValueError("时间选区非法：需要 0 <= t0 < t1，得到 [%r, %r)" % (self.t0, self.t1))
         if not self.threshold > 0.0:
             raise ValueError("检测阈值必须 > 0，得到 %r" % self.threshold)
+        if self.max_run is not None and self.max_run < 1:
+            raise ValueError("宽度守卫必须是 >= 1 的整数或 None，得到 %r" % self.max_run)
 
     @property
     def is_noop(self) -> bool:
@@ -189,10 +194,13 @@ class DeclickOp:
         return False
 
     def to_dict(self) -> dict:
-        return {"kind": "declick", "t0": self.t0, "t1": self.t1, "threshold": self.threshold}
+        return {"kind": "declick", "t0": self.t0, "t1": self.t1,
+                "threshold": self.threshold, "max_run": self.max_run}
 
     def describe(self) -> str:
-        return "去咔哒 %.3f–%.3f s：检测阈值 %.2f×MAD" % (self.t0, self.t1, self.threshold)
+        return "去咔哒 %.3f–%.3f s：检测阈值 %.2f×MAD，宽度守卫 %s" % (
+            self.t0, self.t1, self.threshold,
+            "关" if self.max_run is None else "≤%d 采样" % self.max_run)
 
 
 @dataclass

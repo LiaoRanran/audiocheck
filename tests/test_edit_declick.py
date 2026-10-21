@@ -228,6 +228,95 @@ def test_selection_past_the_end_is_a_noop(tmp_path):
 def test_default_threshold_is_pinned_to_the_calibrated_value():
     """默认阈值是**实测标定**出来的（α=5：三种素材误报 0、四种素材 ΔSDR 全为正）⇒ 钉住。"""
     assert declick.DEFAULT_THRESHOLD == 5.0
+    assert declick.DEFAULT_MAX_RUN == 4
+
+
+# ------------------------------------------------------------------ 5. 宽度守卫（第二级复核）
+def _onset_material(ms: float = 5.0, seconds: float = SECONDS):
+    """**平滑音 + 陡起音**（合法内容）。这组素材才是"误伤"的真实场景：
+    残差尺度很小 ⇒ 起音在残差域里**很显眼**（噪声素材上反而不显眼）。"""
+    base = _smooth()
+    x = base[:, 0].copy()
+    L = max(1, int(ms * FS / 1000.0))
+    for i in np.arange(int(0.15 * FS), x.size - L - 10, int(0.25 * FS)):
+        env = np.exp(-np.arange(L) / (0.1 * L))
+        x[i:i + L] += 0.8 * env * np.sin(2 * np.pi * 3000.0 * np.arange(L) / FS)
+    return (x / np.abs(x).max() * 0.95)[:, None], base
+
+
+def test_width_guard_protects_legitimate_onsets():
+    """**第二级复核的效力**（实测）：平滑音 + 5 ms 起音，α=5。
+
+    * 无守卫：把起音也修了（离原素材 **30.55 dB**，动 300 采样）；
+    * `max_run=4`：**56.51 dB**，只动 40 采样（降了 26 dB 的破坏）。
+    ⇒ 判据要求"有守卫"至少比"无守卫"好 **20 dB**，且改动面 ≤ 1/5。
+    """
+    y, _ = _onset_material()
+    no_guard, st0 = declick.declick(y, 5.0, None)
+    guarded, st1 = declick.declick(y, 5.0, 4)
+    assert st0["rejected_runs"] == 0 and st1["rejected_runs"] > 0
+    d0 = sdr_db(no_guard, y)
+    d1 = sdr_db(guarded, y)
+    assert d1 - d0 > 20.0, "宽度守卫没起作用：%.2f vs %.2f" % (d0, d1)
+    assert st1["changed_samples"] * 5 <= st0["changed_samples"]
+
+
+def test_width_guard_keeps_one_and_two_sample_clicks():
+    """**守卫不能把该修的咔哒挡掉**：1 采样与 2 采样咔哒的检出段宽度是 3 / 4，
+    `max_run=4` 必须一个不丢（`max_run=3` 会把 2 采样咔哒整段丢掉——这就是取 4 的理由）。"""
+    for w in (1, 2):
+        clean = _smooth()
+        pos = list(np.arange(0.15, SECONDS - 0.05, 0.12))
+        y = clean.copy()
+        for t in pos:
+            i = int(round(t * FS))
+            y[i:i + w, 0] += 0.9
+        out, st = declick.declick(y, 5.0, 4)
+        assert st["rejected_runs"] == 0
+        assert sdr_db(out, clean) - sdr_db(y, clean) > 20.0, (w, st)
+    # 3 会把 2 采样咔哒挡掉——判据钉住"为什么是 4 而不是 3"
+    clean = _smooth()
+    y = clean.copy()
+    for t in np.arange(0.15, SECONDS - 0.05, 0.12):
+        i = int(round(float(t) * FS))
+        y[i:i + 2, 0] += 0.9
+    _, st3 = declick.declick(y, 5.0, 3)
+    assert st3["rejected_runs"] > 0, "max_run=3 应当挡掉 2 采样咔哒（这正是不取 3 的原因）"
+
+
+def test_three_sample_plateau_is_only_edge_repaired_and_we_say_so():
+    """**如实记账的缺口**：宽度 ≥3 的矩形咔哒**只被修两个边**（平台残差 ≈ 0 ⇒ 看不见）。
+
+    实测：宽度 1 → +39 dB、2 → +37 dB，而 3 → **+1.5 dB**、8 → **+0.5 dB**。
+    这条判据把"本算子修脉冲、不修台阶"钉死——将来谁想改，先看这条。
+    """
+    pos = list(np.arange(0.15, SECONDS - 0.05, 0.12))
+    gains = {}
+    for w in (1, 2, 3, 8):
+        clean = _smooth()
+        y = clean.copy()
+        for t in pos:
+            i = int(round(t * FS))
+            y[i:i + w, 0] += 0.9
+        out, _ = declick.declick(y, 5.0, 4)
+        gains[w] = sdr_db(out, clean) - sdr_db(y, clean)
+    assert gains[1] > 20.0 and gains[2] > 20.0
+    assert gains[3] < 5.0 and gains[8] < 5.0, gains
+
+
+def test_max_run_validation_and_reporting(tmp_path):
+    """`max_run` 的取值校验（>=1 或 None）与审计字段（含被挡段数）。"""
+    with pytest.raises(ValueError):
+        DeclickOp(0.0, 1.0, 5.0, 0)
+    assert DeclickOp(0.0, 1.0).max_run == 4
+    assert "宽度守卫 ≤4 采样" in DeclickOp(0.0, 1.0).describe()
+    assert "宽度守卫 关" in DeclickOp(0.0, 1.0, 5.0, None).describe()
+
+    y, _ = _onset_material()
+    src = _write(tmp_path / "a.wav", y)
+    audit = render_declick(src, str(tmp_path / "b.wav"), 0.0, SECONDS, overwrite=True)
+    rec = audit["ops"][0]
+    assert rec["max_run"] == 4 and rec["rejected_runs"] > 0
 
 
 def test_energy_ratio_guard_is_reported(tmp_path):

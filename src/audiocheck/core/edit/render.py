@@ -42,6 +42,7 @@ import soundfile as sf
 
 from ..context import io_path
 from . import declick, declip, stft
+from .declick import DEFAULT_MAX_RUN, DEFAULT_THRESHOLD
 from .metrics import band_gain_db, energy_ratio_db
 from .ops import BandGainOp, DeclickOp, DeclipOp, GainOp, Project
 
@@ -430,7 +431,7 @@ def _render_declick(project: Project, dest: str, *, subtype: str | None,
                     if not len(seg):
                         break
                 op = ops[i]
-                out, sstat = declick.declick(seg, op.threshold)
+                out, sstat = declick.declick(seg, op.threshold, op.max_run)
                 recs[i] = {**sstat, "energy_ratio_measured_db":
                            _round_db(energy_ratio_db(out, seg))}
                 applied[i] = int(seg.shape[0])
@@ -522,7 +523,7 @@ def render_declip(source: str, dest: str, t0: float, t1: float, bandwidth: float
 
 
 def render_declick(source: str, dest: str, t0: float, t1: float, threshold: float | None = None,
-                   **kw) -> dict:
-    """便捷入口：单个**去咔哒**选区（`render()` 的薄封装；`threshold` 见 `DeclickOp`）。"""
-    op = (DeclickOp(t0, t1) if threshold is None else DeclickOp(t0, t1, threshold))
-    return render(Project(source, [op]), dest, **kw)
+                   max_run: int | None = DEFAULT_MAX_RUN, **kw) -> dict:
+    """便捷入口：单个**去咔哒**选区（`render()` 的薄封装；`threshold`/`max_run` 见 `DeclickOp`）。"""
+    th = DEFAULT_THRESHOLD if threshold is None else threshold
+    return render(Project(source, [DeclickOp(t0, t1, th, max_run)]), dest, **kw)

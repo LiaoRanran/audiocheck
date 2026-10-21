@@ -470,9 +470,16 @@ def true_peak_scan(path: str, spans: list[tuple[int, int]] | None = None,
         if seg.size:
             peak = max(peak, float(seg.max()))
             for si, (s0, s1) in enumerate(spans or []):
-                i0, i1 = max(s0, pos) * TP_OS, min(s1, end) * TP_OS
+                # ⚠ 2026-10-21 修 bug：`seg` 的索引是**相对本块起点 `pos`** 的，
+                #   早先写成 `max(s0,pos)*TP_OS - lo`（`lo=(pos-a)*TP_OS` 是**相对 a**）
+                #   两套坐标混用 ⇒ 第 2 块起 `i0-lo` 比 `seg` 还长，切片为空 ⇒
+                #   **所有落在第 1 块之后的段真峰值都是 `None`**（多块文件实测）。
+                #   文件 < 一个块（默认 2^21 帧 ≈ 47 s @44.1k）时 a==pos==0 才恰好不炸，
+                #   所以旧测试（全部单块）一直没抓到。回归判据：跨块 span 必须与
+                #   单块读数一致（`tests/test_truepeak.py::test_true_peak_scan_spans_across_blocks`）。
+                i0, i1 = (max(s0, pos) - pos) * TP_OS, (min(s1, end) - pos) * TP_OS
                 if i1 > i0:
-                    sub = seg[i0 - lo:i1 - lo]
+                    sub = seg[i0:i1]
                     if sub.size:
                         span_pk[si] = max(span_pk[si], float(sub.max()))
         out["frames_read"] = end
