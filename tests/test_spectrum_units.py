@@ -78,6 +78,11 @@ def test_drop_gate_counts_exactly_min_drop_db():
                                need=34, min_stop_db=0.0)
     assert cut is not None and 7900.0 < cut < 8100.0, "实得 %r" % (cut,)
     assert slope > 0.0        # 陡度为正（功率域平滑会把 10 dB 台阶压到 ~7 dB/oct）
+    # 守卫的等号侧：`pass_lvl - floor_lvl >= min_stop_db`。同一素材（pass 0 / floor −10）
+    # 取 `min_stop_db = 10` 恰好相等 ⇒ **算通过**；改成 `>` 就整体回落奈奎斯特。
+    cut2, _ = detect_cutoff(f, db, min_drop_db=10.0, min_hz=1000.0,
+                            need=34, min_stop_db=10.0)
+    assert cut2 is not None and 7900.0 < cut2 < 8100.0, "守卫等号侧实得 %r" % (cut2,)
 
 
 def test_sloped_passband_pins_the_search_windows_and_the_edge_index():
@@ -129,16 +134,46 @@ def test_guard_floor_window_is_one_point_six_octaves():
 def test_band_balance_bands_are_half_open():
     """`band_balance` 的频段是**左闭右开** `[lo, hi)`：每个边界点只归一个频段。
 
-    ⚠ 素材取**频段内部**的点（40/150/…），只把 20000 放在最后一个上边界：
-    若把 20/60/250… 这些点也放上，`<`→`<=` 会让**每个**频段都多一个点、
-    占比仍然是 1/7，判据就抓不住了（实测踩过）。
-    原实现：20000 不属于 `air=[16000, 20000)` ⇒ 7 个点各 14.3%；
-    `<`→`<=` ⇒ air 得 2/8 = 25.0%、其余 12.5%。
+    素材 = **7 个内部点** + **一个落在 sub 下边界（20）** + **一个落在 air 上边界（20000）**：
+    * 原实现：20 归 sub（含下边界），20000 被 air 排除 ⇒ 7 点各 14.3%；
+    * `>=`→`>`：sub 丢掉 20 ⇒ 6 点，sub 0.0%、其余 16.7%；
+    * `<`→`<=`：air 多收 20000 ⇒ 8 点，air 25.0%、其余 12.5%。
+    ⚠ 若所有点都压在边界上（早先的写法），两条变异会让**每个**频段同时多/少一个点，
+    占比仍是 1/7——判据就抓不住了（实测踩过）。
     """
-    f = np.array([40.0, 150.0, 300.0, 1000.0, 3000.0, 8000.0, 18000.0, 20000.0])
+    f = np.array([20.0, 150.0, 300.0, 1000.0, 3000.0, 8000.0, 18000.0, 20000.0])
     parts = band_balance(f, np.ones_like(f))
     assert all(v == 14.3 for v in parts.values()), parts
     assert len(parts) == 7
+
+
+def test_sparse_grid_pins_the_median_window_endpoints():
+    """**稀疏对数网格**把中位数窗缩到 1–2 个点 ⇒ 切片端点 `+1` 改成 `-1` 才可见。
+
+    16 点（20 Hz…24 kHz 几何分布）+ 8 kHz 台阶，`min_drop_db=10 / min_stop_db=0`：
+    原实现读 `(5812.66 Hz, 60.0 dB/oct)`；把任一处 `raw[a:b+1]` 改成 `raw[a:b-1]`
+    （粗搜索的 below/above、守卫的 pass/floor、第二步的通带窗）**都会退回奈奎斯特**。
+    ⚠ 真实谱不是这种形态（它是 16385 点的均匀网格）——这条判据钉的是**下标算术**，
+    因为 ±1 个点在几百点的窗里改变不了中位数（实测位移 < 0.1 Hz）。
+    """
+    f = np.geomspace(20.0, 24000.0, 16)
+    db = np.where(f < 8000.0, 0.0, -60.0)
+    cut, slope = detect_cutoff(f, db, min_drop_db=10.0, min_hz=1000.0, min_stop_db=0.0)
+    assert cut == pytest.approx(5812.66, abs=1.0), "实得 %r" % (cut,)
+    assert slope == pytest.approx(60.0, abs=0.01)
+
+
+def test_search_upper_window_is_one_point_six_octaves():
+    """粗搜索的"上方"参考窗 `[cur, min(1.6·cur, nyq)]`：**1.6** 决定它看到多深。
+
+    5 kHz 处一个 10 dB 的浅台阶、8 kHz 再掉到 −70 dB；`min_drop_db=62`：
+    1.6 倍窗只看到 −10 ⇒ 全谱没有候选 ⇒ **回落奈奎斯特**；
+    改成 2.4 倍窗会跨到 −70 区（drop 70 ≥ 62）⇒ 报出一个 ~5 kHz 的**假截止**。
+    """
+    f = np.linspace(0.0, 24000.0, 16385)
+    db = np.where(f < 5000.0, 0.0, np.where(f < 8000.0, -10.0, -70.0))
+    cut, slope = detect_cutoff(f, db, min_drop_db=62.0, min_hz=1000.0, min_stop_db=0.0)
+    assert cut == 24000.0 and slope == 0.0, "实得 %r" % (cut,)
 
 
 def test_analyzer_bands_use_ten_per_decade():
