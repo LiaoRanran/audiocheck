@@ -7,9 +7,10 @@
 2. **可审计**：每个操作都能 `to_dict()`（机器可读）与 `describe()`（人可读），
    渲染再返回一份**审计记录**——这是本项目相对闭源工具的那条差别（见
    `docs/editor_roadmap.md §2`："可审计的修复"）。
-3. **只做有判据的**：目前三个操作——时间选区增益 `GainOp`、时频选区增益
+3. **只做有判据的**：目前四个操作——时间选区增益 `GainOp`、时频选区增益
    `BandGainOp`（判据在 `tests/test_edit_render.py` / `tests/test_edit_stft.py`）、
-   去削波 `DeclipOp`（判据在 `tests/test_edit_declip.py`）。
+   去削波 `DeclipOp`（判据在 `tests/test_edit_declip.py`）、去咔哒 `DeclickOp`
+   （判据在 `tests/test_edit_declick.py`）、去嗡 `DehumOp`（判据在 `tests/test_edit_dehum.py`）。
    加任何新算法前，先按 `docs/editor_roadmap.md §5` 建判据（合成语料 + 客观指标 +
    效力边界），否则不加。
 """
@@ -19,6 +20,7 @@ from dataclasses import dataclass, field
 
 from .declick import DEFAULT_MAX_RUN, DEFAULT_THRESHOLD
 from .declip import DEFAULT_ITERATIONS
+from .dehum import DEFAULT_HARMONICS, DEFAULT_Q
 
 
 @dataclass(frozen=True)
@@ -203,12 +205,62 @@ class DeclickOp:
             "关" if self.max_run is None else "≤%d 采样" % self.max_run)
 
 
+@dataclass(frozen=True)
+class DehumOp:
+    """对时间选区 `[t0, t1)` 做**去嗡**：零相位陷波级联（`dehum.py`）。
+
+    * `f0` —— 嗡的基频（50 / 60 Hz）。**可测输入**（频谱上的嗡线），不在这里猜。
+    * `q` —— 陷波 Q，默认 **10**（实测：±1 Hz 漂移下仍压 ≥17 dB 的最大 Q；
+      Q=40 在 1 Hz 漂移下只剩 2.9 dB ⇒ 等于没去）。
+    * `harmonics` —— 要清的谐波次数（默认 1/2/3）；`k·f0 ≥ 奈奎斯特` 的**跳过并记账**。
+
+    ⚠ **与去削波/去咔哒的根本差别**：陷波是 **LTI** ⇒ **整段选区都被改动**，
+      而不是"只改饱和/检出样本"。无嗡素材上它同样会改（实测干净带限白噪 Q=10：
+      SDR 27.6 dB、能量 −0.017 dB）⇒ 收益由**嗡的能量占比**决定，审计报实测压制量。
+
+    拒绝规则（与其它修复算子同款，宁可不做）：与其它域算子同栈混用；多个去嗡选区重叠。
+    """
+
+    t0: float
+    t1: float
+    f0: float
+    q: float = DEFAULT_Q
+    harmonics: tuple = DEFAULT_HARMONICS
+
+    def __post_init__(self) -> None:
+        if not (self.t1 > self.t0 >= 0.0):
+            raise ValueError("时间选区非法：需要 0 <= t0 < t1，得到 [%r, %r)" % (self.t0, self.t1))
+        if not self.f0 > 0.0:
+            raise ValueError("基频必须 > 0，得到 %r" % self.f0)
+        if not self.q > 0.0:
+            raise ValueError("Q 必须 > 0，得到 %r" % self.q)
+        hs = tuple(self.harmonics)
+        if not hs or any(int(k) < 1 or int(k) != k for k in hs):
+            raise ValueError("谐波次数必须是 >= 1 的整数序列，得到 %r" % (self.harmonics,))
+        object.__setattr__(self, "harmonics", hs)
+
+    @property
+    def is_noop(self) -> bool:
+        """去嗡改不改要看渲染时的奈奎斯特（全部谐波越界才 no-op）⇒ 这里**恒 False**。"""
+        return False
+
+    def to_dict(self) -> dict:
+        return {"kind": "dehum", "t0": self.t0, "t1": self.t1, "f0": self.f0,
+                "q": self.q, "harmonics": list(self.harmonics)}
+
+    def describe(self) -> str:
+        return "去嗡 %.3f–%.3f s：基频 %.1f Hz（Q=%.0f，谐波 %s）" % (
+            self.t0, self.t1, self.f0, self.q,
+            "/".join(str(int(k)) for k in self.harmonics))
+
+
 @dataclass
 class Project:
     """一个非破坏编辑项目：源文件 + 操作栈（按加入顺序**依次**作用）。
 
     ⚠ 操作栈目前是 `GainOp`（时间域）**或** `BandGainOp`（频域）**或** `DeclipOp`（去削波）
-    **或** `DeclickOp`（去咔哒）**四选一**：同一栈里混用时，操作顺序的语义（先按频率改谱、
+    **或** `DeclickOp`（去咔哒）**或** `DehumOp`（去嗡）**五选一**：同一栈里混用时，操作顺序的语义
+    （先按频率改谱、
     还是先按时间改样点）还没立判据，渲染层直接拒绝（见 `render.render`），不猜。
     同类算子之间也不许重叠选区。
     """

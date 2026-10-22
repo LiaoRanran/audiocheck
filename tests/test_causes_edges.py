@@ -71,6 +71,9 @@ def test_mid_slope_marks_lossy_and_deliberate_bandlimit_as_indistinguishable():
     gentle = _c(_r(cutoff_hz=18000.0,
                    brickwall_db_per_oct=TH.brick_flat_db_per_oct - 0.1))
     assert "有损转码" not in gentle and "磁带转录" in gentle
+    # 刻意带限的 `ambiguous_with` 只在**中间带**才并列"有损转码"；
+    # `and` 改 `or` 会让"平缓滚降"也把有损转码写进并列集（多一个无法区分的候选）
+    assert "有损转码" not in gentle["刻意带限"]["ambiguous_with"]
 
 
 # ============================================================ 门限等号侧
@@ -84,10 +87,14 @@ def test_mastering_candidate_gates_are_strict():
                                   lra=TH.lra_flat, **base))
     yes = _c(_r(cutoff_hz=22000.0, clip_pct=TH.clip_pct + 0.001,
                 lra=TH.lra_flat, **base))["母带限幅"]
+    assert yes["strength"] == 0.5
     assert "动态压平" not in "".join(yes["evidence"]), yes["evidence"]
     yes2 = _c(_r(cutoff_hz=22000.0, clip_pct=TH.clip_pct + 0.001,
                  lra=TH.lra_flat - 0.1, **base))["母带限幅"]
     assert "动态压平" in "".join(yes2["evidence"]), yes2["evidence"]
+    # 同一行还有第二个 `>`：`tp > 0.0`。恰 0.00 dBTP 不算"超满刻度" ⇒ 不出候选
+    assert "母带限幅" not in _c(_r(cutoff_hz=22000.0, clip_pct=TH.clip_pct + 0.001,
+                                  lra=TH.lra_flat, true_peak_dbfs=0.0))
 
 
 def test_broadcast_candidate_includes_the_low_edge_and_excludes_the_width_edge():
@@ -96,7 +103,8 @@ def test_broadcast_candidate_includes_the_low_edge_and_excludes_the_width_edge()
     两条各取一次等号、另一条留出余量，否则两个方向互相掩盖（同 verdict 的老坑）。
     """
     bands = {"sub": 2.0, "bass": 3.0}                  # low_pct = 5.0（恰等）
-    assert "广播/电台版" in _c(_r(bands_pct=bands, width_db=-20.0))
+    c = _c(_r(bands_pct=bands, width_db=-20.0))["广播/电台版"]
+    assert c["strength"] == 0.5
     assert "广播/电台版" not in _c(_r(bands_pct=bands, width_db=TH.width_narrow_db))
     assert "广播/电台版" not in _c(_r(bands_pct={"sub": 5.1, "bass": 0.0}, width_db=-20.0))
 
@@ -169,6 +177,10 @@ def test_loudness_axis_treats_zero_true_peak_as_not_over():
     assert ok["大音量失真"]["level"] == "可用", ok["大音量失真"]
     assert "真峰值 +0.00 dBTP" in ok["大音量失真"]["reason"]
     assert _m({"true_peak_dbfs": 0.01, "dr_db": 20.0})["大音量失真"]["level"] == "受限"
+    # 同一个格里 `dr < dr_low_db` 也是严格的：恰 6.0 dB 不算"余量低"
+    assert _m({"true_peak_dbfs": -1.0, "dr_db": TH.dr_low_db})["大音量失真"]["level"] == "可用"
+    assert _m({"true_peak_dbfs": -1.0,
+               "dr_db": TH.dr_low_db - 0.1})["大音量失真"]["level"] == "受限"
 
 
 def test_overall_trust_reads_the_bit_verdict_when_nothing_is_ambiguous():

@@ -105,17 +105,37 @@ def test_sloped_passband_pins_the_search_windows_and_the_edge_index():
     db = db - 60.0 * t - 40.0 * (f > 19000.0)
     cut, _slope = detect_cutoff(f, db)
     assert cut == pytest.approx(18810.06, abs=1.0), "实得 %r" % (cut,)
+    # 同一素材、把门限抬到 85 dB：候选的**接受点**此时才真的由"下方窗下边"决定
+    # （`cur/1.6` 与 `|f − cur/1.6|` 两处都在这一步起作用；原实现 18798.34，
+    #  改成 `/2.4` 或 `|f + …|` 都变成 18810.06）
+    cut2, _ = detect_cutoff(f, db, min_drop_db=85.0, min_stop_db=0.0)
+    assert cut2 == pytest.approx(18798.34, abs=1.0), "实得 %r" % (cut2,)
+
+
+def test_guard_floor_window_is_one_point_six_octaves():
+    """守卫的阻带窗 `[cand, min(1.6·cand, nyq)]`：**1.6** 决定守卫看到多深的坑。
+
+    低截止 8 kHz + 分级阻带（[8k,12.8k) −40 dB、其上 −90 dB），`min_stop_db=60`：
+    1.6 倍窗只看到 −40 ⇒ pass−floor ≈ 36 < 60 ⇒ 守卫否决 ⇒ **回落奈奎斯特**；
+    改成 2.4 倍窗会跨到 −90 区 ⇒ 守卫通过 ⇒ 报出 ~12.8 kHz 的截止（假阳性）。
+    """
+    f = np.linspace(0.0, 24000.0, 16385)
+    db = np.where(f < 8000.0, -0.5 * f / 1000.0,
+                  np.where(f < 12800.0, -40.0, -90.0))
+    cut, slope = detect_cutoff(f, db, min_drop_db=10.0, min_hz=1000.0, min_stop_db=60.0)
+    assert cut == 24000.0 and slope == 0.0, "守卫应否决这个候选（实得 %r）" % (cut,)
 
 
 def test_band_balance_bands_are_half_open():
     """`band_balance` 的频段是**左闭右开** `[lo, hi)`：每个边界点只归一个频段。
 
-    8 个频点恰好压 7 个边界（20/60/250/500/2000/6000/16000/20000）：
-    20000 落在 `air=[16000, 20000)` 之外 ⇒ 7 个点各占 1/7 = 14.3%。
-    `>=` 改 `>` 会丢掉下边界点（总数 6 ⇒ 16.7）；`<` 改 `<=` 会把 20000
-    塞进 air（总数 8 ⇒ 12.5，air 翻倍）。
+    ⚠ 素材取**频段内部**的点（40/150/…），只把 20000 放在最后一个上边界：
+    若把 20/60/250… 这些点也放上，`<`→`<=` 会让**每个**频段都多一个点、
+    占比仍然是 1/7，判据就抓不住了（实测踩过）。
+    原实现：20000 不属于 `air=[16000, 20000)` ⇒ 7 个点各 14.3%；
+    `<`→`<=` ⇒ air 得 2/8 = 25.0%、其余 12.5%。
     """
-    f = np.array([20.0, 60.0, 250.0, 500.0, 2000.0, 6000.0, 16000.0, 20000.0])
+    f = np.array([40.0, 150.0, 300.0, 1000.0, 3000.0, 8000.0, 18000.0, 20000.0])
     parts = band_balance(f, np.ones_like(f))
     assert all(v == 14.3 for v in parts.values()), parts
     assert len(parts) == 7

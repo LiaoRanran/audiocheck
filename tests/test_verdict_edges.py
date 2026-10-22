@@ -191,24 +191,35 @@ def test_advice_tolerates_a_missing_usability_cell():
 
 
 def test_no_axis_text_is_appended_when_every_axis_is_ok():
-    """全 ok 时**一个"；"都不许出现**：`if t and lv != "ok"` 的两半各有一个变异。
+    """`if t and lv != "ok"` 的两半各有一个变异，且**要两个方向各测一次**。
 
-    * 改 `and`→`or`：ok 轴的文案被追加（维度和文本都在，只是等级 ok）；
-    * 改 `!=`→`==`：把"等级是 ok"当成追加条件 ⇒ 同样追加。
-    两种都会让一行结论多出"；…"。
+    ① `and`→`or`：**等级是 ok 但文案非空**的轴会被追加（`axis_dynamics` 的"响度战"
+       提示不改变等级 ⇒ 正是这种格子）；
+    ② `!=`→`==`：等级**非 ok** 的轴的文案会被丢掉（削波提示消失）。
+    只看"全 ok 时没有；；"抓不到这两条（ok 轴的文案通常是空串）。
     """
     from audiocheck.core.analyzers.verdict import VerdictAnalyzer
 
-    class _Ctx:
-        deep = True
-        fs = 44100
-        thresholds = TH
-        result = {"peak_dbfs": -3.0, "cutoff_hz": 22000.0, "brickwall_db_per_oct": 113.0,
-                  "bit_effective": 16, "bits": "PCM_16", "clip_pct": 0.0,
-                  "lra": 10.0, "dr_db": 12.0, "width_db": -5.0}
+    def run(**over):
+        res = {"peak_dbfs": -3.0, "cutoff_hz": 22000.0, "brickwall_db_per_oct": 113.0,
+               "bit_effective": 16, "bits": "PCM_16", "clip_pct": 0.0,
+               "lra": 10.0, "dr_db": 12.0, "width_db": -5.0}
+        res.update(over)
 
-    out = VerdictAnalyzer().run(_Ctx())
-    assert "；" not in out["verdict"], out["verdict"]
+        class _Ctx:
+            deep = True
+            fs = 44100
+            thresholds = TH
+            result = res
+
+        return VerdictAnalyzer().run(_Ctx())
+
+    assert "；" not in run()["verdict"], run()["verdict"]
+    # ① 等级仍 ok、但动态轴有"响度战"提示 ⇒ 不许因为等级 ok 就扔掉，也不许无条件追加
+    war = run(lufs=-5.0)["verdict"]
+    assert "响度战" not in war, war
+    # ② 电平轴降级（削波）⇒ 文案**必须**进结论（`!=`→`==` 会吞掉它）
+    assert "削波" in run(clip_pct=0.6)["verdict"]
 
 
 def test_cross_check_khz_conversion_is_pinned_by_a_case_that_straddles_it():

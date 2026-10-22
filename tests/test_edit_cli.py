@@ -1,4 +1,4 @@
-"""编辑器 CLI 判据（P0 的用户入口）。
+﻿"""编辑器 CLI 判据（P0 的用户入口）。
 
 钉住的是**用户看得到的行为**：退出码、可读信息、**不许 traceback**、审计记录落盘、
 以及 no-op 的"逐位不变"承诺在 CLI 这条路上也成立。
@@ -305,3 +305,59 @@ def test_unreadable_source_returns_4_in_a_subprocess(tmp_path):
     assert p.returncode == 4, p.stderr
     assert "Traceback" not in (p.stdout + p.stderr)
     assert "源读不了" in p.stdout
+
+# ------------------------------------------------------------------ 去嗡路径
+def _hummed(seconds: float = 2.0) -> np.ndarray:
+    """440 Hz 内容 + 50/100 Hz 嗡（嗡比内容低 ~24 dB）。"""
+    n = int(seconds * FS)
+    t = np.arange(n) / FS
+    base = 0.3 * np.sin(2 * np.pi * 440 * t)
+    hum = 0.02 * (np.sin(2 * np.pi * 50 * t) + 0.5 * np.sin(2 * np.pi * 100 * t))
+    return np.column_stack([base + hum, base + hum])
+
+
+def test_dehum_cli_end_to_end(tmp_path, capsys):
+    """CLI 必须：退出码 0、打印**实测压制量**、输出里 50 Hz 真被压下去。"""
+    from audiocheck.core.edit.metrics import band_gain_db
+
+    src = _write(tmp_path / "a.wav", _hummed())
+    dst = str(tmp_path / "b.wav")
+    rc = main([src, dst, "--dehum", "--at", "0.0-2.0", "--hum-f0", "50"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "去嗡" in out and "实测压制" in out
+    assert "整段选区都被改动" in out          # LTI 的如实口径必须打出来
+    g = band_gain_db(_read(src), _read(dst), FS, 45.0, 55.0)
+    assert g is not None and g <= -15.0, "50 Hz 只压了 %s dB" % g
+
+
+def test_dehum_requires_the_base_frequency(tmp_path, capsys):
+    """`--dehum` 不给 `--hum-f0` ⇒ 退出码 2（基频是可测输入，不自动猜）。"""
+    src = _write(tmp_path / "a.wav", _hummed(0.5))
+    assert main([src, str(tmp_path / "b.wav"), "--dehum", "--at", "0.0-0.5"]) == 2
+    assert "--hum-f0" in capsys.readouterr().out
+
+
+def test_dehum_refuses_flags_that_are_not_its_own(tmp_path, capsys):
+    src = _write(tmp_path / "a.wav", _hummed(0.5))
+    assert main([src, str(tmp_path / "b.wav"), "--dehum", "--at", "0.0-0.5",
+                 "--hum-f0", "50", "--threshold", "4"]) == 2
+    assert "不是去嗡的参数" in capsys.readouterr().out
+
+
+def test_hum_flags_are_refused_without_dehum(tmp_path, capsys):
+    src = _write(tmp_path / "a.wav", _hummed(0.5))
+    assert main([src, str(tmp_path / "b.wav"), "--gain", "-3", "--at", "0.0-0.5",
+                 "--hum-f0", "50"]) == 2
+
+
+def test_dehum_harmonics_list_is_parsed_and_validated(tmp_path, capsys):
+    src = _write(tmp_path / "a.wav", _hummed(0.5))
+    dst = str(tmp_path / "b.wav")
+    aud = str(tmp_path / "a.json")
+    assert main([src, dst, "--dehum", "--at", "0.0-0.5", "--hum-f0", "50",
+                 "--hum-harmonics", "1,2", "--audit", aud]) == 0
+    rec = json.loads(open(aud, encoding="utf-8").read())
+    assert rec["ops"][0]["harmonics"] == [1, 2]
+    assert main([src, str(tmp_path / "c.wav"), "--dehum", "--at", "0.0-0.5",
+                 "--hum-f0", "50", "--hum-harmonics", "1,x"]) == 2

@@ -86,15 +86,19 @@ TARGETS: dict[str, list[str]] = {
     "src/audiocheck/core/edit/render.py": ["tests/test_edit_render.py",
                                           "tests/test_edit_stft.py",
                                           "tests/test_edit_declip.py",
-                                          "tests/test_edit_declick.py"],
+                                          "tests/test_edit_declick.py",
+                                          # 2026-10-22：去嗡路径（dispatch / 选区 / 审计）。
+                                          "tests/test_edit_dehum.py"],
     "src/audiocheck/core/edit/ops.py": ["tests/test_edit_render.py",
                                         "tests/test_edit_stft.py",
                                         "tests/test_edit_declip.py",
                                         # 2026-10-19：`DeclipOp.bandwidth_source` 的来源记账
                                         # 走 CLI 的自动带宽路径 ⇒ 挂上 CLI 判据。
                                         # 2026-10-20：`DeclickOp` 同理挂上它的判据。
+                                        # 2026-10-22：`DehumOp` 的校验/记账挂在去嗡判据里。
                                         "tests/test_edit_cli.py",
-                                        "tests/test_edit_declick.py"],
+                                        "tests/test_edit_declick.py",
+                                        "tests/test_edit_dehum.py"],
     # 时频内核（2026-10-18，P0 频谱编辑的数学地基）：**重叠归一化、帧网、覆盖守卫**
     # 都在这一个文件里。这里的变异体最容易被"看起来还行"的测试放过——所以判据是
     # `tests/test_edit_stft.py`（往返残差、分块等价性、覆盖守卫、窗平方和恒 >0）。
@@ -110,6 +114,9 @@ TARGETS: dict[str, list[str]] = {
     # 写错方向会"把误报引进来 ⇒ 把信号修坏"（实测白噪 −13 dB）⇒ 判据必须钉住
     # "只改检出样本"与"合法瞬态不被误伤"。
     "src/audiocheck/core/edit/declick.py": ["tests/test_edit_declick.py"],
+    # 去嗡（2026-10-22，P3 第三个修复算子）：**Q 与谐波集是漂移表定出来的**；
+    # 零相位对称性、越界谐波跳过、LTI 的"整段都改"口径都要钉住。
+    "src/audiocheck/core/edit/dehum.py": ["tests/test_edit_dehum.py"],
 }
 
 #: 变异分数下限。**三次更正，都写在这里免得后人再踩**：
@@ -365,6 +372,9 @@ EQUIVALENT: dict[str, str] = {
         "`(slope - conf_slope_lo) / conf_slope_span` 的 `/`→`*`：该式只在 "
         "`low_cut and hard`（slope ≥ th.brick_db = 24）里求值 ⇒ 原式 (24−8)/16 = 1 "
         "已顶到 `min(1.0, ·)`；改成乘（≥16·16）同样是 1.0，`max(0,·)` 也不变 ⇒ 逐位相同。",
+    "src/audiocheck/core/analyzers/causes.py:80:bin:-->+":
+        "同一式的 `-`→`+`：`(slope + conf_slope_lo) / span` 在 slope ≥ 24 时 ≥ 2 ⇒ "
+        "同样被 `min(1.0, ·)` 夹到 1.0（`max(0, ·)` 也仍是 1.0）⇒ 逐位相同。",
 }
 
 

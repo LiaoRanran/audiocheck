@@ -28,9 +28,12 @@
   ⚠ 这一条**不能分块**（"带限"是全局约束，切块会在接缝上留台阶）⇒ 它把**选区**整段进内存，
   内存 ≈ `选区采样 × 声道 × 8 B × ~4`，这条边界写在 `_render_declip` 的 docstring 里。
   ⚠ `bandwidth ≥ 奈奎斯特` 时没有约束可利用 ⇒ **逐位不变**（如实记 `noop`）。
-* 三条路径**不许混用**（见 `render` 的分发）：顺序语义都还没立判据，宁可不做。
-  多个 `DeclipOp` 的选区之间也不许重叠（同理）。
-* 三条都遵守：**削波不静默**、**截断源不许 traceback**（沿用 E2.1 规矩）。
+* **去嗡**（`ops.DehumOp`）：**逐选区整段载入**，零相位陷波级联（`dehum.py`）。
+  ⚠ 陷波是 **LTI** ⇒ **整段选区都被改动**（不像去削波只改饱和样本）；选区之外逐位不变，
+  审计如实记 `changed_samples` 与每个谐波的**实测压制量**。
+* 五条路径（时间 / 频域 / 去削波 / 去咔哒 / 去嗡）**不许混用**（见 `render` 的分发）：
+  顺序语义都还没立判据，宁可不做。多个同域操作的选区之间也不许重叠（同理）。
+* 都遵守：**削波不静默**、**截断源不许 traceback**（沿用 E2.1 规矩）。
 """
 from __future__ import annotations
 
@@ -41,10 +44,11 @@ import numpy as np
 import soundfile as sf
 
 from ..context import io_path
-from . import declick, declip, stft
+from . import declick, declip, dehum, stft
 from .declick import DEFAULT_MAX_RUN, DEFAULT_THRESHOLD
+from .dehum import DEFAULT_HARMONICS, DEFAULT_Q
 from .metrics import band_gain_db, energy_ratio_db
-from .ops import BandGainOp, DeclickOp, DeclipOp, GainOp, Project
+from .ops import BandGainOp, DeclickOp, DeclipOp, DehumOp, GainOp, Project
 
 #: 一次读入的帧数（与 `analyzers/basic.py` 的读块同量级）。
 BLOCKSIZE = 1 << 16
@@ -131,7 +135,10 @@ def render(project: Project, dest: str, *, subtype: str | None = None,
     if all(isinstance(o, DeclickOp) for o in ops):
         return _render_declick(project, dest, subtype=subtype, blocksize=blocksize,
                                overwrite=overwrite)
-    raise ValueError("同一项目里混用时间域/频域/去削波/去咔哒操作：顺序语义尚未立判据（宁可不做）")
+    if all(isinstance(o, DehumOp) for o in ops):
+        return _render_dehum(project, dest, subtype=subtype, blocksize=blocksize,
+                             overwrite=overwrite)
+    raise ValueError("同一项目里混用时间域/频域/去削波/去咔哒/去嗡操作：顺序语义尚未立判据（宁可不做）")
 
 
 def _render_time(project: Project, dest: str, *, subtype: str | None,
@@ -446,6 +453,75 @@ def _render_declick(project: Project, dest: str, *, subtype: str | None,
                   tf_points=None, op_recs=recs)
 
 
+def _render_dehum(project: Project, dest: str, *, subtype: str | None,
+                  blocksize: int, overwrite: bool) -> dict:
+    """去嗡路径：**逐选区整段载入**（零相位 `filtfilt` 要看整段），零相位陷波级联。
+
+    ⚠ 与去削波/去咔哒的差别：陷波是 **LTI** ⇒ **整段选区都被改动**（不是"只改检出样本"）。
+    选区之外仍然**逐位不变**（原样拷贝）；选区之内被改的采样数如实记 `changed_samples`。
+    ⚠ 多个去嗡的选区**不许重叠**（同一段被滤两遍的语义未立判据）⇒ 先校验完再动目标文件。
+    """
+    src, dst = _check_dest(project.source, dest, overwrite)
+    ops = list(project.ops)
+    st = {"read_error": None, "peak": 0.0, "clipped": 0, "clips_int": False,
+          "floor": 0.0, "floor_samples": 0}
+    applied = [0] * len(ops)
+    recs = [None] * len(ops)
+    frames = 0
+    claimed = 0
+
+    with sf.SoundFile(src) as f:
+        fs = int(f.samplerate)
+        ch = int(f.channels)
+        sub = subtype or f.subtype
+        st["clips_int"] = sub in _INT_SUBTYPES
+        claimed = int(f.frames or 0)
+        spans = [(max(0, min(_sample_at(o.t0, fs), claimed)),
+                  max(0, min(_sample_at(o.t1, fs), claimed))) for o in ops]
+        order = sorted(range(len(ops)), key=lambda i: spans[i][0])
+        end = 0
+        for i in order:
+            if spans[i][0] < end:
+                raise ValueError("多个去嗡选区**重叠**：同一段被滤两遍没有定义（宁可不做）")
+            end = spans[i][1]
+
+        with sf.SoundFile(dst, "w", samplerate=fs, channels=ch, subtype=sub) as g:
+            cursor = 0
+            pos = 0
+            for i in order:
+                k0, k1 = spans[i]
+                if k1 <= k0:
+                    continue
+                pos = cursor = _copy_range(f, g, cursor, k0, blocksize, st)
+                if st["read_error"] is not None:
+                    break
+                f.seek(k0)
+                try:
+                    seg = f.read(k1 - k0, dtype="float64", always_2d=True)
+                except Exception as e:                # noqa: BLE001 —— libsndfile 形形色色
+                    st["read_error"] = e
+                    break
+                if len(seg) < k1 - k0:                # 声称有、实际读不满 ⇒ 截断
+                    st["read_error"] = OSError(
+                        "声称 %d 帧，向后读时只拿到 %d 帧" % (k1 - k0, len(seg)))
+                    if not len(seg):
+                        break
+                op = ops[i]
+                out, sstat = dehum.dehum(seg, op.f0, fs, op.q, op.harmonics)
+                recs[i] = {**sstat, "energy_ratio_measured_db":
+                           _round_db(energy_ratio_db(out, seg))}
+                applied[i] = int(seg.shape[0])
+                _account(out, st)
+                g.write(out)
+                pos = cursor = k0 + int(out.shape[0])
+            if st["read_error"] is None:
+                pos = _copy_range(f, g, cursor, claimed, blocksize, st)
+        frames = pos
+
+    return _audit(project, dest, "dehum", fs, ch, sub, frames, claimed, st, applied,
+                  tf_points=None, op_recs=recs)
+
+
 def _audit(project: Project, dest: str, domain: str, fs: int, ch: int, sub: str,
            frames: int, claimed: int, st: dict, applied: list,
            tf_points: list | None, measured: list | None = None,
@@ -501,6 +577,9 @@ def _audit(project: Project, dest: str, domain: str, fs: int, ch: int, sub: str,
     if domain == "declick":
         #: 检测口径（可复算的名字）：两点预测残差 + 全段 MAD 尺子 + 线性插值，见 `declick.py`
         audit["algorithm"] = "residual2_mad_linear"
+    if domain == "dehum":
+        #: 去嗡口径：零相位陷波级联（Q=10 与谐波集由 `dehum.py` 的漂移表定）
+        audit["algorithm"] = "zerophase_notch_cascade"
     return audit
 
 
@@ -527,3 +606,11 @@ def render_declick(source: str, dest: str, t0: float, t1: float, threshold: floa
     """便捷入口：单个**去咔哒**选区（`render()` 的薄封装；`threshold`/`max_run` 见 `DeclickOp`）。"""
     th = DEFAULT_THRESHOLD if threshold is None else threshold
     return render(Project(source, [DeclickOp(t0, t1, th, max_run)]), dest, **kw)
+
+
+def render_dehum(source: str, dest: str, t0: float, t1: float, f0: float,
+                 q: float | None = None, harmonics=None, **kw) -> dict:
+    """便捷入口：单个**去嗡**选区（`render()` 的薄封装；`f0` 必须给，见 `DehumOp`）。"""
+    qq = DEFAULT_Q if q is None else q
+    hs = DEFAULT_HARMONICS if harmonics is None else tuple(harmonics)
+    return render(Project(source, [DehumOp(t0, t1, f0, qq, hs)]), dest, **kw)

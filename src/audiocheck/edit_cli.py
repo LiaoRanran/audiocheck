@@ -4,9 +4,10 @@
     audiocheck-edit <源> <目标> --gain -20 --at 12.5-14.0 --band 4000-8000     # 时频选区
     audiocheck-edit <源> <目标> --declip --at 3.0-3.5 [--bandwidth 18000] [--ceiling 0.98]   # 去削波
     audiocheck-edit <源> <目标> --declick --at 1.0-2.0 [--threshold 4.0]                    # 去咔哒
+    audiocheck-edit <源> <目标> --dehum --at 0-999 --hum-f0 50 [--hum-q 10]                 # 去嗡
 
-四种操作**必须给且只给一种**：`--gain`（时间选区增益 / 加 `--band` 变时频选区）、
-`--declip`（去削波）或 `--declick`（去咔哒）。
+五种操作**必须给且只给一种**：`--gain`（时间选区增益 / 加 `--band` 变时频选区）、
+`--declip`（去削波）、`--declick`（去咔哒）或 `--dehum`（去嗡）。
 
 三条约定（与 `core/edit/render.py` 一致，不在这一层偷改）
 --------------------------------------------------------
@@ -25,7 +26,7 @@ import json
 import sys
 
 from .cli import _setup_console
-from .core.edit import BandGainOp, DeclickOp, DeclipOp, GainOp, Project, render
+from .core.edit import BandGainOp, DeclickOp, DeclipOp, DehumOp, GainOp, Project, render
 
 
 def _parse_range(s: str) -> tuple[float, float]:
@@ -94,6 +95,14 @@ def build_parser() -> argparse.ArgumentParser:
                     help="去削波（只改饱和样本）。`--ceiling` 与 `--bandwidth` 都可省略（自动）")
     ap.add_argument("--declick", action="store_true",
                     help="去咔哒（只改检出样本）。`--threshold` 可省略（实测标定默认 5.0）")
+    ap.add_argument("--dehum", action="store_true",
+                    help="去嗡（零相位陷波级联）。**必须给 `--hum-f0`**（50/60 Hz）")
+    ap.add_argument("--hum-f0", type=float, default=None,
+                    help="嗡的基频（Hz）。可测输入（频谱上的嗡线），不自动猜")
+    ap.add_argument("--hum-q", type=float, default=None,
+                    help="去嗡的陷波 Q（实测默认 10：±1 Hz 漂移下仍压 ≥17 dB 的最大 Q）")
+    ap.add_argument("--hum-harmonics", default=None,
+                    help="要清的谐波次数，逗号分隔（默认 1,2,3；k·f0 ≥ 奈奎斯特的会跳过并记账）")
     ap.add_argument("--threshold", type=float, default=None,
                     help="去咔哒的检测阈值 α（|r| > α·MAD）。**调小会把误报引进来**（实测会修坏）")
     ap.add_argument("--max-run", type=int, default=None,
@@ -123,10 +132,18 @@ def main(argv=None) -> int:
     a = build_parser().parse_args(argv)
 
     n_modes = ((1 if a.gain is not None else 0) + (1 if a.declip else 0)
-               + (1 if a.declick else 0))
+               + (1 if a.declick else 0) + (1 if a.dehum else 0))
     if n_modes != 1:
         print("参数错误：必须且**只**给一种操作：`--gain`（增益，可加 `--band`）／"
-              "`--declip`（去削波）／`--declick`（去咔哒）")
+              "`--declip`（去削波）／`--declick`（去咔哒）／`--dehum`（去嗡）")
+        return 2
+    if a.dehum and a.hum_f0 is None:
+        print("参数错误：`--dehum` 必须给 `--hum-f0`（50 或 60 Hz）——"
+              "基频是**可测输入**，不自动猜")
+        return 2
+    if not a.dehum and (a.hum_f0 is not None or a.hum_q is not None
+                        or a.hum_harmonics is not None):
+        print("参数错误：`--hum-f0` / `--hum-q` / `--hum-harmonics` 只对 `--dehum` 有效")
         return 2
     if a.declip and (a.band or a.n_fft is not None or a.hop is not None):
         print("参数错误：`--band` / `--n-fft` / `--hop` 只对 `--gain` 有效")
@@ -136,6 +153,14 @@ def main(argv=None) -> int:
                       or a.iterations is not None):
         print("参数错误：`--band` / `--n-fft` / `--hop` / `--ceiling` / `--bandwidth` / "
               "`--iterations` 都不是去咔哒的参数（它只有 `--threshold` 与 `--max-run`）")
+        return 2
+    if a.dehum and (a.band or a.n_fft is not None or a.hop is not None
+                    or a.ceiling is not None or a.bandwidth is not None
+                    or a.iterations is not None or a.threshold is not None
+                    or a.max_run is not None):
+        print("参数错误：`--band` / `--n-fft` / `--hop` / `--ceiling` / `--bandwidth` / "
+              "`--iterations` / `--threshold` / `--max-run` 都不是去嗡的参数"
+              "（它只有 `--hum-f0` / `--hum-q` / `--hum-harmonics`）")
         return 2
 
     try:
@@ -175,6 +200,17 @@ def main(argv=None) -> int:
             if a.max_run is not None:
                 dkw["max_run"] = None if a.max_run == 0 else a.max_run
             op = DeclickOp(t0, t1, **dkw)
+        elif a.dehum:
+            dkw = {}
+            if a.hum_q is not None:
+                dkw["q"] = a.hum_q
+            if a.hum_harmonics is not None:
+                try:
+                    dkw["harmonics"] = tuple(int(x) for x in a.hum_harmonics.split(",") if x.strip())
+                except ValueError:
+                    raise ValueError("`--hum-harmonics` 要写成逗号分隔的整数，例如 1,2,3"
+                                     "（得到 %r）" % a.hum_harmonics) from None
+            op = DehumOp(t0, t1, a.hum_f0, **dkw)
         else:
             op = (BandGainOp(t0, t1, f0, f1, a.gain) if a.band
                   else GainOp(t0, t1, a.gain))
@@ -254,6 +290,24 @@ def main(argv=None) -> int:
                 print("⚠ **改动面偏大**（>0.5% 的采样）：阈值可能压到了误报区——实测"
                       "误报率到 ~1e-3 时修复会**把信号修坏**（白噪 −13 dB）⇒ 宁可漏、不可错")
         print("算法  %s（两点预测残差 + 全段 MAD 尺子 + 宽度守卫 + 线性插值）" % audit["algorithm"])
+    elif audit["domain"] == "dehum":
+        for op in audit["ops"]:
+            e = op.get("energy_ratio_measured_db")
+            sup = op.get("suppression_db") or []
+            used = op.get("harmonics_used") or []
+            print("操作  去嗡 %.3f–%.3f s：基频 %.1f Hz ｜ Q=%.1f ｜ 谐波 %s"
+                  % (op["t0"], op["t1"], op["f0"], op["q"],
+                     "/".join(str(k) for k in used)))
+            print("     实测压制 %s dB ｜ 改动 %d / %d 采样 ｜ 实测 能量比 %s dB"
+                  % (" / ".join("—" if v is None else "%+.1f" % v for v in sup),
+                     op["changed_samples"], op["total_samples"],
+                     "—" if e is None else "%+.3f" % e))
+            if op.get("skipped_harmonics"):
+                print("     跳过谐波 %s（k·f0 ≥ 奈奎斯特，不猜着折回）"
+                      % "/".join(str(k) for k in op["skipped_harmonics"]))
+        print("⚠ **陷波是 LTI：整段选区都被改动**（选区之外逐位不变）。"
+              "收益由嗡的能量占比决定——无嗡素材上它同样会改（实测 SDR ~27.6 dB 量级）")
+        print("算法  %s（正反各滤一遍，相位相互抵消）" % audit["algorithm"])
     else:
         for op in audit["ops"]:
             print("操作  %+.1f dB @ [%.3f, %.3f) s ｜ 生效 %d 帧"
