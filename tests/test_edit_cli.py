@@ -1,4 +1,4 @@
-﻿"""编辑器 CLI 判据（P0 的用户入口）。
+"""编辑器 CLI 判据（P0 的用户入口）。
 
 钉住的是**用户看得到的行为**：退出码、可读信息、**不许 traceback**、审计记录落盘、
 以及 no-op 的"逐位不变"承诺在 CLI 这条路上也成立。
@@ -312,7 +312,9 @@ def _hummed(seconds: float = 2.0) -> np.ndarray:
     n = int(seconds * FS)
     t = np.arange(n) / FS
     base = 0.3 * np.sin(2 * np.pi * 440 * t)
-    hum = 0.02 * (np.sin(2 * np.pi * 50 * t) + 0.5 * np.sin(2 * np.pi * 100 * t))
+    hum = 0.02 * (np.sin(2 * np.pi * 50 * t)
+                  + 0.5 * np.sin(2 * np.pi * 100 * t)
+                  + 0.3 * np.sin(2 * np.pi * 150 * t))
     return np.column_stack([base + hum, base + hum])
 
 
@@ -349,6 +351,39 @@ def test_hum_flags_are_refused_without_dehum(tmp_path, capsys):
     src = _write(tmp_path / "a.wav", _hummed(0.5))
     assert main([src, str(tmp_path / "b.wav"), "--gain", "-3", "--at", "0.0-0.5",
                  "--hum-f0", "50"]) == 2
+
+
+def test_dehum_auto_detects_the_steady_line(tmp_path, capsys):
+    """`--hum-auto`：从素材量出 50 Hz（稳态证据），审计记 `f0_source="auto"`。"""
+    src = _write(tmp_path / "a.wav", _hummed(6.0))
+    dst = str(tmp_path / "b.wav")
+    aud = str(tmp_path / "a.json")
+    rc = main([src, dst, "--dehum", "--at", "0.0-6.0", "--hum-auto", "--audit", aud])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "自动基频" in out and "50.0" in out
+    rec = json.loads(open(aud, encoding="utf-8").read())
+    assert rec["ops"][0]["f0_source"] == "auto"
+    assert abs(rec["ops"][0]["f0"] - 50.0) <= 0.2
+
+
+def test_dehum_auto_refuses_a_clean_file(tmp_path, capsys):
+    """无稳态线 ⇒ 自动路径**拒绝**（退出码 2）并打印实测证据，不偷偷填一个数。"""
+    clean = np.zeros((int(6.0 * FS), 2))
+    t = np.arange(clean.shape[0]) / FS
+    clean[:, 0] = clean[:, 1] = 0.3 * np.sin(2 * np.pi * 440 * t)
+    src = _write(tmp_path / "a.wav", clean)
+    assert main([src, str(tmp_path / "b.wav"), "--dehum", "--at", "0.0-6.0",
+                 "--hum-auto"]) == 2
+    out = capsys.readouterr().out
+    assert "自动定基频失败" in out and "excess" in out
+
+
+def test_dehum_auto_and_explicit_f0_are_mutually_exclusive(tmp_path, capsys):
+    src = _write(tmp_path / "a.wav", _hummed(1.0))
+    assert main([src, str(tmp_path / "b.wav"), "--dehum", "--at", "0.0-1.0",
+                 "--hum-auto", "--hum-f0", "50"]) == 2
+    assert "只能给一个" in capsys.readouterr().out
 
 
 def test_dehum_harmonics_list_is_parsed_and_validated(tmp_path, capsys):

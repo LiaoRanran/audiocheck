@@ -226,6 +226,9 @@ class DehumOp:
     f0: float
     q: float = DEFAULT_Q
     harmonics: tuple = DEFAULT_HARMONICS
+    #: **来源记账**（不影响算式）：`"given"` = 调用方直接给；`"auto"` = 由测量层
+    #: `analyzers.hum.detect_hum` 从**稳态证据**读出来（CLI 的 `--hum-auto`）。
+    f0_source: str = "given"
 
     def __post_init__(self) -> None:
         if not (self.t1 > self.t0 >= 0.0):
@@ -234,6 +237,8 @@ class DehumOp:
             raise ValueError("基频必须 > 0，得到 %r" % self.f0)
         if not self.q > 0.0:
             raise ValueError("Q 必须 > 0，得到 %r" % self.q)
+        if self.f0_source not in ("given", "auto"):
+            raise ValueError("f0 来源只能是 given / auto，得到 %r" % self.f0_source)
         hs = tuple(self.harmonics)
         if not hs or any(int(k) < 1 or int(k) != k for k in hs):
             raise ValueError("谐波次数必须是 >= 1 的整数序列，得到 %r" % (self.harmonics,))
@@ -246,11 +251,12 @@ class DehumOp:
 
     def to_dict(self) -> dict:
         return {"kind": "dehum", "t0": self.t0, "t1": self.t1, "f0": self.f0,
+                "f0_source": self.f0_source,
                 "q": self.q, "harmonics": list(self.harmonics)}
 
     def describe(self) -> str:
-        return "去嗡 %.3f–%.3f s：基频 %.1f Hz（Q=%.0f，谐波 %s）" % (
-            self.t0, self.t1, self.f0, self.q,
+        return "去嗡 %.3f–%.3f s：基频 %.2f Hz（%s ｜ Q=%.0f ｜ 谐波 %s）" % (
+            self.t0, self.t1, self.f0, self.f0_source, self.q,
             "/".join(str(int(k)) for k in self.harmonics))
 
 

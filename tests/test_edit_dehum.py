@@ -1,4 +1,4 @@
-﻿"""去嗡（`DehumOp` / `dehum.dehum`）的判据 —— 全部对着**真值**量。
+"""去嗡（`DehumOp` / `dehum.dehum`）的判据 —— 全部对着**真值**量。
 
 真值怎么来：`y = clean + 嗡`，嗡的频率/幅度我们说了算（`dehum_probe.hum` 同款构造）。
 于是"去掉了多少"与"改坏了多少"都能用 `metrics.sdr_db(out, clean)` 与逐谐波
@@ -152,7 +152,7 @@ def test_dehum_op_validates_and_describes():
     assert op.is_noop is False
     assert op.to_dict()["kind"] == "dehum"
     assert op.to_dict()["harmonics"] == [1, 2, 3]
-    assert "50.0 Hz" in op.describe() and "Q=10" in op.describe()
+    assert "50.00 Hz" in op.describe() and "given" in op.describe() and "Q=10" in op.describe()
     for bad in (dict(f0=0.0), dict(q=0.0), dict(harmonics=()),
                 dict(harmonics=(0,)), dict(harmonics=(1.5,))):
         with pytest.raises(ValueError):

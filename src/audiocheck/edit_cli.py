@@ -84,6 +84,28 @@ def _auto_bandwidth(source: str) -> tuple[float, str]:
     return info["bandwidth_hz"], "auto_" + info["source"]
 
 
+def _auto_hum_f0(source: str) -> tuple[float, dict]:
+    """`--hum-auto`：调**测量层**的稳态检测（编辑层不 import 测量；CLI 是边界层）。
+
+    返回 `(f0, 证据 dict)`；证据不足 ⇒ `ValueError`（把实测三项一起写进信息，
+    让用户知道"为什么不敢自动填"）。
+    """
+    from .core.analyzers.hum import detect_hum
+    from .core.context import AnalysisContext, io_path
+    ctx = AnalysisContext(path=io_path(source), deep=False, src_path=source)
+    x, fs = ctx.segment(seconds=6.0)
+    if x is None:
+        raise ValueError("素材太短，取不到 6 s 的检测段 ⇒ 无法自动定基频；请显式给 `--hum-f0`")
+    r = detect_hum(x, fs, ctx.thresholds)
+    if not r["accepted"]:
+        raise ValueError("自动定基频失败：%s（候选 %s Hz ｜ excess %s dB ｜ 帧间稳定 %s dB ｜ "
+                         "安静帧 %s dB）⇒ 请显式给 `--hum-f0`"
+                         % (r["reason"], r.get("f0_hz"),
+                            r.get("excess_db"), r.get("stability_db"),
+                            r.get("quiet_excess_db")))
+    return float(r["f0_hz"]), r
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="audiocheck-edit",
                                  description="非破坏编辑：把操作渲染到新文件，并给出审计记录")
@@ -96,9 +118,13 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--declick", action="store_true",
                     help="去咔哒（只改检出样本）。`--threshold` 可省略（实测标定默认 5.0）")
     ap.add_argument("--dehum", action="store_true",
-                    help="去嗡（零相位陷波级联）。**必须给 `--hum-f0`**（50/60 Hz）")
+                    help="去嗡（零相位陷波级联）。`--hum-f0` 或 `--hum-auto` 必须给一个")
     ap.add_argument("--hum-f0", type=float, default=None,
                     help="嗡的基频（Hz）。可测输入（频谱上的嗡线），不自动猜")
+    ap.add_argument("--hum-auto", action="store_true",
+                    help="从素材**自动**读基频：要求三条线都存在**且稳态**"
+                         "（excess ≥4 dB、帧间稳定 ≤30 dB、安静帧仍高出邻域）；"
+                         "证据不足会拒绝并打印实测值")
     ap.add_argument("--hum-q", type=float, default=None,
                     help="去嗡的陷波 Q（实测默认 10：±1 Hz 漂移下仍压 ≥17 dB 的最大 Q）")
     ap.add_argument("--hum-harmonics", default=None,
@@ -137,13 +163,17 @@ def main(argv=None) -> int:
         print("参数错误：必须且**只**给一种操作：`--gain`（增益，可加 `--band`）／"
               "`--declip`（去削波）／`--declick`（去咔哒）／`--dehum`（去嗡）")
         return 2
-    if a.dehum and a.hum_f0 is None:
-        print("参数错误：`--dehum` 必须给 `--hum-f0`（50 或 60 Hz）——"
-              "基频是**可测输入**，不自动猜")
+    if a.dehum and a.hum_f0 is None and not a.hum_auto:
+        print("参数错误：`--dehum` 需要 `--hum-f0` 或 `--hum-auto`——"
+              "基频是**可测输入**，不自动猜；自动路径也要先过稳态判据")
+        return 2
+    if a.dehum and a.hum_auto and a.hum_f0 is not None:
+        print("参数错误：`--hum-auto` 与 `--hum-f0` 只能给一个（自动读数和手动指定是两条口径）")
         return 2
     if not a.dehum and (a.hum_f0 is not None or a.hum_q is not None
-                        or a.hum_harmonics is not None):
-        print("参数错误：`--hum-f0` / `--hum-q` / `--hum-harmonics` 只对 `--dehum` 有效")
+                        or a.hum_harmonics is not None or a.hum_auto):
+        print("参数错误：`--hum-f0` / `--hum-auto` / `--hum-q` / `--hum-harmonics` "
+              "只对 `--dehum` 有效")
         return 2
     if a.declip and (a.band or a.n_fft is not None or a.hop is not None):
         print("参数错误：`--band` / `--n-fft` / `--hop` 只对 `--gain` 有效")
@@ -210,7 +240,16 @@ def main(argv=None) -> int:
                 except ValueError:
                     raise ValueError("`--hum-harmonics` 要写成逗号分隔的整数，例如 1,2,3"
                                      "（得到 %r）" % a.hum_harmonics) from None
-            op = DehumOp(t0, t1, a.hum_f0, **dkw)
+            if a.hum_auto:
+                f0_hum, ev = _auto_hum_f0(a.source)
+                dkw["f0_source"] = "auto"
+                print("自动基频  %.2f Hz（excess %s dB ｜ 帧间稳定 %s dB ｜ 安静帧 %s dB）"
+                      % (f0_hum, "/".join("%.1f" % v for v in ev["excess_db"]),
+                         "/".join("%.1f" % v for v in ev["stability_db"]),
+                         "/".join("%.1f" % v for v in ev["quiet_excess_db"])))
+            else:
+                f0_hum = a.hum_f0
+            op = DehumOp(t0, t1, f0_hum, **dkw)
         else:
             op = (BandGainOp(t0, t1, f0, f1, a.gain) if a.band
                   else GainOp(t0, t1, a.gain))
@@ -295,9 +334,10 @@ def main(argv=None) -> int:
             e = op.get("energy_ratio_measured_db")
             sup = op.get("suppression_db") or []
             used = op.get("harmonics_used") or []
-            print("操作  去嗡 %.3f–%.3f s：基频 %.1f Hz ｜ Q=%.1f ｜ 谐波 %s"
-                  % (op["t0"], op["t1"], op["f0"], op["q"],
-                     "/".join(str(k) for k in used)))
+            print("操作  去嗡 %.3f–%.3f s：基频 %.2f Hz（%s）｜ Q=%.1f ｜ 谐波 %s"
+                  % (op["t0"], op["t1"], op["f0"],
+                     "自动＝稳态检测" if op.get("f0_source") == "auto" else "给定",
+                     op["q"], "/".join(str(k) for k in used)))
             print("     实测压制 %s dB ｜ 改动 %d / %d 采样 ｜ 实测 能量比 %s dB"
                   % (" / ".join("—" if v is None else "%+.1f" % v for v in sup),
                      op["changed_samples"], op["total_samples"],

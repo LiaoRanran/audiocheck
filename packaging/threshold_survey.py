@@ -207,6 +207,12 @@ FIELD_MAP: dict[str, tuple | None] = {
     "seg_seconds": None, "seg_overlap": None, "seg_min_count": None,
     # 视图渲染选项（C7）：只影响频谱图画质，不影响任何判定
     "dual_resolution_stft": None,
+    # 去嗡自动检测（2026-10-23）：**不在普查管线的结果字段里**——它由
+    # `analyzers/hum.detect_hum` 直接从谱图量（excess / 帧间稳定 / 安静帧 excess），
+    # 全量分析管线不算这三项。两侧区分力已实测：`packaging/hum_detect_probe.py`
+    # （嗡 / 干净白噪 / 三种贝斯）与 `tests/test_analyzer_hum.py` 的 8 条判据。
+    # ⇒ 标 None **不代表没检验**，代表"普查这把尺子量不到它"。
+    "hum_min_excess_db": None, "hum_max_stability_db": None, "hum_min_quiet_excess_db": None,
 }
 
 #: 视图渲染选项（与"算法参数"并列但性质不同）：算法参数决定**能不能检出**，

@@ -117,6 +117,9 @@ TARGETS: dict[str, list[str]] = {
     # 去嗡（2026-10-22，P3 第三个修复算子）：**Q 与谐波集是漂移表定出来的**；
     # 零相位对称性、越界谐波跳过、LTI 的"整段都改"口径都要钉住。
     "src/audiocheck/core/edit/dehum.py": ["tests/test_edit_dehum.py"],
+    # 嗡的自动检测（2026-10-23）：**稳态**是判据（帧间稳定 + 安静帧仍在），
+    # 判据里的三组门限与抛物线插值都必须钉住。
+    "src/audiocheck/core/analyzers/hum.py": ["tests/test_analyzer_hum.py"],
 }
 
 #: 变异分数下限。**三次更正，都写在这里免得后人再踩**：
