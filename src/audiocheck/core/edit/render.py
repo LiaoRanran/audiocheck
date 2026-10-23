@@ -84,6 +84,29 @@ def _check_dest(source: str, dest: str, overwrite: bool) -> tuple[str, str]:
     return io_path(src), io_path(dst)
 
 
+#: 目标扩展名 → libsndfile 容器名（用于**导出前**的子类型相容性检查）。
+_FORMAT_BY_EXT = {".wav": "WAV", ".wave": "WAV", ".flac": "FLAC",
+                  ".aiff": "AIFF", ".aif": "AIFF", ".au": "AU", ".ogg": "OGG"}
+
+
+def _check_subtype(dest: str, inherited: str, explicit: str | None) -> None:
+    """导出前检查"源子类型能不能装进目标容器"，**在动目标文件之前**报清楚。
+
+    实测踩到的坑：源是 `FLOAT`（WAV），目标是 `.flac` 且没显式给 subtype ⇒ 继承 FLOAT ⇒
+    libsndfile 抛 `Invalid combination of format, subtype and endian`（既晚又难懂，
+    而且那时目标文件已经建了一半）。这里提前用 `sf.check_format` 判，并给出修法。
+    """
+    if explicit is not None:
+        return
+    fmt = _FORMAT_BY_EXT.get(os.path.splitext(dest)[1].lower())
+    if fmt is None:
+        return
+    if not sf.check_format(fmt, inherited):
+        raise ValueError(
+            "目标容器 %s 不接受源子类型 %s ⇒ 请显式给 subtype（FLAC 建议 PCM_24，"
+            "AIFF/WAV 可用 PCM_24 或 FLOAT）" % (fmt, inherited))
+
+
 def _account(b: np.ndarray, st: dict) -> None:
     """输出块的**如实记账**：峰值、整型编码下的钳位样本数。"""
     if len(b):
@@ -155,6 +178,7 @@ def _render_time(project: Project, dest: str, *, subtype: str | None,
         fs = int(f.samplerate)
         ch = int(f.channels)
         sub = subtype or f.subtype
+        _check_subtype(dest, sub, subtype)
         st["clips_int"] = sub in _INT_SUBTYPES
         claimed = int(f.frames or 0)
         with sf.SoundFile(dst, "w", samplerate=fs, channels=ch, subtype=sub) as g:
@@ -209,6 +233,7 @@ def _render_band(project: Project, dest: str, *, subtype: str | None, blocksize:
         fs = int(f.samplerate)
         ch = int(f.channels)
         sub = subtype or f.subtype
+        _check_subtype(dest, sub, subtype)
         st["clips_int"] = sub in _INT_SUBTYPES
         claimed = int(f.frames or 0)
         win = stft.default_window(n_fft)
@@ -337,6 +362,7 @@ def _render_declip(project: Project, dest: str, *, subtype: str | None,
         fs = int(f.samplerate)
         ch = int(f.channels)
         sub = subtype or f.subtype
+        _check_subtype(dest, sub, subtype)
         st["clips_int"] = sub in _INT_SUBTYPES
         claimed = int(f.frames or 0)
         spans = [(max(0, min(_sample_at(o.t0, fs), claimed)),
@@ -405,6 +431,7 @@ def _render_declick(project: Project, dest: str, *, subtype: str | None,
         fs = int(f.samplerate)
         ch = int(f.channels)
         sub = subtype or f.subtype
+        _check_subtype(dest, sub, subtype)
         st["clips_int"] = sub in _INT_SUBTYPES
         claimed = int(f.frames or 0)
         spans = [(max(0, min(_sample_at(o.t0, fs), claimed)),
@@ -474,6 +501,7 @@ def _render_dehum(project: Project, dest: str, *, subtype: str | None,
         fs = int(f.samplerate)
         ch = int(f.channels)
         sub = subtype or f.subtype
+        _check_subtype(dest, sub, subtype)
         st["clips_int"] = sub in _INT_SUBTYPES
         claimed = int(f.frames or 0)
         spans = [(max(0, min(_sample_at(o.t0, fs), claimed)),

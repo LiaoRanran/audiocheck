@@ -4,6 +4,18 @@
 
 ## [未发布]
 
+### 验证 + 修复（**P0 往返测试补上 FLAC / AIFF；`FLOAT → .flac` 的半个目标文件**）
+
+> `docs/editor_roadmap.md` 第十步。判据 `tests/test_edit_formats.py`（14 条）。
+
+- **七种组合全过**（`wav/flac/aiff × PCM_16/PCM_24` + `wav FLOAT`）：选区之外**逐位不变**、
+  选区内实测 **−6.000 dB**（容差 0.02）、子类型原样保留；**0 dB 恒等渲染整文件逐位不变**；
+  渲染前后**源文件 sha256 不变**；去嗡在 FLAC 上同样只动选区内。
+- **修掉一个真问题**：源 `FLOAT`（WAV）+ 目标 `.flac` 且未显式给 subtype ⇒ 继承 FLOAT ⇒
+  libsndfile 在**目标已建了一半**之后才抛 `Invalid combination of format, subtype and endian`。
+  新增 `render._check_subtype`：用 `sf.check_format` **在动目标之前**拒绝，
+  信息里给修法（`subtype="PCM_24"`），判据断言**拒绝路径不留下半个目标文件**。
+
 ### 新增（**去嗡的 `f0` 自动检测** —— "稳态"才是判据，谐波族不是）
 
 > 上一轮的挂账项。`packaging/hum_detect_probe.py` 量口径；`docs/editor_research.md §14`、

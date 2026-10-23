@@ -88,7 +88,9 @@ TARGETS: dict[str, list[str]] = {
                                           "tests/test_edit_declip.py",
                                           "tests/test_edit_declick.py",
                                           # 2026-10-22：去嗡路径（dispatch / 选区 / 审计）。
-                                          "tests/test_edit_dehum.py"],
+                                          "tests/test_edit_dehum.py",
+                                          # 2026-10-24：格式往返与 `_check_subtype` 守卫。
+                                          "tests/test_edit_formats.py"],
     "src/audiocheck/core/edit/ops.py": ["tests/test_edit_render.py",
                                         "tests/test_edit_stft.py",
                                         "tests/test_edit_declip.py",
