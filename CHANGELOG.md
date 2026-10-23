@@ -7,7 +7,8 @@
 ### 新增（**去嗡的 `f0` 自动检测** —— "稳态"才是判据，谐波族不是）
 
 > 上一轮的挂账项。`packaging/hum_detect_probe.py` 量口径；`docs/editor_research.md §14`、
-> `docs/theory.md §12.14`；判据 `tests/test_analyzer_hum.py`（8 条）+ CLI 侧 3 条。
+> `docs/theory.md §12.14`；判据 `tests/test_analyzer_hum.py`（**30 条**：8 条端到端 + 22 条打桩谱图）
+> + CLI 侧 3 条；**变异复跑 76/76 = 1.000**（等价 4 条，理由已登记）。
 
 - **先证伪直觉**：合成 55 Hz 衰减贝斯（6 次谐波 + 包络 + 揉弦）的 excess 是 **34.7 dB**，
   比 −30 dB 的嗡（14.0/8.1/6.2）还高 ⇒ **"三条线"不足以判嗡**。

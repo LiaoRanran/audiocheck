@@ -378,6 +378,15 @@ EQUIVALENT: dict[str, str] = {
     "src/audiocheck/core/analyzers/causes.py:80:bin:-->+":
         "同一式的 `-`→`+`：`(slope + conf_slope_lo) / span` 在 slope ≥ 24 时 ≥ 2 ⇒ "
         "同样被 `min(1.0, ·)` 夹到 1.0（`max(0, ·)` 也仍是 1.0）⇒ 逐位相同。",
+    # --- 2026-10-24：嗡自动检测（`analyzers/hum.py`）里三条**可证明**的等价体 ---
+    "src/audiocheck/core/analyzers/hum.py:97:const:0.5->0.75":
+        "抛物线偏移的 **clip 上界** 0.5：`j` 是带内 argmax ⇒ `y1 ≥ y0, y2` ⇒ "
+        "|δ| = ½|y0−y2|/(2y1−y0−y2) ≤ ½ **恒成立** ⇒ clip 从不出手 ⇒ 改 0.75 不可区分。",
+    "src/audiocheck/core/analyzers/hum.py:87:bin:-->+":
+        "`_peak_hz` 的 `df = f[1] - f[0]`：本模块唯一调用方（`detect_hum`）用的是 "
+        "`signal.stft` 的频率轴，**f[0] 恒为 0** ⇒ `f[1] + f[0]` 与 `f[1] − f[0]` 逐位相同。",
+    "src/audiocheck/core/analyzers/hum.py:145:bin:-->+":
+        "输出 `df_hz` 的 `f[1] - f[0]`：同上，STFT 频率轴从 0 起 ⇒ 两个方向逐位相同。",
 }
 
 
