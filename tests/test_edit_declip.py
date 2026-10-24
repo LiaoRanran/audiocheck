@@ -8,7 +8,7 @@
 1. **只改饱和样本**：选区内的非饱和样本与选区外**逐位不变**（非破坏的硬承诺）；
 2. **真值改进**：SDR 提升（实测 +16.3 dB）且**能量不缩水**（PHAIN 的警告）；
 3. **两个可测输入**的语义：`ceiling`（含自动取观测峰值）与 `bandwidth`；
-4. **两条拒绝**：选区重叠、与增益混用；
+4. **重叠拒绝 + 混用链式**：同域选区重叠仍拒绝；与增益混用按规范顺序链式渲染（`declip` 先）；
 5. **效力边界**（如实记录，不许粉饰）：float32 存回后的量化边界、`B = 奈奎斯特` 时无事可做、
    饱和越密提升越小。
 """
@@ -233,12 +233,14 @@ def test_disjoint_declip_selections_are_applied_in_order(tmp_path):
     assert np.array_equal(a[k0:k1], b[k0:k1]), "两段之间的空隙被动了"
 
 
-def test_declip_mixed_with_gain_is_refused(tmp_path):
+def test_declip_mixed_with_gain_is_chained(tmp_path):
+    """与增益混用不再拒绝：按**规范顺序**（去削波先、电平后）链式渲染并记账。"""
     p = _pack()
     src = _write(tmp_path / "a.wav", p["clipped"])
     proj = Project(src, [GainOp(0.0, 1.0, -6.0), DeclipOp(0.0, 1.0, B)])
-    with pytest.raises(ValueError, match="混用"):
-        render(proj, str(tmp_path / "b.wav"))
+    audit = render(proj, str(tmp_path / "b.wav"))
+    assert audit["chained"] is True
+    assert [s["op"]["kind"] for s in audit["stages"]] == ["declip", "gain"]
 
 
 # ------------------------------------------------------------------ 5. 内核守卫

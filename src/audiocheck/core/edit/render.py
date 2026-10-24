@@ -31,8 +31,10 @@
 * **去嗡**（`ops.DehumOp`）：**逐选区整段载入**，零相位陷波级联（`dehum.py`）。
   ⚠ 陷波是 **LTI** ⇒ **整段选区都被改动**（不像去削波只改饱和样本）；选区之外逐位不变，
   审计如实记 `changed_samples` 与每个谐波的**实测压制量**。
-* 五条路径（时间 / 频域 / 去削波 / 去咔哒 / 去嗡）**不许混用**（见 `render` 的分发）：
-  顺序语义都还没立判据，宁可不做。多个同域操作的选区之间也不许重叠（同理）。
+* **复合操作**（`_render_chained`）：栈里混用不同域时，按 `canonical_order` 的规范顺序
+  **逐算子**渲染，每步落一个中间文件（`FLOAT`）。依据是 `packaging/op_order_probe.py`
+  实测（SDR 极差 0.44 dB，但咔哒残差差 2.2 倍、嗡压制差 1.75 dB）；被规范化时审计记
+  `reordered_from`。
 * 都遵守：**削波不静默**、**截断源不许 traceback**（沿用 E2.1 规矩）。
 """
 from __future__ import annotations
@@ -161,7 +163,86 @@ def render(project: Project, dest: str, *, subtype: str | None = None,
     if all(isinstance(o, DehumOp) for o in ops):
         return _render_dehum(project, dest, subtype=subtype, blocksize=blocksize,
                              overwrite=overwrite)
-    raise ValueError("同一项目里混用时间域/频域/去削波/去咔哒/去嗡操作：顺序语义尚未立判据（宁可不做）")
+    return _render_chained(project, dest, subtype=subtype, blocksize=blocksize,
+                           overwrite=overwrite, n_fft=n_fft, hop=hop, chunk_hops=chunk_hops)
+
+
+#: 复合操作的**规范顺序**（相位号，小的先做）。依据是 `packaging/op_order_probe.py`：
+#:
+#: * 脉冲类（declick）先：去削波的带限投影会把孤立咔哒**抹宽**，之后两点预测残差
+#:   就抓不住（实测咔哒残差 0.1538 → 0.3448，差 2.2 倍）；
+#: * 去削波次之：它要看到**未被滤波**的饱和形状（带宽投影依赖原始波形）；
+#: * 去嗡再次：它是 LTI，会改动**全部**样本，先做会污染所有检测尺子；
+#: * 电平类（band_gain / gain）**最后**：修复阶段应当看到**原始电平**——自动削波电平
+#:   （`ceiling=None` 时从数据里读峰值）与检测门限都从数据里量，先改电平会让它们读错。
+#: 同相位内保持用户给的相对顺序（`sorted` 是稳定的）。
+PHASE = {"declick": 0, "declip": 1, "dehum": 2, "band_gain": 3, "gain": 4}
+
+
+def canonical_order(ops) -> list:
+    """按 `PHASE` 排成规范顺序（稳定排序）。未知类型保持原位并在末尾（不会静默丢）。"""
+    return sorted(ops, key=lambda o: PHASE.get(_kind_of(o), 99))
+
+
+def _kind_of(op) -> str:
+    """操作对象的 kind（复用 `to_dict`，避免再维护一份 isinstance 表）。"""
+    return op.to_dict().get("kind", "")
+
+
+def _render_chained(project: Project, dest: str, *, subtype: str | None,
+                    blocksize: int, overwrite: bool,
+                    n_fft: int, hop: int | None, chunk_hops: int) -> dict:
+    """**复合操作**：按栈顺序逐算子渲染，每步落一个中间文件（`FLOAT`），最后写目标。
+
+    为什么可以放开"混用"了（`packaging/op_order_probe.py` 实测）：
+
+    * **SDR 极差只有 0.44 dB**（6 种顺序里 12.95–13.39），顺序不是"生死攸关"；
+    * 但**咔哒残差差 2.2 倍**（declip 先 ⇒ 0.3448；declick 先 ⇒ 0.1538）、
+      嗡压制差 1.75 dB ⇒ 需要一个**规范顺序**（见 `CANONICAL_ORDER`），不是随便排。
+    * 机制：去削波的带限投影会把孤立咔哒**抹宽**，后续残差检测（两点预测）就抓不住；
+      所以**脉冲类缺陷先修**，稳态嗡最后修（它会改所有样本，先修会污染检测尺子）。
+
+    ⚠ 中间文件是 `FLOAT`（float32）：对 PCM16/24 与 FLOAT 源**不引入额外量化**
+      （整数解码值在 float32 里精确），但**每个阶段的浮点结果会被舍入到 float32**
+      （−144 dBFS 量级）。单算子路径仍是全 float64 → 不许把链式当"逐位保真"。
+    ⚠ 每个阶段都**重新做**目标/覆盖/子类型检查；临时目录用完即删（异常路径也删）。
+    """
+    import shutil
+    import tempfile
+
+    _check_dest(project.source, dest, overwrite)
+    work = tempfile.mkdtemp(prefix="ac_chain_")
+    try:
+        ordered = canonical_order(project.ops)
+        given = list(project.ops)
+        cur = project.source
+        stages = []
+        audits = []
+        for i, op in enumerate(ordered):
+            stage_dst = os.path.join(work, "stage_%03d.wav" % i)
+            last = i == len(ordered) - 1
+            a = render(Project(cur, [op]), dest if last else stage_dst,
+                       subtype=subtype if last else "FLOAT",
+                       blocksize=blocksize, overwrite=overwrite,
+                       n_fft=n_fft, hop=hop, chunk_hops=chunk_hops)
+            audits.append(a)
+            stages.append({"index": i, "op": op.to_dict(),
+                           "algorithm": a.get("algorithm"),
+                           "applied_frames": [r.get("applied_frames") for r in a.get("ops", [])],
+                           "peak": a.get("peak"), "read_error": a.get("read_error")})
+            cur = stage_dst
+        final = audits[-1]
+        # 顶层审计要能回答"这条链一共做了什么"：ops 拼起来、源写回原始路径、标明链式。
+        final["ops"] = [r for a in audits for r in a.get("ops", [])]
+        final["stages"] = stages
+        final["chained"] = True
+        final["source"] = project.source
+        if [id(o) for o in ordered] != [id(o) for o in given]:
+            # 顺序被规范化了：如实记账（原始顺序与规范顺序都要能查）
+            final["reordered_from"] = [o.to_dict() for o in given]
+        return final
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
 
 
 def _render_time(project: Project, dest: str, *, subtype: str | None,

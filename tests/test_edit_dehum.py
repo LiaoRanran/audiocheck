@@ -200,8 +200,10 @@ def test_render_refuses_overlapping_dehum_selections(tmp_path):
         render(Project(src, [DehumOp(0.0, 0.6, 50.0), DehumOp(0.4, 0.8, 60.0)]), dst)
 
 
-def test_render_refuses_mixing_dehum_with_other_domains(tmp_path):
+def test_render_chains_dehum_with_other_domains(tmp_path):
+    """混用**不再拒绝**：2026-10-24 起按规范顺序链式渲染，审计逐阶段可查。"""
     src = _write(tmp_path, np.zeros((FS, 1)))
     dst = str(tmp_path / "out.wav")
-    with pytest.raises(ValueError, match="混用"):
-        render(Project(src, [GainOp(0.0, 0.5, -3.0), DehumOp(0.0, 0.5, 50.0)]), dst)
+    audit = render(Project(src, [GainOp(0.0, 0.5, -3.0), DehumOp(0.0, 0.5, 50.0)]), dst)
+    assert audit["chained"] is True
+    assert [s["op"]["kind"] for s in audit["stages"]] == ["dehum", "gain"]

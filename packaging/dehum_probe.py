@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """dehum_probe：去嗡**先量候选**（P3 判据先行）。
 
 ## 为什么先量

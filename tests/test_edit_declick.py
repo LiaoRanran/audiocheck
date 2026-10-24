@@ -196,16 +196,20 @@ def test_declick_op_validates_its_inputs():
         DeclickOp(0.0, 1.0, 0.0)                     # 阈值必须 > 0（闭下界）
     with pytest.raises(ValueError):
         DeclickOp(1.0, 0.5)                          # t1 <= t0
+    # 宽度守卫 `>= 1`：**恰好 1 合法**（`<` 改 `<=` 会把它拒掉）
+    assert DeclickOp(0.0, 1.0, max_run=1).max_run == 1
 
 
-def test_overlapping_and_mixed_selections_are_refused(tmp_path):
+def test_overlapping_selections_are_refused_but_mixing_is_chained(tmp_path):
+    """同域**重叠**仍拒绝（同一段处理两遍的语义未立判据）；
+    混用不同域的算子**不再拒绝** —— 2026-10-24 起按规范顺序链式渲染（见 `test_edit_chain.py`）。"""
     clean = _smooth()
     src = _write(tmp_path / "a.wav", _clicked(clean)["clicked"])
     with pytest.raises(ValueError, match="重叠"):
         render(Project(src, [DeclickOp(0.0, 1.0), DeclickOp(0.5, 1.5)]), str(tmp_path / "b.wav"))
-    with pytest.raises(ValueError, match="混用"):
-        render(Project(src, [DeclickOp(0.0, 1.0), DeclipOp(0.0, 1.0, 21600.0)]),
-               str(tmp_path / "c.wav"))
+    audit = render(Project(src, [DeclickOp(0.0, 1.0), DeclipOp(0.0, 1.0, 21600.0)]),
+                   str(tmp_path / "c.wav"))
+    assert audit["chained"] is True and len(audit["stages"]) == 2
 
 
 def test_silence_is_a_noop(tmp_path):

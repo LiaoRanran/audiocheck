@@ -165,6 +165,8 @@ def test_record_is_strict_about_schema():
         Project.from_dict({"version": 999, "source": "x.wav", "ops": []})
     with pytest.raises(ValueError, match="source"):
         Project.from_dict({"version": 1, "ops": []})
+    with pytest.raises(ValueError, match="source"):
+        Project.from_dict({"version": 1, "source": "", "ops": []})   # 空串也算缺
 
 
 def test_every_op_kind_round_trips():

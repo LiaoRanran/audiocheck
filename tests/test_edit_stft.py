@@ -540,12 +540,14 @@ def test_band_op_rejects_bad_selection():
     assert BandGainOp(0.0, 1.0, 100.0, 200.0, 0.0).is_noop
 
 
-def test_mixing_time_and_band_ops_is_refused(tmp_path):
-    """时间域与频域操作**不许混用**（顺序语义没立判据）⇒ 必须当场拒绝，不许猜。"""
+def test_mixing_time_and_band_ops_is_chained(tmp_path):
+    """时间域与频域混用**不再拒绝**（2026-10-24）：按规范顺序链式渲染
+    （频域在前、时间域在后），审计逐阶段可查。"""
     src = _write(tmp_path / "src.wav", _tone_mix())
     p = Project(src, [GainOp(0.0, 1.0, -3.0), BandGainOp(0.0, 1.0, 100.0, 200.0, -3.0)])
-    with pytest.raises(ValueError):
-        render(p, str(tmp_path / "dst.wav"))
+    audit = render(p, str(tmp_path / "dst.wav"))
+    assert audit["chained"] is True
+    assert [s["op"]["kind"] for s in audit["stages"]] == ["band_gain", "gain"]
 
 
 # ============================================================ 3. 与测量内核互证

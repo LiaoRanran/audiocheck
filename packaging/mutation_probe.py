@@ -102,7 +102,10 @@ TARGETS: dict[str, list[str]] = {
                                         # 2026-10-22：`DehumOp` 的校验/记账挂在去嗡判据里。
                                         "tests/test_edit_cli.py",
                                         "tests/test_edit_declick.py",
-                                        "tests/test_edit_dehum.py"],
+                                        "tests/test_edit_dehum.py",
+                                        # 2026-10-24：`to_dict`/`op_from_dict` 的严格 schema
+                                        # 判据在会话文件里（踩过"子集没挂判据文件 ⇒ 全假存活"）。
+                                        "tests/test_edit_session.py"],
     # 时频内核（2026-10-18，P0 频谱编辑的数学地基）：**重叠归一化、帧网、覆盖守卫**
     # 都在这一个文件里。这里的变异体最容易被"看起来还行"的测试放过——所以判据是
     # `tests/test_edit_stft.py`（往返残差、分块等价性、覆盖守卫、窗平方和恒 >0）。
