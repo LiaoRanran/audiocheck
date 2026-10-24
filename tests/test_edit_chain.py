@@ -21,7 +21,16 @@ import numpy as np
 import pytest
 import soundfile as sf
 
-from audiocheck.core.edit import DeclickOp, DeclipOp, DehumOp, GainOp, Project, corpus, render
+from audiocheck.core.edit import (
+    BandGainOp,
+    DeclickOp,
+    DeclipOp,
+    DehumOp,
+    GainOp,
+    Project,
+    corpus,
+    render,
+)
 from audiocheck.core.edit.declick import residual
 from audiocheck.core.edit.render import canonical_order
 
@@ -78,6 +87,18 @@ def test_canonical_order_is_stable_within_a_phase():
     assert canonical_order([b, a]) == [b, a]
     assert canonical_order([GainOp(0.0, 0.2, -3.0), DeclickOp(0.0, T),
                             GainOp(0.5, 0.7, -6.0)])[0].to_dict()["kind"] == "declick"
+
+
+def test_band_gain_phase_precedes_gain():
+    """电平类**内部**：时频增益（相位 3）先于整体增益（相位 4），即使输入是反序。
+
+    这条钉住 `PHASE` 的两个数**必须保持不等**（写成相等 ⇒ 稳定排序会保留用户反序，
+    时频选区的判定就落在被改过电平的信号上）。只测排序，不渲染。
+    """
+    band = BandGainOp(0.0, T, 100.0, 1000.0, -3.0)
+    gain = GainOp(0.0, T, -6.0)
+    assert [o.to_dict()["kind"] for o in canonical_order([gain, band])] == \
+        ["band_gain", "gain"]
 
 
 def test_declick_before_declip_leaves_less_click_residual(tmp_path):

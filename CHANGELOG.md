@@ -7,7 +7,7 @@
 ### 新增（**复合操作：顺序实测 → 规范顺序 + 链式渲染**）
 
 > `docs/editor_roadmap.md` 第十二步。`packaging/op_order_probe.py` 量顺序；
-> `docs/theory.md §12.15` / `docs/editor_research.md §15`；判据 `tests/test_edit_chain.py`（6 条）。
+> `docs/theory.md §12.15` / `docs/editor_research.md §15`；判据 `tests/test_edit_chain.py`（7 条）。
 
 - **先量**：三种缺陷同时存在且有真值的素材 × 三个修复算子的**六种排列**：
   SDR 极差只有 **0.44 dB**（顺序不是"生死攸关"），但**咔哒残差差 2.2 倍**
@@ -27,6 +27,14 @@
   已在探针注释里第二次记录。补挂后 0 存活。
   另外补了两条真缺口：`source=""` 也算缺来源（`or→and`）、`DeclickOp(max_run=1)` **合法**
   （`<`→`<=` 会把它拒掉）。
+- **变异复跑（链式区，定向）**：`render.py` 的 dispatch + 链式渲染区（130–250 行）
+  **7/7 = 1.000**（杀死 5、等价 2）。⚠ 这是**定向**复跑（判据子集 = chain + render），
+  不是整份 126 个候选：旧区自上一轮实测"无存活"后**代码未改**（只有行号下移），
+  全量重跑要数小时且不增加信息。`TARGETS` 的 render 子集已挂 `tests/test_edit_chain.py`。
+  过程中抓出一条**真判据缺口**：`PHASE` 的 `band_gain=3` 改成 `4` 会与 `gain` 平局，
+  稳定排序保留用户反序 ⇒ 新增 `test_band_gain_phase_precedes_gain`。
+  等价登记 2 条（`gain 4→5`、未知兜底 `99→100`，理由都是"只关心相对顺序"）；
+  `render.py` 旧等价体的行号已按插入 `_render_chained` 后的位置**逐条对齐**。
 
 ### 新增（**撤销/重做 + 项目记录：判据全部逐位**）
 
