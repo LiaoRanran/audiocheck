@@ -4,6 +4,20 @@
 
 ## [未发布]
 
+### 新增（**撤销/重做 + 项目记录：判据全部逐位**）
+
+> `docs/editor_roadmap.md` 第十一步。`core/edit/session.py`（`EditSession`）+
+> `ops.op_from_dict` / `Project.to_dict|from_dict`；判据 `tests/test_edit_session.py`（11 条）。
+
+- **撤销到空栈 ≡ 从未编辑**：与空栈项目渲染的 **sha256 相同**；**重做后与撤销前逐字节相同**。
+- 栈语义：**新操作清空 redo**（不做分叉）；空栈的 `undo()/redo()` 返回 `False` 不抛异常；
+  `project()` 返回**拷贝**（外部往 ops 上追加不会穿透回会话）；审计只含当前栈。
+- **项目记录**（"可审计的修复"能存下来再跑）：五类操作 `to_dict → op_from_dict` 逐字段相等；
+  `to_dict → JSON → from_dict` 后**渲染同样的字节**。解析严格：未知 kind / 多字段 / 少字段 /
+  版本不符**都拒绝**（宽松解析会让"写了 `q=10` 却被悄悄丢掉"静默发生）。
+- 边界如实写：**撤销历史不落盘**（会话状态而非作品状态）；不存"改过的音频"——
+  撤销的代价是**重渲染**，取决于最近选区的大小。
+
 ### 验证 + 修复（**P0 往返测试补上 FLAC / AIFF；`FLOAT → .flac` 的半个目标文件**）
 
 > `docs/editor_roadmap.md` 第十步。判据 `tests/test_edit_formats.py`（14 条）。

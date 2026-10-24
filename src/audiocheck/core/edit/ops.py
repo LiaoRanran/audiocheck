@@ -286,3 +286,60 @@ class Project:
     def audit(self) -> list[dict]:
         """操作栈的机器可读记录（还没渲染时用；渲染时会补上实际生效样本数）。"""
         return [op.to_dict() for op in self.ops]
+
+    def to_dict(self) -> dict:
+        """**可复算**的项目记录（"可审计的修复"要能存下来再跑一遍）。
+
+        ⚠ `source` 按**给定路径**原样存（不做相对化）：换机器/换目录要由调用方负责。
+        ⚠ 撤销历史**不落盘**——它是会话状态，不是作品状态。
+        """
+        return {"version": PROJECT_VERSION, "source": self.source, "ops": self.audit()}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> Project:
+        if int(d.get("version", -1)) != PROJECT_VERSION:
+            raise ValueError("不认识的项目版本 %r（只支持 %d）"
+                             % (d.get("version"), PROJECT_VERSION))
+        src = d.get("source")
+        if not isinstance(src, str) or not src:
+            raise ValueError("项目记录缺 source")
+        ops = d.get("ops")
+        if not isinstance(ops, list):
+            raise ValueError("项目记录的 ops 必须是列表")
+        return cls(src, [op_from_dict(x) for x in ops])
+
+
+#: 项目记录的**版本号**。字段/语义一变就 +1，不许悄悄改（旧记录必须报错而不是被误解）。
+PROJECT_VERSION = 1
+
+#: `kind` → (类, 该类型 `to_dict` 的**精确**键集)：解析时**多一个少一个都拒绝**。
+_OP_SCHEMA = {
+    "gain": (GainOp, {"kind", "t0", "t1", "gain_db"}),
+    "band_gain": (BandGainOp, {"kind", "t0", "t1", "f0", "f1", "gain_db"}),
+    "declip": (DeclipOp, {"kind", "t0", "t1", "ceiling", "bandwidth", "bandwidth_source",
+                          "iterations"}),
+    "declick": (DeclickOp, {"kind", "t0", "t1", "threshold", "max_run"}),
+    "dehum": (DehumOp, {"kind", "t0", "t1", "f0", "f0_source", "q", "harmonics"}),
+}
+
+
+def op_from_dict(d: dict):
+    """把一条操作记录还原成操作对象。**严格**：未知 kind / 缺键 / 多键都拒绝。
+
+    为什么严格：「可复算」的前提是**同一条记录只能解出一种操作**。宽松解析
+    （例如忽略多余键）会让"记录里写了 `q=10` 但代码悄悄丢掉"这种事故静默发生。
+    """
+    if not isinstance(d, dict):
+        raise ValueError("操作记录必须是 dict，得到 %r" % type(d).__name__)
+    kind = d.get("kind")
+    if kind not in _OP_SCHEMA:
+        raise ValueError("未知操作 kind=%r（可选：%s）" % (kind, " / ".join(sorted(_OP_SCHEMA))))
+    cls, keys = _OP_SCHEMA[kind]
+    got = set(d)
+    if got != keys:
+        extra, missing = sorted(got - keys), sorted(keys - got)
+        raise ValueError("操作 %r 的字段不符：多 %s ／ 少 %s" % (kind, extra, missing))
+    kw = {k: v for k, v in d.items() if k != "kind"}
+    if kind == "dehum":
+        kw["harmonics"] = tuple(kw["harmonics"])
+    return cls(**kw)

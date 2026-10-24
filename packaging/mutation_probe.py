@@ -90,7 +90,9 @@ TARGETS: dict[str, list[str]] = {
                                           # 2026-10-22：去嗡路径（dispatch / 选区 / 审计）。
                                           "tests/test_edit_dehum.py",
                                           # 2026-10-24：格式往返与 `_check_subtype` 守卫。
-                                          "tests/test_edit_formats.py"],
+                                          "tests/test_edit_formats.py",
+                                          # 2026-10-24：会话（撤销/重做）也走这条渲染路径。
+                                          "tests/test_edit_session.py"],
     "src/audiocheck/core/edit/ops.py": ["tests/test_edit_render.py",
                                         "tests/test_edit_stft.py",
                                         "tests/test_edit_declip.py",
@@ -122,6 +124,8 @@ TARGETS: dict[str, list[str]] = {
     # 嗡的自动检测（2026-10-23）：**稳态**是判据（帧间稳定 + 安静帧仍在），
     # 判据里的三组门限与抛物线插值都必须钉住。
     "src/audiocheck/core/analyzers/hum.py": ["tests/test_analyzer_hum.py"],
+    # 会话/撤销（2026-10-24）：`to_dict`/`from_dict` 的严格 schema 与栈语义。
+    "src/audiocheck/core/edit/session.py": ["tests/test_edit_session.py"],
 }
 
 #: 变异分数下限。**三次更正，都写在这里免得后人再踩**：
