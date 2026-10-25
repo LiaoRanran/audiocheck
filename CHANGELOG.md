@@ -4,6 +4,32 @@
 
 ## [未发布]
 
+### 新增（**项目记录 CLI + 导出抖动；decrackle 判据先行后挂账**）
+
+> `docs/editor_roadmap.md` 第十四步。判据 `tests/test_edit_cli.py`（+6）、
+> `tests/test_edit_dither.py`（11）；`docs/theory.md §12.17`、`docs/editor_research.md §17`。
+
+- **复合操作终于能走 CLI**：`--save-project` 写本次实际执行的项目记录（JSON 版本 1），
+  `--project` 按记录**链式渲染**——规范顺序、审计记 `stages` / `reordered_from`，
+  并逐阶段打印"操作 / 算法 / 覆盖帧数 / STFT 残差"。记录里的 `source` 必须与命令行
+  一致（**不静默换源**）；坏 JSON / 未知 kind / 参数混用都拒绝（退出码 2、不 traceback）。
+  判据：记录往返**字节相同**、源不一致拒绝、空栈恒等、链式阶段打印、参数互斥。
+- **导出抖动（P0 补齐）**：`render(..., dither=True)` + CLI `--dither`。TPDF **+0.5 LSB
+  偏置**——实测 libsndfile 的 float→PCM 是**截断**（0.0001 → 3 LSB），不加偏置会留
+  **−0.499 LSB 直流**；加上后实测均值 **0.0013 LSB**、RMS **0.501 LSB**、最大 **1.277 LSB**，
+  两次渲染**逐字节相同**（RNG 固定种子 0）。⚠ 全文件重量化 ⇒ 未编辑处不再逐位不变，
+  所以只作导出选项；只对整型 subtype 有效（浮点目标上要求抖动 ⇒ 明确拒绝）。
+  审计记 `dither` / `dither_lsb`。抖动区变异 **22/22**（位深表、TPDF 公式、偏置、
+  种子、审计舍入逐条钉住）。
+- **decrackle：判据先行，本轮不落地**：新增 `corpus.crackle_train`（位置/幅度真值）+
+  `packaging/decrackle_probe.py`。实测：小脉冲（0.02–0.2）在现有两点残差上
+  **TPR = 0%**（残差尺子被 17.6 kHz 合法谐波主导：干净素材 `max|r|=0.246`、`s=0.087`，
+  小脉冲只给 γ=0.23–2.5 < α=5）；α=3 时 TPR 28–35% 但 precision 58–67%、ΔSDR 仅 +3 dB 量级；
+  **LPC(64) 残差** precision 1–17%、ΔSDR **−14…−0.2 dB** ⇒ 否决。
+  ⇒ 需要新检测量具（时频离群点 / 稳健局部尺度），语料与探针留给下一轮
+  （`docs/editor_research.md §17`）。语料区变异 **35/35**（33 杀 + 2 等价）。
+- **门禁**：ruff 全通；全量 **1157 passed / 1 failed**（仅已知 flaky toast）。
+
 ### 新增（**P3 第四个修复算子：去噪 —— 噪声段是必填输入，盲估计被实测否决**）
 
 > `docs/editor_roadmap.md` 第十三步。`packaging/denoise_probe.py`：四候选 × 七场景 + 参数扫描；

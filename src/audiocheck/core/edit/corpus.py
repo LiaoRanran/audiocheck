@@ -18,6 +18,7 @@
 3. `click_train` —— **脉冲噪声**：位置已知（为 `DeclickOp` 备料，本模块只备料不定算法）。
 4. `white_noise` / `pink_noise` / `add_noise` —— **有真值的加性噪声**（SNR 是算出来的，
    不是"听着差不多"）：为去噪（`docs/editor_roadmap.md §4` 的 P3）备料。
+5. `crackle_train` —— **密集小脉冲（破音/噼啪）**：位置与幅度已知，为 decrackle 备料。
 
 判据在 `tests/test_edit_corpus.py`：非饱和段**逐位精确**、饱和集合与真值一致、
 `c` 可从数据恢复、削波**近似能量中性**（只少了越过 `c` 的那点）、狠档占比够狠。
@@ -191,6 +192,39 @@ def click_train(clean: np.ndarray, positions_s, fs: int = FS_DEFAULT,
         s[i] += amp * sign
     return {"clean": _as2d(clean), "clicked": s, "positions_samples": idx,
             "positions_s": [float(t) for t in positions_s], "amp": amp}
+
+
+def crackle_train(clean: np.ndarray, rate_per_s: float, fs: int = FS_DEFAULT,
+                  amp_min: float = 0.02, amp_max: float = 0.2,
+                  seed: int = 0) -> dict:
+    """**密集小脉冲**（破音/噼啪）：位置互不重复，幅度在 `[amp_min, amp_max]` 内**对数均匀**，
+    极性随机。位置与带符号幅度都是**真值**，供 decrackle 判据对账。
+
+    口径：脉冲个数 = `round(rate_per_s × 时长)`；位置在 `[1, n−1)` 内**无放回**抽取
+    （采样级，不用秒）；幅度 `10^U(log10 amp_min, log10 amp_max)`、符号 `±1` 均匀。
+    返回 `{"clean", "crackled", "positions_samples", "amplitudes", "rate_per_s",
+    "amp_min", "amp_max"}`。
+    """
+    s = _as2d(clean)
+    n = s.shape[0]
+    if not rate_per_s > 0.0:
+        raise ValueError("密度必须 > 0（每秒脉冲数），得到 %r" % rate_per_s)
+    if not 0.0 < amp_min <= amp_max:
+        raise ValueError("幅度范围非法：需要 0 < amp_min <= amp_max，得到 %r / %r"
+                         % (amp_min, amp_max))
+    count = int(round(float(rate_per_s) * n / fs))
+    if count < 1 or count > n - 2:
+        raise ValueError("密度 %r 在 %d 个采样上产生 %d 个脉冲（需要 1..n−2）"
+                         % (rate_per_s, n, count))
+    rng = np.random.default_rng(seed)
+    pos = np.sort(rng.choice(np.arange(1, n - 1), size=count, replace=False))
+    amp = 10.0 ** rng.uniform(np.log10(amp_min), np.log10(amp_max), count)
+    sign = rng.choice(np.array([-1.0, 1.0]), size=count)
+    y = s.copy()
+    y[pos, 0] += amp * sign
+    return {"clean": s, "crackled": y, "positions_samples": [int(i) for i in pos],
+            "amplitudes": (amp * sign).tolist(), "rate_per_s": float(rate_per_s),
+            "amp_min": float(amp_min), "amp_max": float(amp_max)}
 
 
 # ------------------------------------------------------------------ 加性噪声（真值 SNR）

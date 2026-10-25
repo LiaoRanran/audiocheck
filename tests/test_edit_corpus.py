@@ -291,3 +291,67 @@ def test_noise_generators_reject_impossible_requests():
         corpus.pink_noise(1.0, fs=FS, rms=0.0)
     with pytest.raises(ValueError):
         corpus._normalize_rms(np.zeros((10, 1)), 0.1)
+
+
+def test_noise_defaults_and_internal_guards_are_pinned():
+    """默认 rms=0.1；`_noise_for` 的 `n<1 or ch<1` 两侧都要拒（不是 `and`）。"""
+    assert np.allclose(np.sqrt(np.mean(corpus.white_noise(0.1, fs=FS) ** 2)), 0.1)
+    assert np.allclose(np.sqrt(np.mean(corpus.pink_noise(0.1, fs=FS) ** 2)), 0.1)
+    # 边界侧：恰好 n=min_n 与 ch=1 必须合法（守卫是 `<`，不是 `<=`）
+    assert corpus.white_noise(1 / FS, fs=FS).shape == (1, 1)
+    assert corpus.pink_noise(2 / FS, fs=FS).shape == (2, 1)
+    assert corpus._noise_for(1, 1, "white", 0.1, 0).shape == (1, 1)
+    with pytest.raises(ValueError):
+        corpus._noise_for(0, 1, "white", 0.1, 0)
+    with pytest.raises(ValueError):
+        corpus._noise_for(10, 0, "white", 0.1, 0)
+
+
+def test_add_noise_snr_formula_holds_for_stereo():
+    """立体声也按 `Σclean²/Σnoise²` 算（`n·ch` 的口径：写成 `n/ch` 会在这里露馅）。"""
+    clean = np.column_stack([corpus.harmonic_tone(1.0, fs=FS, amp=0.5, seed=2)[:, 0],
+                             corpus.harmonic_tone(1.0, fs=FS, amp=0.3, seed=3)[:, 0]])
+    r = corpus.add_noise(clean, -3.0, "white", seed=4)
+    got = 10.0 * np.log10(np.sum(clean ** 2) / np.sum(r["noise"] ** 2))
+    assert abs(got + 3.0) < 1e-9
+
+
+# ------------------------------------------------------------------ 破音（真值位置与幅度）
+def test_crackle_train_positions_and_amplitudes_are_ground_truth():
+    clean = corpus.harmonic_tone(2.0, fs=FS, amp=0.5, seed=0)
+    r = corpus.crackle_train(clean, 100.0, fs=FS, seed=3)
+    pos = r["positions_samples"]
+    assert len(pos) == 200 and len(set(pos)) == 200 and pos == sorted(pos)
+    keep = np.ones(clean.shape[0], dtype=bool)
+    keep[pos] = False
+    assert np.array_equal(r["crackled"][keep], r["clean"][keep])
+    assert np.allclose(r["crackled"][pos, 0] - clean[pos, 0], r["amplitudes"])
+    assert all(r["amp_min"] <= abs(a) <= r["amp_max"] for a in r["amplitudes"])
+
+
+def test_crackle_train_rejects_bad_density_and_amp_range():
+    clean = corpus.harmonic_tone(0.5, fs=FS, seed=0)
+    with pytest.raises(ValueError, match="密度必须"):
+        corpus.crackle_train(clean, 0.0, fs=FS)
+    with pytest.raises(ValueError):
+        corpus.crackle_train(clean, 10.0, fs=FS, amp_min=0.0)
+    with pytest.raises(ValueError):
+        corpus.crackle_train(clean, 10.0, fs=FS, amp_min=0.2, amp_max=0.1)
+    with pytest.raises(ValueError, match="需要 1"):
+        corpus.crackle_train(clean, 1e9, fs=FS)
+
+
+def test_crackle_train_defaults_and_density_boundaries_are_pinned():
+    """默认幅度 0.02–0.2、count=1 与 count=n−2 必须合法、count=n 必须拒绝。"""
+    clean = corpus.harmonic_tone(0.5, fs=FS, seed=0)
+    d = corpus.crackle_train(clean, 10.0, fs=FS, seed=0)
+    assert d["amp_min"] == 0.02 and d["amp_max"] == 0.2
+    one = corpus.crackle_train(corpus.harmonic_tone(1.0, fs=FS, seed=0), 1.0, fs=FS)
+    assert len(one["positions_samples"]) == 1
+    tiny = corpus.harmonic_tone(100 / FS, fs=FS, amp=0.5, seed=0)      # 100 个采样
+    edge = corpus.crackle_train(tiny, float(FS * 98 / 100), fs=FS, seed=1)
+    assert len(edge["positions_samples"]) == 98                         # n−2
+    # population = arange(1, n−1) 恰好 98 个 ⇒ 取 98 个必须**铺满** 1..98
+    assert set(edge["positions_samples"]) == set(range(1, 99))
+    with pytest.raises(ValueError, match="需要 1"):
+        corpus.crackle_train(tiny, float(FS), fs=FS, seed=1)            # count = n

@@ -15,7 +15,7 @@ import soundfile as sf
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
-from audiocheck.core.edit import corpus  # noqa: E402
+from audiocheck.core.edit import DeclickOp, GainOp, Project, corpus, render  # noqa: E402
 from audiocheck.edit_cli import _parse_freq, _parse_range, main  # noqa: E402
 
 FS = 48000
@@ -431,3 +431,86 @@ def test_dehum_harmonics_list_is_parsed_and_validated(tmp_path, capsys):
     assert rec["ops"][0]["harmonics"] == [1, 2]
     assert main([src, str(tmp_path / "c.wav"), "--dehum", "--at", "0.0-0.5",
                  "--hum-f0", "50", "--hum-harmonics", "1,x"]) == 2
+
+
+# ------------------------------------------------------------------ 项目记录（复合操作的 CLI 入口）
+def _bytes(p) -> bytes:
+    return open(str(p), "rb").read()
+
+
+def test_save_project_then_load_renders_the_same_bytes(tmp_path):
+    """`--save-project` → `--project`：同一条记录必须渲染出**同样的字节**。"""
+    src = _write(tmp_path / "a.wav", _tone())
+    d1 = str(tmp_path / "b.wav")
+    rec = str(tmp_path / "p.json")
+    assert main([src, d1, "--gain", "-6", "--at", "0.2-0.8",
+                 "--save-project", rec]) == 0
+    saved = json.loads(open(rec, encoding="utf-8").read())
+    assert saved["version"] == 1 and saved["source"] == src
+    assert saved["ops"][0]["kind"] == "gain" and saved["ops"][0]["gain_db"] == -6.0
+    d2 = str(tmp_path / "c.wav")
+    assert main([src, d2, "--project", rec]) == 0
+    assert _bytes(d1) == _bytes(d2)
+
+
+def test_project_chained_render_and_stage_report(tmp_path, capsys):
+    """项目里混用两个算子：链式渲染、打印阶段、与 Python 直接渲染字节相同。"""
+    src = _write(tmp_path / "a.wav", _tone())
+    proj = Project(src, [GainOp(0.5, 1.5, -3.0), DeclickOp(0.5, 1.5)])
+    p = str(tmp_path / "p.json")
+    json.dump(proj.to_dict(), open(p, "w", encoding="utf-8"), ensure_ascii=False)
+    dst = str(tmp_path / "out.wav")
+    assert main([src, dst, "--project", p]) == 0
+    out = capsys.readouterr().out
+    assert "链式  2 个阶段" in out and "顺序被规范化" in out
+    expected = str(tmp_path / "expected.wav")
+    render(proj, expected)
+    assert _bytes(dst) == _bytes(expected)
+
+
+def test_empty_project_is_identity(tmp_path):
+    src = _write(tmp_path / "a.wav", _tone())
+    p = str(tmp_path / "p.json")
+    json.dump(Project(src, []).to_dict(), open(p, "w", encoding="utf-8"))
+    dst = str(tmp_path / "out.wav")
+    assert main([src, dst, "--project", p]) == 0
+    assert _bytes(src) == _bytes(dst)
+
+
+def test_project_source_mismatch_is_rejected(tmp_path, capsys):
+    src = _write(tmp_path / "a.wav", _tone())
+    other = _write(tmp_path / "other.wav", _tone())
+    p = str(tmp_path / "p.json")
+    json.dump(Project(other, [GainOp(0.0, 1.0, -3.0)]).to_dict(),
+              open(p, "w", encoding="utf-8"))
+    dst = str(tmp_path / "out.wav")
+    assert main([src, dst, "--project", p]) == 2
+    assert "不一致" in capsys.readouterr().out
+    assert not os.path.exists(dst)
+
+
+def test_project_mode_rejects_flag_mixing(tmp_path):
+    src = _write(tmp_path / "a.wav", _tone())
+    p = str(tmp_path / "p.json")
+    json.dump(Project(src, [GainOp(0.0, 1.0, -3.0)]).to_dict(),
+              open(p, "w", encoding="utf-8"))
+    dst = str(tmp_path / "out.wav")
+    assert main([src, dst, "--project", p, "--gain", "-3", "--at", "0-1"]) == 2
+    assert main([src, dst, "--project", p, "--at", "0-1"]) == 2
+    assert main([src, dst, "--project", p,
+                 "--save-project", str(tmp_path / "q.json")]) == 2
+    assert not os.path.exists(dst)
+
+
+def test_bad_project_record_is_rejected_without_traceback(tmp_path, capsys):
+    src = _write(tmp_path / "a.wav", _tone())
+    bad_json = str(tmp_path / "bad.json")
+    open(bad_json, "w", encoding="utf-8").write("{")
+    assert main([src, str(tmp_path / "b.wav"), "--project", bad_json]) == 2
+    bad_schema = str(tmp_path / "schema.json")
+    json.dump({"version": 1, "source": src,
+               "ops": [{"kind": "eq", "t0": 0.0, "t1": 1.0}]},
+              open(bad_schema, "w", encoding="utf-8"))
+    assert main([src, str(tmp_path / "c.wav"), "--project", bad_schema]) == 2
+    out = capsys.readouterr().out
+    assert "项目记录" in out and "Traceback" not in out

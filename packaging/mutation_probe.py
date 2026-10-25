@@ -97,7 +97,9 @@ TARGETS: dict[str, list[str]] = {
                                           # `reordered_from` 判据只在这个文件里。
                                           "tests/test_edit_chain.py",
                                           # 2026-10-26：去噪路径（dispatch / 噪声段 / 审计）。
-                                          "tests/test_edit_denoise.py"],
+                                          "tests/test_edit_denoise.py",
+                                          # 2026-10-26：导出抖动（TPDF / LSB / 审计字段）。
+                                          "tests/test_edit_dither.py"],
     "src/audiocheck/core/edit/ops.py": ["tests/test_edit_render.py",
                                         "tests/test_edit_stft.py",
                                         "tests/test_edit_declip.py",
@@ -368,6 +370,12 @@ EQUIVALENT: dict[str, str] = {
         "没有任何判据读它（与其它路径的同型条目一致）。",
     "src/audiocheck/core/edit/render.py:704:bin:-->+":
         "`_render_denoise` 报错**文案**里的 `k1 − k0` → `k1 + k0`：同上，只进字符串。",
+    # --- 2026-10-26（破音语料）：极性只取 ±1 ⇒ 乘除同值 ---
+    "src/audiocheck/core/edit/corpus.py:224:bin:*->/":
+        "`y[pos] += amp * sign` → `amp / sign`：`sign` 的取值只有 ±1，而 ±1 的倒数等于自身"
+        " ⇒ 两种写法逐位相同。",
+    "src/audiocheck/core/edit/corpus.py:226:bin:*->/":
+        "`(amp * sign).tolist()` → `amp / sign`：同上（`sign ∈ {±1}`）⇒ 真值记录逐位相同。",
     "src/audiocheck/core/edit/declick.py:118:bin:*->/":
         "**守卫那一处**的 `if n * ch` → `if n / ch`：两者都只在 `n == 0` 时为假（`ch ≥ 1`）⇒ "
         "走同一分支 ⇒ 不可区分。（同一行**分母**那一处的 `*`→`/` 是**被判据杀死的**，见 "

@@ -59,6 +59,12 @@ BLOCKSIZE = 1 << 16
 #: 会被 libsndfile 钳位到 [−1, 1] 的整型 subtype（浮点不钳位）。
 _INT_SUBTYPES = {"PCM_S8", "PCM_U8", "PCM_16", "PCM_24", "PCM_32"}
 
+#: 整型 subtype 的位深（用于**抖动**的 LSB 计算）。
+_PCM_BITS = {"PCM_S8": 8, "PCM_U8": 8, "PCM_16": 16, "PCM_24": 24, "PCM_32": 32}
+
+#: 抖动 RNG 的固定种子：同一输入必须给同一字节（`render` 是纯函数）。
+_DITHER_SEED = 0
+
 #: 频域路径的默认 STFT 参数。**这个 `n_fft` 与频谱图显示用的 `nperseg=16384` 不同，
 #: 是有意的**（显示要平滑的统计谱，编辑要局部性：4096 @48k ⇒ 时间分辨率 ~85 ms、
 #: 频率分辨率 ~11.7 Hz）。`docs/theory.md §12.1` 要求"视图与编辑共用同一套 STFT 参数"
@@ -110,6 +116,43 @@ def _check_subtype(dest: str, inherited: str, explicit: str | None) -> None:
             "AIFF/WAV 可用 PCM_24 或 FLOAT）" % (fmt, inherited))
 
 
+def _check_dither(dither: bool, sub: str) -> None:
+    """抖动只对**整型**目标有意义；浮点目标上要求抖动 ⇒ 明确拒绝（不静默当没发生）。"""
+    if dither and sub not in _INT_SUBTYPES:
+        raise ValueError("抖动只对整型 subtype 有效（PCM_16/24/32…），目标 subtype=%s"
+                         % sub)
+
+
+class _DitherWriter:
+    """写出口的**TPDF 抖动**：`d[n] = (U1 − U2)·LSB`（三角分布、±1 LSB、无直流）。
+
+    ⚠ 这是**全文件重量化**：连"没被编辑"的采样也会动，`逐位不变`的承诺在开启抖动时
+      **不再成立**（CLI/审计必须显式说）。RNG 固定种子 ⇒ 渲染仍是纯函数。
+    """
+
+    def __init__(self, f, lsb: float, seed: int = _DITHER_SEED):
+        self._f = f
+        self._lsb = lsb
+        self._rng = np.random.default_rng(seed)
+
+    def write(self, b: np.ndarray) -> None:
+        a = np.asarray(b, dtype=np.float64)
+        # ⚠ libsndfile 的 float→PCM 是**截断**（实测 0.0001 → 3 LSB，不是 3.28 的四舍五入）
+        # ⇒ 加 0.5 LSB 把它变成"以 0 为无偏中心"的量化；否则抖动会留下 −0.5 LSB 直流。
+        d = ((self._rng.random(a.shape) - self._rng.random(a.shape)) + 0.5) * self._lsb
+        self._f.write(a + d)
+
+
+def _open_writer(g, sub: str, dither: bool):
+    """按 subtype 决定是否给写出口套上抖动；LSB = `1 / 2^(位深−1)`。"""
+    if not dither:
+        return g
+    bits = _PCM_BITS.get(sub)
+    if bits is None:
+        raise ValueError("抖动只对整型 subtype 有效（目标 subtype=%s）" % sub)
+    return _DitherWriter(g, 1.0 / (2 ** (bits - 1)))
+
+
 def _account(b: np.ndarray, st: dict) -> None:
     """输出块的**如实记账**：峰值、整型编码下的钳位样本数。"""
     if len(b):
@@ -139,7 +182,7 @@ def _copy_range(f: sf.SoundFile, g: sf.SoundFile, pos: int, end: int,
 def render(project: Project, dest: str, *, subtype: str | None = None,
            blocksize: int = BLOCKSIZE, overwrite: bool = False,
            n_fft: int = DEFAULT_N_FFT, hop: int | None = None,
-           chunk_hops: int = CHUNK_HOPS) -> dict:
+           chunk_hops: int = CHUNK_HOPS, dither: bool = False) -> dict:
     """把 `project` 渲染到 `dest`，返回**审计记录**（dict）。
 
     参数
@@ -147,28 +190,32 @@ def render(project: Project, dest: str, *, subtype: str | None = None,
     subtype    : 目标编码；`None` = 沿用源的 subtype（保证"没动的地方逐位不变"的前提）。
     overwrite  : 是否允许覆盖已存在的目标（源文件永远不许，见 `_check_dest`）。
     n_fft/hop  : **频域路径**的 STFT 参数（`hop` 默认 `n_fft//4`；时间域路径忽略）。
+    dither     : **TPDF 抖动**（±1 LSB），只对整型 subtype 有效。⚠ 它是全文件重量化：
+                 开启后连"没被编辑"的采样也会动，**逐位不变的承诺不再成立**。
     """
     ops = list(project.ops)
     if not ops or all(isinstance(o, GainOp) for o in ops):
         return _render_time(project, dest, subtype=subtype, blocksize=blocksize,
-                            overwrite=overwrite)
+                            overwrite=overwrite, dither=dither)
     if all(isinstance(o, BandGainOp) for o in ops):
         return _render_band(project, dest, subtype=subtype, blocksize=blocksize,
-                            overwrite=overwrite, n_fft=n_fft, hop=hop, chunk_hops=chunk_hops)
+                            overwrite=overwrite, n_fft=n_fft, hop=hop,
+                            chunk_hops=chunk_hops, dither=dither)
     if all(isinstance(o, DeclipOp) for o in ops):
         return _render_declip(project, dest, subtype=subtype, blocksize=blocksize,
-                              overwrite=overwrite)
+                              overwrite=overwrite, dither=dither)
     if all(isinstance(o, DeclickOp) for o in ops):
         return _render_declick(project, dest, subtype=subtype, blocksize=blocksize,
-                               overwrite=overwrite)
+                               overwrite=overwrite, dither=dither)
     if all(isinstance(o, DehumOp) for o in ops):
         return _render_dehum(project, dest, subtype=subtype, blocksize=blocksize,
-                             overwrite=overwrite)
+                             overwrite=overwrite, dither=dither)
     if all(isinstance(o, DenoiseOp) for o in ops):
         return _render_denoise(project, dest, subtype=subtype, blocksize=blocksize,
-                               overwrite=overwrite)
+                               overwrite=overwrite, dither=dither)
     return _render_chained(project, dest, subtype=subtype, blocksize=blocksize,
-                           overwrite=overwrite, n_fft=n_fft, hop=hop, chunk_hops=chunk_hops)
+                           overwrite=overwrite, n_fft=n_fft, hop=hop,
+                           chunk_hops=chunk_hops, dither=dither)
 
 
 #: 复合操作的**规范顺序**（相位号，小的先做）。依据是 `packaging/op_order_probe.py`：
@@ -196,7 +243,8 @@ def _kind_of(op) -> str:
 
 def _render_chained(project: Project, dest: str, *, subtype: str | None,
                     blocksize: int, overwrite: bool,
-                    n_fft: int, hop: int | None, chunk_hops: int) -> dict:
+                    n_fft: int, hop: int | None, chunk_hops: int,
+                    dither: bool) -> dict:
     """**复合操作**：按栈顺序逐算子渲染，每步落一个中间文件（`FLOAT`），最后写目标。
 
     为什么可以放开"混用"了（`packaging/op_order_probe.py` 实测）：
@@ -229,12 +277,15 @@ def _render_chained(project: Project, dest: str, *, subtype: str | None,
             a = render(Project(cur, [op]), dest if last else stage_dst,
                        subtype=subtype if last else "FLOAT",
                        blocksize=blocksize, overwrite=overwrite,
-                       n_fft=n_fft, hop=hop, chunk_hops=chunk_hops)
+                       n_fft=n_fft, hop=hop, chunk_hops=chunk_hops,
+                       dither=dither and last)
             audits.append(a)
             stages.append({"index": i, "op": op.to_dict(),
                            "algorithm": a.get("algorithm"),
                            "applied_frames": [r.get("applied_frames") for r in a.get("ops", [])],
-                           "peak": a.get("peak"), "read_error": a.get("read_error")})
+                           "peak": a.get("peak"), "read_error": a.get("read_error"),
+                           "n_fft": a.get("n_fft"), "hop": a.get("hop"),
+                           "roundtrip_floor_dbfs": a.get("roundtrip_floor_dbfs")})
             cur = stage_dst
         final = audits[-1]
         # 顶层审计要能回答"这条链一共做了什么"：ops 拼起来、源写回原始路径、标明链式。
@@ -251,7 +302,7 @@ def _render_chained(project: Project, dest: str, *, subtype: str | None,
 
 
 def _render_time(project: Project, dest: str, *, subtype: str | None,
-                 blocksize: int, overwrite: bool) -> dict:
+                 blocksize: int, overwrite: bool, dither: bool) -> dict:
     """时间域路径：逐样本分块施加 `GainOp`。"""
     src, dst = _check_dest(project.source, dest, overwrite)
     applied = [0] * len(project.ops)          # 每个操作实际生效的样本数
@@ -265,9 +316,11 @@ def _render_time(project: Project, dest: str, *, subtype: str | None,
         ch = int(f.channels)
         sub = subtype or f.subtype
         _check_subtype(dest, sub, subtype)
+        _check_dither(dither, sub)
         st["clips_int"] = sub in _INT_SUBTYPES
         claimed = int(f.frames or 0)
         with sf.SoundFile(dst, "w", samplerate=fs, channels=ch, subtype=sub) as g:
+            g = _open_writer(g, sub, dither)
             pos = 0
             while True:
                 # ⚠ 源**可能是截断文件**（真实曲库里就有：容器头声称满长帧数，
@@ -297,11 +350,12 @@ def _render_time(project: Project, dest: str, *, subtype: str | None,
         frames = pos
 
     return _audit(project, dest, "time", fs, ch, sub, frames, claimed, st, applied,
-                  tf_points=None)
+                  tf_points=None, dither=dither)
 
 
 def _render_band(project: Project, dest: str, *, subtype: str | None, blocksize: int,
-                 overwrite: bool, n_fft: int, hop: int | None, chunk_hops: int) -> dict:
+                 overwrite: bool, n_fft: int, hop: int | None, chunk_hops: int,
+                 dither: bool) -> dict:
     """频域路径：分块 STFT/WOLA，只碰时频选区内的谱点；其余原样拷贝。"""
     hop = n_fft // 4 if hop is None else hop
     stft.check_params(n_fft, hop)
@@ -320,6 +374,7 @@ def _render_band(project: Project, dest: str, *, subtype: str | None, blocksize:
         ch = int(f.channels)
         sub = subtype or f.subtype
         _check_subtype(dest, sub, subtype)
+        _check_dither(dither, sub)
         st["clips_int"] = sub in _INT_SUBTYPES
         claimed = int(f.frames or 0)
         win = stft.default_window(n_fft)
@@ -341,6 +396,7 @@ def _render_band(project: Project, dest: str, *, subtype: str | None, blocksize:
         span_hi = min(claimed, k1 + n_fft) if active else 0
 
         with sf.SoundFile(dst, "w", samplerate=fs, channels=ch, subtype=sub) as g:
+            g = _open_writer(g, sub, dither)
             pos = _copy_range(f, g, 0, span_lo, blocksize, st)
             step = max(1, chunk_hops) * hop
             cs = span_lo
@@ -397,7 +453,8 @@ def _render_band(project: Project, dest: str, *, subtype: str | None, blocksize:
     measured = [(round(10.0 * math.log10(a / b0), 3) if b0 > 0 else None)
                 for b0, a in meas_e]
     return _audit(project, dest, "band", fs, ch, sub, frames, claimed, st, applied,
-                  tf_points=tf_points, measured=measured, n_fft=n_fft, hop=hop)
+                  tf_points=tf_points, measured=measured, n_fft=n_fft, hop=hop,
+                  dither=dither)
 
 
 def _declip_record(seg: np.ndarray, out: np.ndarray, sstat: dict, op: DeclipOp,
@@ -425,7 +482,7 @@ def _round_db(v: float | None) -> float | None:
 
 
 def _render_declip(project: Project, dest: str, *, subtype: str | None,
-                   blocksize: int, overwrite: bool) -> dict:
+                   blocksize: int, overwrite: bool, dither: bool) -> dict:
     """去削波路径：**逐选区整段载入**，POCS 重建，只改饱和样本。
 
     ⚠ **不做分块**（与时间域/频域路径的差别，必须让用户看见）：POCS 的核心是
@@ -449,6 +506,7 @@ def _render_declip(project: Project, dest: str, *, subtype: str | None,
         ch = int(f.channels)
         sub = subtype or f.subtype
         _check_subtype(dest, sub, subtype)
+        _check_dither(dither, sub)
         st["clips_int"] = sub in _INT_SUBTYPES
         claimed = int(f.frames or 0)
         spans = [(max(0, min(_sample_at(o.t0, fs), claimed)),
@@ -461,6 +519,7 @@ def _render_declip(project: Project, dest: str, *, subtype: str | None,
             end = spans[i][1]
 
         with sf.SoundFile(dst, "w", samplerate=fs, channels=ch, subtype=sub) as g:
+            g = _open_writer(g, sub, dither)
             cursor = 0
             pos = 0
             for i in order:
@@ -494,11 +553,11 @@ def _render_declip(project: Project, dest: str, *, subtype: str | None,
         frames = pos
 
     return _audit(project, dest, "declip", fs, ch, sub, frames, claimed, st, applied,
-                  tf_points=None, op_recs=recs)
+                  tf_points=None, op_recs=recs, dither=dither)
 
 
 def _render_declick(project: Project, dest: str, *, subtype: str | None,
-                    blocksize: int, overwrite: bool) -> dict:
+                    blocksize: int, overwrite: bool, dither: bool) -> dict:
     """去咔哒路径：**逐选区整段载入**（探测器的 MAD 尺子是**全段**统计量 ⇒ **不分块**），
 
     只改**检出样本**：选区之外**逐位不变**，选区之内**未被检出的样本逐位不变**。
@@ -518,6 +577,7 @@ def _render_declick(project: Project, dest: str, *, subtype: str | None,
         ch = int(f.channels)
         sub = subtype or f.subtype
         _check_subtype(dest, sub, subtype)
+        _check_dither(dither, sub)
         st["clips_int"] = sub in _INT_SUBTYPES
         claimed = int(f.frames or 0)
         spans = [(max(0, min(_sample_at(o.t0, fs), claimed)),
@@ -530,6 +590,7 @@ def _render_declick(project: Project, dest: str, *, subtype: str | None,
             end = spans[i][1]
 
         with sf.SoundFile(dst, "w", samplerate=fs, channels=ch, subtype=sub) as g:
+            g = _open_writer(g, sub, dither)
             cursor = 0
             pos = 0
             for i in order:
@@ -563,11 +624,11 @@ def _render_declick(project: Project, dest: str, *, subtype: str | None,
         frames = pos
 
     return _audit(project, dest, "declick", fs, ch, sub, frames, claimed, st, applied,
-                  tf_points=None, op_recs=recs)
+                  tf_points=None, op_recs=recs, dither=dither)
 
 
 def _render_dehum(project: Project, dest: str, *, subtype: str | None,
-                  blocksize: int, overwrite: bool) -> dict:
+                  blocksize: int, overwrite: bool, dither: bool) -> dict:
     """去嗡路径：**逐选区整段载入**（零相位 `filtfilt` 要看整段），零相位陷波级联。
 
     ⚠ 与去削波/去咔哒的差别：陷波是 **LTI** ⇒ **整段选区都被改动**（不是"只改检出样本"）。
@@ -588,6 +649,7 @@ def _render_dehum(project: Project, dest: str, *, subtype: str | None,
         ch = int(f.channels)
         sub = subtype or f.subtype
         _check_subtype(dest, sub, subtype)
+        _check_dither(dither, sub)
         st["clips_int"] = sub in _INT_SUBTYPES
         claimed = int(f.frames or 0)
         spans = [(max(0, min(_sample_at(o.t0, fs), claimed)),
@@ -600,6 +662,7 @@ def _render_dehum(project: Project, dest: str, *, subtype: str | None,
             end = spans[i][1]
 
         with sf.SoundFile(dst, "w", samplerate=fs, channels=ch, subtype=sub) as g:
+            g = _open_writer(g, sub, dither)
             cursor = 0
             pos = 0
             for i in order:
@@ -633,11 +696,11 @@ def _render_dehum(project: Project, dest: str, *, subtype: str | None,
         frames = pos
 
     return _audit(project, dest, "dehum", fs, ch, sub, frames, claimed, st, applied,
-                  tf_points=None, op_recs=recs)
+                  tf_points=None, op_recs=recs, dither=dither)
 
 
 def _render_denoise(project: Project, dest: str, *, subtype: str | None,
-                    blocksize: int, overwrite: bool) -> dict:
+                    blocksize: int, overwrite: bool, dither: bool) -> dict:
     """去噪路径：**逐选区整段载入**，噪声谱从每个算子的 `noise_t0/noise_t1` 学。
 
     ⚠ 与去嗡同型：增益逐帧逐 bin ⇒ **整段选区都被改动**；选区之外**逐位不变**。
@@ -659,6 +722,7 @@ def _render_denoise(project: Project, dest: str, *, subtype: str | None,
         ch = int(f.channels)
         sub = subtype or f.subtype
         _check_subtype(dest, sub, subtype)
+        _check_dither(dither, sub)
         st["clips_int"] = sub in _INT_SUBTYPES
         claimed = int(f.frames or 0)
         spans = [(max(0, min(_sample_at(o.t0, fs), claimed)),
@@ -680,6 +744,7 @@ def _render_denoise(project: Project, dest: str, *, subtype: str | None,
                     % (need, nk1 - nk0, ops[i].noise_t0, ops[i].noise_t1))
 
         with sf.SoundFile(dst, "w", samplerate=fs, channels=ch, subtype=sub) as g:
+            g = _open_writer(g, sub, dither)
             cursor = 0
             pos = 0
             for i in order:
@@ -717,14 +782,14 @@ def _render_denoise(project: Project, dest: str, *, subtype: str | None,
         frames = pos
 
     return _audit(project, dest, "denoise", fs, ch, sub, frames, claimed, st, applied,
-                  tf_points=None, op_recs=recs)
+                  tf_points=None, op_recs=recs, dither=dither)
 
 
 def _audit(project: Project, dest: str, domain: str, fs: int, ch: int, sub: str,
            frames: int, claimed: int, st: dict, applied: list,
            tf_points: list | None, measured: list | None = None,
            n_fft: int | None = None, hop: int | None = None,
-           op_recs: list | None = None) -> dict:
+           op_recs: list | None = None, dither: bool = False) -> dict:
     """组装**审计记录**（四条路径共用；域特有的字段都不藏）。"""
     ops = []
     for i, op in enumerate(project.ops):
@@ -757,6 +822,10 @@ def _audit(project: Project, dest: str, domain: str, fs: int, ch: int, sub: str,
         # 截断源：显式上报（frames_claimed > frames 即"读不满"）。已读部分照常写出。
         "read_incomplete": st["read_error"] is not None,
         "frames_claimed": claimed,
+        #: **抖动**（TPDF ±1 LSB）：开启时整条目标都被重量化（未编辑处也不再逐位不变）。
+        "dither": bool(dither),
+        "dither_lsb": (1.0 / (2 ** (_PCM_BITS[sub] - 1)) if dither and sub in _PCM_BITS
+                       else None),
         "ops": ops,
     }
     if domain == "band":

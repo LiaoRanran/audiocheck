@@ -6,15 +6,21 @@
     audiocheck-edit <源> <目标> --declick --at 1.0-2.0 [--threshold 4.0]                    # 去咔哒
     audiocheck-edit <源> <目标> --dehum --at 0-999 --hum-f0 50 [--hum-q 10]                 # 去嗡
     audiocheck-edit <源> <目标> --denoise --at 10-60 --noise-at 0-2 [--reduction-db 20]     # 去噪
+    audiocheck-edit <源> <目标> --gain -6 --at 12-14 --save-project 计划.json               # 存项目
+    audiocheck-edit <源> <目标> --project 计划.json                                         # 按记录跑
 
 五种操作**必须给且只给一种**：`--gain`（时间选区增益 / 加 `--band` 变时频选区）、
 `--declip`（去削波）、`--declick`（去咔哒）、`--dehum`（去嗡）或 `--denoise`（去噪）。
 ⚠ `--denoise` **必须再给 `--noise-at`**（噪声段：只有噪声的一小段，用来学谱）——
 盲估计被实测否决（见 `denoise.py`），不给就拒绝。
+⚠ 复合操作（一条链里多个算子）走 `--project`：记录里的 source 必须与命令行一致；
+  渲染按 `render.PHASE` 的规范顺序，审计记 `stages` 与 `reordered_from`。
 
 三条约定（与 `core/edit/render.py` 一致，不在这一层偷改）
 --------------------------------------------------------
 * **非破坏**：目标 == 源一律拒绝（渲染层硬保证）；目标已存在时默认不覆盖（`--overwrite` 才覆盖）。
+* **抖动是导出选项**：`--dither` 只对整型 subtype 有效，且是**全文件重量化**——开启后
+  "未编辑处逐位不变"的承诺不再成立（只应在最终导出时用）。
 * **可审计**：跑完把审计记录**打出来**；`--audit` 再另存一份 JSON（"可审计的修复"的第一片）。
   频域编辑还会打出**实测的 STFT 往返残差**——"频谱编辑不是位精确的"这条要摆到台面上。
   去削波还会打出**实测的能量比**与**带外变化**——证明"没把它修安静了"、且带限投影确实生效。
@@ -26,10 +32,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 
 from .cli import _setup_console
-from .core.edit import BandGainOp, DeclickOp, DeclipOp, DehumOp, DenoiseOp, GainOp, Project, render
+from .core.edit import (
+    BandGainOp,
+    DeclickOp,
+    DeclipOp,
+    DehumOp,
+    DenoiseOp,
+    GainOp,
+    Project,
+    op_from_dict,
+    render,
+)
 
 
 def _parse_range(s: str) -> tuple[float, float]:
@@ -151,7 +168,15 @@ def build_parser() -> argparse.ArgumentParser:
                          "量不到带限 ⇒ 奈奎斯特（= 不作约束，去削波逐位不变）")
     ap.add_argument("--iterations", type=int, default=None,
                     help="去削波的 POCS 迭代次数（默认 128；更多更准但更慢，见 declip.py）")
-    ap.add_argument("--at", required=True, help="时间选区（秒，半开区间），形如 12.5-14.0")
+    ap.add_argument("--at", default=None,
+                    help="时间选区（秒，半开区间），形如 12.5-14.0。⚠ 用 `--project` 时不给")
+    ap.add_argument("--project", default=None,
+                    help="**项目记录**（JSON，`Project.to_dict` 的格式）：按记录里的操作栈"
+                         "**链式渲染**（规范顺序）。与逐操作参数互斥；记录里的 source 必须与"
+                         "命令行给的一致")
+    ap.add_argument("--save-project", default=None,
+                    help="把**本次实际执行**的项目记录写成 JSON（可复算）。"
+                         "⚠ 不能与 `--project` 同时用（读进来的记录不需要再存一遍）")
     ap.add_argument("--band", default=None,
                     help="频段（Hz，半开区间），给了就走**时频**路径，形如 4000-8000")
     ap.add_argument("--n-fft", type=int, default=None,
@@ -159,6 +184,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--hop", type=int, default=None,
                     help="时频路径的 hop（默认 n_fft//4；只对 --band 有效）")
     ap.add_argument("--subtype", default=None, help="目标编码（默认沿用源，例如 PCM_16）")
+    ap.add_argument("--dither", action="store_true",
+                    help="导出**TPDF 抖动**（±1 LSB，只对整型 subtype）。"
+                         "⚠ 全文件重量化：未编辑处的逐位不变承诺不再成立")
     ap.add_argument("--overwrite", action="store_true", help="允许覆盖已存在的目标")
     ap.add_argument("--audit", default=None, help="把审计记录另存为 JSON")
     return ap
@@ -167,6 +195,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     _setup_console()
     a = build_parser().parse_args(argv)
+    if a.project is not None:
+        return _main_project(a)
+    if a.at is None:
+        print("参数错误：需要 `--at`（时间选区，例如 12.5-14.0）；"
+              "要按项目记录跑请用 `--project`")
+        return 2
 
     n_modes = ((1 if a.gain is not None else 0) + (1 if a.declip else 0)
                + (1 if a.declick else 0) + (1 if a.dehum else 0)
@@ -289,8 +323,9 @@ def main(argv=None) -> int:
         else:
             op = (BandGainOp(t0, t1, f0, f1, a.gain) if a.band
                   else GainOp(t0, t1, a.gain))
-        audit = render(Project(a.source, [op]), a.dest,
-                       subtype=a.subtype, overwrite=a.overwrite, **kw)
+        proj = Project(a.source, [op])
+        audit = render(proj, a.dest,
+                       subtype=a.subtype, overwrite=a.overwrite, dither=a.dither, **kw)
     except FileExistsError as e:
         print("目标已存在：%s（要覆盖请加 --overwrite）" % e)
         return 5
@@ -305,6 +340,7 @@ def main(argv=None) -> int:
     print("目标  %s" % audit["dest"])
     print("格式  %d Hz ｜ %d 声道 ｜ %s" % (audit["samplerate"], audit["channels"],
                                             audit["subtype"]))
+    _print_dither(audit)
     print("长度  %d 帧（%.3f s）" % (audit["frames"], audit["duration_s"]))
     if audit["domain"] == "band":
         for op in audit["ops"]:
@@ -424,6 +460,121 @@ def main(argv=None) -> int:
               % ("无（全零信号）" if floor is None else "%.1f" % floor,
                  audit["roundtrip_floor_samples"], half_ms))
 
+    if a.audit:
+        try:
+            with open(a.audit, "w", encoding="utf-8") as f:
+                json.dump(audit, f, ensure_ascii=False, indent=2)
+        except OSError as e:
+            print("审计记录写不出去：%s" % e)
+            return 2
+        print("审计  %s" % a.audit)
+    if a.save_project:
+        try:
+            with open(a.save_project, "w", encoding="utf-8") as f:
+                json.dump(proj.to_dict(), f, ensure_ascii=False, indent=2)
+        except OSError as e:
+            print("项目记录写不出去：%s" % e)
+            return 2
+        print("项目  %s" % a.save_project)
+    return 0
+
+
+def _print_dither(audit: dict) -> None:
+    if audit.get("dither"):
+        print("抖动  TPDF ±1 LSB（%.3g）｜ **全文件重量化**：未编辑处的逐位不变不再成立"
+              % audit["dither_lsb"])
+
+
+def _flag_conflicts(a) -> list[str]:
+    """`--project` 模式下**不许**出现的逐操作参数（返回人可读的名字）。"""
+    names = []
+    for attr in ("gain", "declip", "declick", "dehum", "denoise", "band",
+                 "noise_at", "reduction_db", "hum_f0", "hum_auto", "hum_q",
+                 "hum_harmonics", "threshold", "max_run", "ceiling", "bandwidth",
+                 "iterations", "n_fft", "hop", "at"):
+        v = getattr(a, attr)
+        if v is not None and v is not False:
+            names.append("--" + attr.replace("_", "-"))
+    return names
+
+
+def _print_chain(audit: dict) -> None:
+    """链式审计的人话摘要（逐阶段：操作 / 算法 / 覆盖帧数）。"""
+    stages = audit.get("stages") or []
+    print("链式  %d 个阶段（规范顺序，`render.PHASE`）" % len(stages))
+    for i, s in enumerate(stages, 1):
+        try:
+            desc = op_from_dict(s["op"]).describe()
+        except ValueError:                        # 记录本身来自本仓，不会走到；防御性
+            desc = str(s["op"])
+        frames = sum((x or 0) for x in (s.get("applied_frames") or []))
+        print("  %d. %s ｜ 算法 %s ｜ 覆盖 %d 帧"
+              % (i, desc, s.get("algorithm") or "—", frames))
+        if s.get("n_fft"):
+            floor = s.get("roundtrip_floor_dbfs")
+            print("     STFT n_fft %d ｜ hop %d ｜ 往返残差 %s dBFS"
+                  % (s["n_fft"], s["hop"],
+                     "无（全零信号）" if floor is None else "%.1f" % floor))
+    if audit.get("reordered_from"):
+        print("注  顺序被规范化（原始顺序见审计 `reordered_from`）")
+
+
+def _main_project(a) -> int:
+    """`--project`：按保存的项目记录链式渲染（复合操作的 CLI 入口）。"""
+    if a.save_project is not None:
+        print("参数错误：`--project` 与 `--save-project` 不能同时用"
+              "（读进来的记录不需要再存一遍）")
+        return 2
+    bad = _flag_conflicts(a)
+    if bad:
+        print("参数错误：`--project` 与逐操作参数互斥，收到 %s" % " / ".join(bad))
+        return 2
+    try:
+        with open(a.project, encoding="utf-8") as f:
+            record = json.load(f)
+        proj = Project.from_dict(record)
+    except OSError as e:
+        print("项目记录读不了：%s" % e)
+        return 2
+    except (ValueError, json.JSONDecodeError) as e:
+        print("项目记录不可用：%s" % e)
+        return 2
+    if (os.path.normcase(os.path.abspath(proj.source))
+            != os.path.normcase(os.path.abspath(a.source))):
+        print("项目记录里的源是 %s，与命令行给的 %s 不一致——"
+              "要按记录跑请用记录里的源；要换源请改记录（不静默替换）"
+              % (proj.source, a.source))
+        return 2
+    try:
+        audit = render(proj, a.dest, subtype=a.subtype, overwrite=a.overwrite,
+                       dither=a.dither)
+    except FileExistsError as e:
+        print("目标已存在：%s（要覆盖请加 --overwrite）" % e)
+        return 5
+    except ValueError as e:
+        print("拒绝：%s" % e)
+        return 2
+    except Exception as e:                         # noqa: BLE001 —— 源读不了的各种形态
+        print("**源读不了**：%s" % e)
+        return 4
+
+    print("源    %s" % audit["source"])
+    print("目标  %s" % audit["dest"])
+    print("格式  %d Hz ｜ %d 声道 ｜ %s" % (audit["samplerate"], audit["channels"],
+                                            audit["subtype"]))
+    _print_dither(audit)
+    print("长度  %d 帧（%.3f s）" % (audit["frames"], audit["duration_s"]))
+    if audit.get("chained"):
+        _print_chain(audit)
+    else:
+        print("操作  空栈（恒等渲染）" if not audit["ops"] else "操作  单算子渲染")
+    print("输出峰值  %s dBFS" % audit["peak_out_dbfs"])
+    if audit["clipped_frames"]:
+        print("⚠ **削波 %d 帧**：目标编排放不下这个峰值，已按编排放满钳位"
+              % audit["clipped_frames"])
+    if audit["read_incomplete"]:
+        print("⚠ **源疑似截断**：容器声称 %d 帧，实际只读到 %d 帧；已按实读部分导出"
+              % (audit["frames_claimed"], audit["frames"]))
     if a.audit:
         try:
             with open(a.audit, "w", encoding="utf-8") as f:
