@@ -67,6 +67,41 @@ def test_parse_freq_accepts_and_rejects():
         raise AssertionError("本该拒绝：%r" % bad)
 
 
+# ------------------------------------------------------------------ 去噪（噪声段是必填）
+def test_denoise_requires_the_noise_segment(tmp_path):
+    src = _write(tmp_path / "a.wav", _tone())
+    dst = str(tmp_path / "b.wav")
+    assert main([src, dst, "--denoise", "--at", "0.5-2.0"]) == 2
+    assert not os.path.exists(dst)
+
+
+def test_noise_at_is_denoise_only(tmp_path):
+    src = _write(tmp_path / "a.wav", _tone())
+    dst = str(tmp_path / "b.wav")
+    assert main([src, dst, "--gain", "-3", "--at", "0.5-2.0", "--noise-at", "0-0.5"]) == 2
+
+
+def test_denoise_cli_writes_the_audit_and_keeps_the_noise_segment(tmp_path):
+    src = _write(tmp_path / "a.wav", _tone())
+    dst = str(tmp_path / "b.wav")
+    audit_path = str(tmp_path / "audit.json")
+    rc = main([src, dst, "--denoise", "--at", "0.5-2.0", "--noise-at", "0-0.5",
+               "--reduction-db", "12", "--audit", audit_path])
+    assert rc == 0
+    rec = json.load(open(audit_path, encoding="utf-8"))
+    assert rec["domain"] == "denoise" and rec["algorithm"] == "wiener_dd_profile"
+    assert rec["ops"][0]["reduction_db"] == 12.0
+    lead = int(0.5 * FS)
+    assert np.array_equal(_read(src)[:lead], _read(dst)[:lead])
+
+
+def test_denoise_cli_rejects_a_too_short_profile(tmp_path):
+    src = _write(tmp_path / "a.wav", _tone())
+    dst = str(tmp_path / "b.wav")
+    assert main([src, dst, "--denoise", "--at", "0.5-2.0", "--noise-at", "1.95-2.0"]) == 2
+    assert not os.path.exists(dst)
+
+
 # ------------------------------------------------------------------ 时频路径
 def test_band_knocks_out_the_band(tmp_path, capsys):
     """`--band` 走时频路径：8 kHz 那条线被压掉，440 不动；并把**实测残差**打在台面上。"""

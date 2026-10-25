@@ -95,7 +95,9 @@ TARGETS: dict[str, list[str]] = {
                                           "tests/test_edit_session.py",
                                           # 2026-10-25：复合操作的链式渲染 / 规范顺序 /
                                           # `reordered_from` 判据只在这个文件里。
-                                          "tests/test_edit_chain.py"],
+                                          "tests/test_edit_chain.py",
+                                          # 2026-10-26：去噪路径（dispatch / 噪声段 / 审计）。
+                                          "tests/test_edit_denoise.py"],
     "src/audiocheck/core/edit/ops.py": ["tests/test_edit_render.py",
                                         "tests/test_edit_stft.py",
                                         "tests/test_edit_declip.py",
@@ -108,7 +110,9 @@ TARGETS: dict[str, list[str]] = {
                                         "tests/test_edit_dehum.py",
                                         # 2026-10-24：`to_dict`/`op_from_dict` 的严格 schema
                                         # 判据在会话文件里（踩过"子集没挂判据文件 ⇒ 全假存活"）。
-                                        "tests/test_edit_session.py"],
+                                        "tests/test_edit_session.py",
+                                        # 2026-10-26：`DenoiseOp` 的校验/记录挂在去噪判据里。
+                                        "tests/test_edit_denoise.py"],
     # 时频内核（2026-10-18，P0 频谱编辑的数学地基）：**重叠归一化、帧网、覆盖守卫**
     # 都在这一个文件里。这里的变异体最容易被"看起来还行"的测试放过——所以判据是
     # `tests/test_edit_stft.py`（往返残差、分块等价性、覆盖守卫、窗平方和恒 >0）。
@@ -130,6 +134,9 @@ TARGETS: dict[str, list[str]] = {
     # 嗡的自动检测（2026-10-23）：**稳态**是判据（帧间稳定 + 安静帧仍在），
     # 判据里的三组门限与抛物线插值都必须钉住。
     "src/audiocheck/core/analyzers/hum.py": ["tests/test_analyzer_hum.py"],
+    # 去噪（2026-10-26）：**噪声段学谱 + DD-Wiener 递归**；增益地板、噪声段长度守卫、
+    # 首帧闭式解、实测压制量的口径都要钉住。
+    "src/audiocheck/core/edit/denoise.py": ["tests/test_edit_denoise.py"],
     # 会话/撤销（2026-10-24）：`to_dict`/`from_dict` 的严格 schema 与栈语义。
     "src/audiocheck/core/edit/session.py": ["tests/test_edit_session.py"],
 }
@@ -344,13 +351,23 @@ EQUIVALENT: dict[str, str] = {
         "而那一点上 `f.read(0)` 返回空数组、`declick.declick` 对空数组不产出任何样本、"
         "`_copy_range(cursor, k0)` 也不写任何字节 ⇒ 输出与审计都逐位相同。",
     # --- 2026-10-25（复合操作这一轮）：`PHASE` 的秩只关心相对顺序 ---
-    "src/audiocheck/core/edit/render.py:179:const:4->5":
-        "`gain` 的相位 4 → 5：已知 kind 只占 **0–4**（declick 0 / declip 1 / dehum 2 / "
-        "band_gain 3 / gain 4），5 仍严格大于 band_gain(3)、小于未知兜底(99) ⇒ "
-        "任何输入下排序结果完全相同（`min(PHASE)` 等其它用法也不存在）。",
-    "src/audiocheck/core/edit/render.py:184:const:99->100":
-        "未知 kind 的兜底相位 99 → 100：两者都大于全部已知相位（0–4），稳定排序下未知操作"
+    "src/audiocheck/core/edit/render.py:184:const:5->6":
+        "`gain` 的相位 5 → 6：已知 kind 只占 **0–5**（declick 0 / declip 1 / dehum 2 / "
+        "denoise 3 / band_gain 4 / gain 5），6 仍严格大于全部已知相位、小于未知兜底(99) ⇒ "
+        "任何输入下排序结果完全相同。",
+    "src/audiocheck/core/edit/render.py:189:const:99->100":
+        "未知 kind 的兜底相位 99 → 100：两者都大于全部已知相位（0–5），稳定排序下未知操作"
         "仍排在最后、且未知操作之间保持输入顺序 ⇒ 输出逐位相同。",
+    # --- 2026-10-26（去噪这一轮）：P 的分子守卫 + 两处只进字符串的算术 ---
+    "src/audiocheck/core/edit/denoise.py:79:const:1e-30->0.0":
+        "分子守卫 `max(P, 1e-30)` → 0：只在 **P == 0 的 bin** 上有区别，那里 γ = 0 或 "
+        "1e-30/N ≈ 0 ⇒ ξ ≈ 0 ⇒ Wiener 增益 ≈ 0，**低于 g_min 一律被地板托到 g_min**；"
+        "下一帧的 `g_prev²·γ_prev` 也同为 ≈0 ⇒ 输出逐位相同（N 的守卫仍在，不会除零）。",
+    "src/audiocheck/core/edit/render.py:680:bin:-->+":
+        "`_render_denoise` 报错**文案**里的 `nk1 − nk0` → `nk1 + nk0`：只进字符串，"
+        "没有任何判据读它（与其它路径的同型条目一致）。",
+    "src/audiocheck/core/edit/render.py:704:bin:-->+":
+        "`_render_denoise` 报错**文案**里的 `k1 − k0` → `k1 + k0`：同上，只进字符串。",
     "src/audiocheck/core/edit/declick.py:118:bin:*->/":
         "**守卫那一处**的 `if n * ch` → `if n / ch`：两者都只在 `n == 0` 时为假（`ch ≥ 1`）⇒ "
         "走同一分支 ⇒ 不可区分。（同一行**分母**那一处的 `*`→`/` 是**被判据杀死的**，见 "

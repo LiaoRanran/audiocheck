@@ -21,6 +21,7 @@ from audiocheck.core.edit import (
     DeclickOp,
     DeclipOp,
     DehumOp,
+    DenoiseOp,
     EditSession,
     GainOp,
     Project,
@@ -156,7 +157,7 @@ def test_record_keeps_provenance_fields():
 def test_record_is_strict_about_schema():
     """未知 kind / 多字段 / 少字段 / 版本不对 ⇒ 都**拒绝**（不许宽松解析）。"""
     with pytest.raises(ValueError, match="未知操作"):
-        op_from_dict({"kind": "denoise", "t0": 0.0, "t1": 1.0})
+        op_from_dict({"kind": "eq", "t0": 0.0, "t1": 1.0})
     with pytest.raises(ValueError, match="多"):
         op_from_dict({"kind": "gain", "t0": 0.0, "t1": 1.0, "gain_db": -3.0, "q": 10})
     with pytest.raises(ValueError, match="少"):
@@ -170,13 +171,14 @@ def test_record_is_strict_about_schema():
 
 
 def test_every_op_kind_round_trips():
-    """五类操作各自 `to_dict → op_from_dict` 后**逐字段相等**。"""
+    """六类操作各自 `to_dict → op_from_dict` 后**逐字段相等**。"""
     ops = [
         GainOp(0.0, 1.0, -3.0),
         BandGainOp(0.0, 1.0, 100.0, 1000.0, -6.0),
         DeclipOp(0.0, 1.0, 0.9, 18000.0, bandwidth_source="given", iterations=40),
         DeclickOp(0.0, 1.0, 5.0, 4),
         DehumOp(0.0, 1.0, 50.0, 10.0, (1, 2, 3), "given"),
+        DenoiseOp(0.0, 1.0, 0.0, 0.5, reduction_db=20.0, n_fft=4096, hop=None),
     ]
     for op in ops:
         assert op_from_dict(op.to_dict()) == op

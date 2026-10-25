@@ -4,10 +4,44 @@
 
 ## [未发布]
 
+### 新增（**P3 第四个修复算子：去噪 —— 噪声段是必填输入，盲估计被实测否决**）
+
+> `docs/editor_roadmap.md` 第十三步。`packaging/denoise_probe.py`：四候选 × 七场景 + 参数扫描；
+> `docs/theory.md §12.16` / `docs/editor_research.md §16`；判据 `tests/test_edit_denoise.py`（23 条）。
+
+- **先量盲估计（失败）**：按"最低 10% 帧"估噪声谱，在 **+10 dB SNR 的持续音**上
+  ΔSDR **−8.7 dB**、能量比 −16 dB（把内容当噪声减掉——持续音每帧都响，"安静帧"也含音）。
+  ⇒ **噪声段是必填输入**：`DenoiseOp(t0,t1, noise_t0, noise_t1, ...)`，CLI `--noise-at`；
+  不给就拒绝（与 `--hum-f0` / `--bandwidth` 同一条纪律）。
+- **四候选对比**（噪声谱从前 0.5 s 纯噪声段学；ΔSDR，白 +10/0/−5、粉 0）：
+  谱减 +10.3/+10.4/+10.7/+11.3，**Wiener-DD +11.7/+12.7/+12.5/+14.0**，
+  MMSE-LSA +11.3/+12.5/+12.6/+13.3，oracle +12.1/+13.2/+13.8/+14.2。
+  纯噪声压制：**Wiener −19.9 dB**、MMSE −18.5、谱减 −15.3；musical-noise 代理
+  Wiener **+0.01 dB** 最小。MMSE 只在 −5 dB 上多 0.07 dB ⇒ **不开第二分支**。
+- **参数由扫描定（不是手感）**：n_fft **4096**（1024/2048/4096 的 ΔSDR +8.2/+10.8/+12.6）、
+  α_dd **0.98**（0.90/0.95/0.98/0.99 ⇒ +11.1/+12.2/+12.6/+12.4、压制 −15.6/−18.6/−19.9/−20.0）、
+  压制上限 **20 dB**（10/20/30 ⇒ ΔSDR +8.5/+12.6/+13.2，但伪影 +0.01/+0.01/+0.23 dB）。
+- **瞬态守卫两种候选都被否决**：① 帧总能量 >2/4× 中位数：单采样脉冲只占帧能量千分之几
+  ⇒ 永不触发；② "多少 bin 的 γ>4" 超过 5%/10%：持续音本身的谐波就占 ~4% 的 bin
+  ⇒ 大量正常帧被误判、去噪停摆（ΔSDR +1.2 dB）；20% 又抓不到脉冲。
+  ⇒ **不加守卫**，把"瞬态会被削软（−13.6 dB 峰值）"写进 CLI/审计；
+  去噪在 `render.PHASE` 里排**修复算子最后**（`declick → declip → dehum → denoise → band_gain → gain`）。
+- 落地 `core/edit/denoise.py` + `DenoiseOp` + render 的 denoise 路径 + CLI
+  `--denoise/--noise-at/--reduction-db`；审计报 `noise_reduction_measured_db`（同一套增益
+  作用在噪声段上实测）、`energy_ratio_measured_db`、`noise_frames/processed_frames`、
+  `alpha_dd/n_fft/hop/g_min_db`。
+- **边界如实写**：改整段选区（逐帧逐 bin 增益）；非稳态噪声没做（`N` 是平均谱）；
+  噪声型内容不可分离（那类素材能量掉 ~10 dB 是性质）；噪声段必须 ≥ 一个窗长。
+- **变异复跑**：`denoise.py` **25/25 = 1.000**（等价 1 条：`max(P,1e-30)→0` 只在 P=0 的
+  bin 上有差别，且被增益地板托到同一值）；`ops.py` 新增区 6/6；`render.py` 新增区
+  **定向** 19 杀 + 4 等价、0 存活（判据子集 = denoise + chain + render；旧区未改不重跑）。
+- 判据：去噪 23 条 + 语料噪声 5 条 + CLI 4 条 + 链式顺序 1 条；全量 **1135 passed**
+  （唯一失败是已知 flaky `test_ui_material::test_burst_does_not_leak`）。
+
 ### 新增（**复合操作：顺序实测 → 规范顺序 + 链式渲染**）
 
 > `docs/editor_roadmap.md` 第十二步。`packaging/op_order_probe.py` 量顺序；
-> `docs/theory.md §12.15` / `docs/editor_research.md §15`；判据 `tests/test_edit_chain.py`（7 条）。
+> `docs/theory.md §12.15` / `docs/editor_research.md §15`；判据 `tests/test_edit_chain.py`（8 条）。
 
 - **先量**：三种缺陷同时存在且有真值的素材 × 三个修复算子的**六种排列**：
   SDR 极差只有 **0.44 dB**（顺序不是"生死攸关"），但**咔哒残差差 2.2 倍**
@@ -44,7 +78,8 @@
 - **撤销到空栈 ≡ 从未编辑**：与空栈项目渲染的 **sha256 相同**；**重做后与撤销前逐字节相同**。
 - 栈语义：**新操作清空 redo**（不做分叉）；空栈的 `undo()/redo()` 返回 `False` 不抛异常；
   `project()` 返回**拷贝**（外部往 ops 上追加不会穿透回会话）；审计只含当前栈。
-- **项目记录**（"可审计的修复"能存下来再跑）：五类操作 `to_dict → op_from_dict` 逐字段相等；
+- **项目记录**（"可审计的修复"能存下来再跑）：五类操作 `to_dict → op_from_dict` 逐字段相等
+  （2026-10-26 起为**六类**，加去噪）；
   `to_dict → JSON → from_dict` 后**渲染同样的字节**。解析严格：未知 kind / 多字段 / 少字段 /
   版本不符**都拒绝**（宽松解析会让"写了 `q=10` 却被悄悄丢掉"静默发生）。
 - 边界如实写：**撤销历史不落盘**（会话状态而非作品状态）；不存"改过的音频"——

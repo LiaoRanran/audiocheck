@@ -16,6 +16,8 @@
    ⚠ 档位**不许偏温和**（Záviška/Rajmic et al. 2021 的明确教训：既有基准太软）——
    三档里最狠那档的**饱和占比实测 > 5%**（见 `probe_declip.py` 的实测表）。
 3. `click_train` —— **脉冲噪声**：位置已知（为 `DeclickOp` 备料，本模块只备料不定算法）。
+4. `white_noise` / `pink_noise` / `add_noise` —— **有真值的加性噪声**（SNR 是算出来的，
+   不是"听着差不多"）：为去噪（`docs/editor_roadmap.md §4` 的 P3）备料。
 
 判据在 `tests/test_edit_corpus.py`：非饱和段**逐位精确**、饱和集合与真值一致、
 `c` 可从数据恢复、削波**近似能量中性**（只少了越过 `c` 的那点）、狠档占比够狠。
@@ -189,3 +191,77 @@ def click_train(clean: np.ndarray, positions_s, fs: int = FS_DEFAULT,
         s[i] += amp * sign
     return {"clean": _as2d(clean), "clicked": s, "positions_samples": idx,
             "positions_s": [float(t) for t in positions_s], "amp": amp}
+
+
+# ------------------------------------------------------------------ 加性噪声（真值 SNR）
+def _normalize_rms(x: np.ndarray, rms: float) -> np.ndarray:
+    """把 `x` 缩放到**实测 RMS = rms**（分母是算出来的，不是估的）。"""
+    if not rms > 0.0:
+        raise ValueError("RMS 必须 > 0，得到 %r" % rms)
+    cur = float(np.sqrt(np.mean(_as2d(x) ** 2)))
+    if cur <= 0.0:
+        raise ValueError("全零信号归一化不出非零 RMS")
+    return _as2d(x) * (rms / cur)
+
+
+def _count(seconds: float, fs: int, min_n: int) -> int:
+    """时长 → 采样数（四舍五入），并守住"至少 `min_n` 个采样"。"""
+    n = int(round(seconds * fs))
+    if n < min_n:
+        raise ValueError("时长非法：%r s @ %r Hz ⇒ %d 采样（至少 %d）" % (seconds, fs, n, min_n))
+    return n
+
+
+def white_noise(seconds: float, fs: int = FS_DEFAULT, rms: float = 0.1,
+                seed: int = 0, channels: int = 1) -> np.ndarray:
+    """**白噪**：各样本独立同分布 `N(0,1)`，再缩放到实测 RMS = `rms`。返回 `(n, ch)`。"""
+    return _noise_for(_count(seconds, fs, 1), channels, "white", rms, seed)
+
+
+def pink_noise(seconds: float, fs: int = FS_DEFAULT, rms: float = 0.1,
+               seed: int = 0, channels: int = 1) -> np.ndarray:
+    """**粉噪**（`1/f` 功率谱 ⇒ 每倍频程等能量）：白噪 → rfft → 幅度乘 `1/√f` → irfft。
+
+    口径写死：`|X(f)| ∝ f^(−1/2)`（功率 ∝ `1/f`），`f = 0` 的 bin 置 0（没有直流）。
+    再缩放到实测 RMS = `rms`。返回 `(n, ch)`。
+    """
+    return _noise_for(_count(seconds, fs, 2), channels, "pink", rms, seed)
+
+
+def add_noise(clean: np.ndarray, snr_db: float, kind: str = "white",
+              seed: int = 0) -> dict:
+    """给干净信号加**有真值**的噪声，SNR 按全段功率算：
+
+        `SNR_dB = 10·log10( Σclean² / Σnoise² )`
+
+    ⇒ 噪声 RMS = `sqrt(Σclean² / (N·10^(SNR/10)))`。噪声按**声道独立**生成
+    （同一 `seed` 可复算）。返回 `{"clean", "noisy", "noise", "snr_db", "kind"}`。
+    ⚠ `snr_db` 是**实数输入**（0 / −5 / 10 这类），没有"好/坏"门限。
+    """
+    s = _as2d(clean)
+    if kind not in ("white", "pink"):
+        raise ValueError("噪声类型只能是 white / pink，得到 %r" % kind)
+    n, ch = s.shape
+    p = float(np.sum(s ** 2))
+    if p <= 0.0:
+        raise ValueError("干净信号全零：SNR 无定义（要噪声床请直接用 white_noise/pink_noise）")
+    rms = float(np.sqrt(p / (n * ch) / (10.0 ** (float(snr_db) / 10.0))))
+    noise = _noise_for(n, ch, kind, rms, seed)
+    return {"clean": s, "noisy": s + noise, "noise": noise,
+            "snr_db": float(snr_db), "kind": kind}
+
+
+def _noise_for(n: int, ch: int, kind: str, rms: float, seed: int) -> np.ndarray:
+    """`add_noise` 的内部噪声发生器（按**样本**生成，不需要 fs：白噪与 1/f 形状都不依赖 fs）。"""
+    if n < 1 or ch < 1:
+        raise ValueError("采样数/声道数非法：%r / %r" % (n, ch))
+    rng = np.random.default_rng(seed)
+    if kind == "white":
+        return _normalize_rms(rng.standard_normal((n, ch)), rms)
+    f = np.fft.rfftfreq(n)
+    shape = np.zeros_like(f)
+    shape[1:] = 1.0 / np.sqrt(f[1:])
+    y = np.zeros((n, ch))
+    for c in range(ch):
+        y[:, c] = np.fft.irfft(np.fft.rfft(rng.standard_normal(n)) * shape, n=n)
+    return _normalize_rms(y, rms)

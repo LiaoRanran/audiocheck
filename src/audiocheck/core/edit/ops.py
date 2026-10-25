@@ -7,10 +7,11 @@
 2. **可审计**：每个操作都能 `to_dict()`（机器可读）与 `describe()`（人可读），
    渲染再返回一份**审计记录**——这是本项目相对闭源工具的那条差别（见
    `docs/editor_roadmap.md §2`："可审计的修复"）。
-3. **只做有判据的**：目前四个操作——时间选区增益 `GainOp`、时频选区增益
+3. **只做有判据的**：目前六个操作——时间选区增益 `GainOp`、时频选区增益
    `BandGainOp`（判据在 `tests/test_edit_render.py` / `tests/test_edit_stft.py`）、
    去削波 `DeclipOp`（判据在 `tests/test_edit_declip.py`）、去咔哒 `DeclickOp`
-   （判据在 `tests/test_edit_declick.py`）、去嗡 `DehumOp`（判据在 `tests/test_edit_dehum.py`）。
+   （判据在 `tests/test_edit_declick.py`）、去嗡 `DehumOp`（判据在 `tests/test_edit_dehum.py`）、
+   去噪 `DenoiseOp`（判据在 `tests/test_edit_denoise.py`）。
    加任何新算法前，先按 `docs/editor_roadmap.md §5` 建判据（合成语料 + 客观指标 +
    效力边界），否则不加。
 """
@@ -21,6 +22,7 @@ from dataclasses import dataclass, field
 from .declick import DEFAULT_MAX_RUN, DEFAULT_THRESHOLD
 from .declip import DEFAULT_ITERATIONS
 from .dehum import DEFAULT_HARMONICS, DEFAULT_Q
+from .denoise import DEFAULT_N_FFT, DEFAULT_REDUCTION_DB
 
 
 @dataclass(frozen=True)
@@ -262,12 +264,69 @@ class DehumOp:
             "/".join(str(int(k)) for k in self.harmonics))
 
 
+@dataclass(frozen=True)
+class DenoiseOp:
+    """对时间选区 `[t0, t1)` 做**去噪**（Wiener + 判决引导先验 SNR，`denoise.py`）。
+
+    ⚠ **必须给噪声段** `[noise_t0, noise_t1)`：那段素材必须**只有噪声**，算子从它学谱。
+    这不是"偷懒少一个参数"——`packaging/denoise_probe.py` 实测：不给噪声段、按"最低
+    10% 帧"盲估，在 **+10 dB SNR 的持续音**上 ΔSDR **−8.7 dB**（把内容当噪声减掉）。
+    所以盲模式**不进内核**，宁可不做。
+
+    * `reduction_db` —— **压制上限**（dB）：增益不低于 `10^(−reduction_db/20)`。
+      20 dB 的 musical-noise 代理只涨 +0.01 dB；30 dB 涨 +0.23 dB 却只多 0.64 dB ΔSDR
+      ⇒ 默认取保守侧。**瞬态会被削软**：20 dB 时单采样脉冲峰值实测 −13.6 dB；
+      降到 10 dB 则 −7.9 dB。这是本领对瞬态的**如实代价**，不是 bug。
+    * `n_fft` / `hop` —— STFT 参数（默认 4096 / `n_fft/4`；窗长扫描见 `denoise.py`）。
+
+    ⚠ 去噪**改整段选区**（增益逐帧逐 bin ⇒ 每个样本都可能变），不是"只改噪声样本"；
+    选区之外逐位不变（渲染层保证）。**非稳态噪声**没做：`N` 是噪声段的平均谱。
+    """
+
+    t0: float
+    t1: float
+    noise_t0: float
+    noise_t1: float
+    reduction_db: float = DEFAULT_REDUCTION_DB
+    n_fft: int = DEFAULT_N_FFT
+    hop: int | None = None
+
+    def __post_init__(self) -> None:
+        if not (self.t1 > self.t0 >= 0.0):
+            raise ValueError("时间选区非法：需要 0 <= t0 < t1，得到 [%r, %r)" % (self.t0, self.t1))
+        if not (self.noise_t1 > self.noise_t0 >= 0.0):
+            raise ValueError("噪声段非法：需要 0 <= noise_t0 < noise_t1，得到 [%r, %r)"
+                             % (self.noise_t0, self.noise_t1))
+        if not self.reduction_db > 0.0:
+            raise ValueError("压制上限必须 > 0 dB，得到 %r" % self.reduction_db)
+        if not self.n_fft >= 2:
+            raise ValueError("n_fft 必须 >= 2，得到 %r" % self.n_fft)
+        if self.hop is not None and self.hop < 1:
+            raise ValueError("hop 必须 >= 1 或为 None（默认 n_fft/4），得到 %r" % self.hop)
+
+    @property
+    def is_noop(self) -> bool:
+        """去噪至少改 STFT 往返残差 ⇒ **恒 False**（不假装"没动"）。"""
+        return False
+
+    def to_dict(self) -> dict:
+        return {"kind": "denoise", "t0": self.t0, "t1": self.t1,
+                "noise_t0": self.noise_t0, "noise_t1": self.noise_t1,
+                "reduction_db": self.reduction_db, "n_fft": self.n_fft, "hop": self.hop}
+
+    def describe(self) -> str:
+        return ("去噪 %.3f–%.3f s：噪声段 %.3f–%.3f s ｜ 压制上限 %.0f dB ｜ "
+                "STFT %d/%s" % (self.t0, self.t1, self.noise_t0, self.noise_t1,
+                                self.reduction_db, self.n_fft,
+                                "自动" if self.hop is None else self.hop))
+
+
 @dataclass
 class Project:
     """一个非破坏编辑项目：源文件 + 操作栈（按**规范顺序**依次作用，见下）。
 
     ⚠ 操作栈可以**混用**不同域的算子（2026-10-24 起）：渲染层按**规范顺序**
-    （`render.PHASE`：去咔哒 → 去削波 → 去嗡 → 时频增益 → 增益）逐算子链式渲染，
+    （`render.PHASE`：去咔哒 → 去削波 → 去嗡 → 去噪 → 时频增益 → 增益）逐算子链式渲染，
     顺序被规范化时审计记 `reordered_from`。规范顺序的依据是
     `packaging/op_order_probe.py` 的实测（见 `docs/theory.md §12.15`）。
     同类算子之间仍然**不许重叠选区**（同一段被处理两遍的语义未立判据）。
@@ -322,6 +381,8 @@ _OP_SCHEMA = {
                           "iterations"}),
     "declick": (DeclickOp, {"kind", "t0", "t1", "threshold", "max_run"}),
     "dehum": (DehumOp, {"kind", "t0", "t1", "f0", "f0_source", "q", "harmonics"}),
+    "denoise": (DenoiseOp, {"kind", "t0", "t1", "noise_t0", "noise_t1",
+                            "reduction_db", "n_fft", "hop"}),
 }
 
 

@@ -26,6 +26,7 @@ from audiocheck.core.edit import (
     DeclickOp,
     DeclipOp,
     DehumOp,
+    DenoiseOp,
     GainOp,
     Project,
     corpus,
@@ -99,6 +100,19 @@ def test_band_gain_phase_precedes_gain():
     gain = GainOp(0.0, T, -6.0)
     assert [o.to_dict()["kind"] for o in canonical_order([gain, band])] == \
         ["band_gain", "gain"]
+
+
+def test_denoise_phase_is_after_dehum_and_before_gain():
+    """去噪排在**去嗡之后、电平之前**：学谱要看没被陷波改过的噪声，电平要最后。
+
+    输入把 `band_gain` 放在 `denoise` 前面：两者相位**不许相等**，否则稳定排序会
+    保留用户顺序（时频增益的判定就落在被去噪改过的信号上）。
+    """
+    dn = DenoiseOp(0.0, T, 0.0, 0.3)
+    band = BandGainOp(0.0, T, 100.0, 1000.0, -3.0)
+    ops = [GainOp(0.0, T, -1.0), band, dn, DehumOp(0.0, T, 50.0)]
+    assert [o.to_dict()["kind"] for o in canonical_order(ops)] == \
+        ["dehum", "denoise", "band_gain", "gain"]
 
 
 def test_declick_before_declip_leaves_less_click_residual(tmp_path):

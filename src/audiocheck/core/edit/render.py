@@ -46,11 +46,12 @@ import numpy as np
 import soundfile as sf
 
 from ..context import io_path
-from . import declick, declip, dehum, stft
+from . import declick, declip, dehum, denoise, stft
 from .declick import DEFAULT_MAX_RUN, DEFAULT_THRESHOLD
 from .dehum import DEFAULT_HARMONICS, DEFAULT_Q
+from .denoise import DEFAULT_REDUCTION_DB
 from .metrics import band_gain_db, energy_ratio_db
-from .ops import BandGainOp, DeclickOp, DeclipOp, DehumOp, GainOp, Project
+from .ops import BandGainOp, DeclickOp, DeclipOp, DehumOp, DenoiseOp, GainOp, Project
 
 #: 一次读入的帧数（与 `analyzers/basic.py` 的读块同量级）。
 BLOCKSIZE = 1 << 16
@@ -163,6 +164,9 @@ def render(project: Project, dest: str, *, subtype: str | None = None,
     if all(isinstance(o, DehumOp) for o in ops):
         return _render_dehum(project, dest, subtype=subtype, blocksize=blocksize,
                              overwrite=overwrite)
+    if all(isinstance(o, DenoiseOp) for o in ops):
+        return _render_denoise(project, dest, subtype=subtype, blocksize=blocksize,
+                               overwrite=overwrite)
     return _render_chained(project, dest, subtype=subtype, blocksize=blocksize,
                            overwrite=overwrite, n_fft=n_fft, hop=hop, chunk_hops=chunk_hops)
 
@@ -173,10 +177,11 @@ def render(project: Project, dest: str, *, subtype: str | None = None,
 #:   就抓不住（实测咔哒残差 0.1538 → 0.3448，差 2.2 倍）；
 #: * 去削波次之：它要看到**未被滤波**的饱和形状（带宽投影依赖原始波形）；
 #: * 去嗡再次：它是 LTI，会改动**全部**样本，先做会污染所有检测尺子；
+#: * 去噪再次：它的噪声谱从**噪声段**学（LTI 类操作也会改整段），先做会污染学谱；
 #: * 电平类（band_gain / gain）**最后**：修复阶段应当看到**原始电平**——自动削波电平
 #:   （`ceiling=None` 时从数据里读峰值）与检测门限都从数据里量，先改电平会让它们读错。
 #: 同相位内保持用户给的相对顺序（`sorted` 是稳定的）。
-PHASE = {"declick": 0, "declip": 1, "dehum": 2, "band_gain": 3, "gain": 4}
+PHASE = {"declick": 0, "declip": 1, "dehum": 2, "denoise": 3, "band_gain": 4, "gain": 5}
 
 
 def canonical_order(ops) -> list:
@@ -631,6 +636,90 @@ def _render_dehum(project: Project, dest: str, *, subtype: str | None,
                   tf_points=None, op_recs=recs)
 
 
+def _render_denoise(project: Project, dest: str, *, subtype: str | None,
+                    blocksize: int, overwrite: bool) -> dict:
+    """去噪路径：**逐选区整段载入**，噪声谱从每个算子的 `noise_t0/noise_t1` 学。
+
+    ⚠ 与去嗡同型：增益逐帧逐 bin ⇒ **整段选区都被改动**；选区之外**逐位不变**。
+    ⚠ 噪声段先校验（非空、至少一个窗长）再动目标文件；噪声段**可以落在选区之外**，
+      那段不会被写（仍逐位不变），只是"学谱"的输入。
+    ⚠ 多个去噪的选区**不许重叠**（同一段被滤两遍的语义未立判据）。
+    """
+    src, dst = _check_dest(project.source, dest, overwrite)
+    ops = list(project.ops)
+    st = {"read_error": None, "peak": 0.0, "clipped": 0, "clips_int": False,
+          "floor": 0.0, "floor_samples": 0}
+    applied = [0] * len(ops)
+    recs = [None] * len(ops)
+    frames = 0
+    claimed = 0
+
+    with sf.SoundFile(src) as f:
+        fs = int(f.samplerate)
+        ch = int(f.channels)
+        sub = subtype or f.subtype
+        _check_subtype(dest, sub, subtype)
+        st["clips_int"] = sub in _INT_SUBTYPES
+        claimed = int(f.frames or 0)
+        spans = [(max(0, min(_sample_at(o.t0, fs), claimed)),
+                  max(0, min(_sample_at(o.t1, fs), claimed))) for o in ops]
+        order = sorted(range(len(ops)), key=lambda i: spans[i][0])
+        end = 0
+        for i in order:
+            if spans[i][0] < end:
+                raise ValueError("多个去噪选区**重叠**：同一段被处理两遍没有定义（宁可不做）")
+            end = spans[i][1]
+        nspans = [(max(0, min(_sample_at(o.noise_t0, fs), claimed)),
+                   max(0, min(_sample_at(o.noise_t1, fs), claimed))) for o in ops]
+        for i, (nk0, nk1) in enumerate(nspans):
+            need = int(ops[i].n_fft)
+            if nk1 - nk0 < need:
+                raise ValueError(
+                    "去噪的噪声段太短：需要至少一个窗长 %d 采样，得到 %d"
+                    "（检查噪声段 %.3f–%.3f s 是否落在文件内）"
+                    % (need, nk1 - nk0, ops[i].noise_t0, ops[i].noise_t1))
+
+        with sf.SoundFile(dst, "w", samplerate=fs, channels=ch, subtype=sub) as g:
+            cursor = 0
+            pos = 0
+            for i in order:
+                k0, k1 = spans[i]
+                if k1 <= k0:
+                    continue
+                pos = cursor = _copy_range(f, g, cursor, k0, blocksize, st)
+                if st["read_error"] is not None:
+                    break
+                f.seek(k0)
+                try:
+                    seg = f.read(k1 - k0, dtype="float64", always_2d=True)
+                    nk0, nk1 = nspans[i]
+                    f.seek(nk0)
+                    noise = f.read(nk1 - nk0, dtype="float64", always_2d=True)
+                except Exception as e:            # noqa: BLE001 —— libsndfile 形形色色
+                    st["read_error"] = e
+                    break
+                if len(seg) < k1 - k0 or len(noise) < nk1 - nk0:   # 声称有、实际读不满
+                    st["read_error"] = OSError(
+                        "声称 %d 帧，向后读时只拿到 %d 帧（段）／噪声 %d 帧"
+                        % (k1 - k0, len(seg), len(noise)))
+                    break
+                op = ops[i]
+                out, sstat = denoise.denoise(seg, noise, reduction_db=op.reduction_db,
+                                             n_fft=op.n_fft, hop=op.hop)
+                recs[i] = {**sstat, "noise_t0": op.noise_t0, "noise_t1": op.noise_t1,
+                           "noise_samples": int(noise.shape[0])}
+                applied[i] = int(seg.shape[0])
+                _account(out, st)
+                g.write(out)
+                pos = cursor = k0 + int(out.shape[0])
+            if st["read_error"] is None:
+                pos = _copy_range(f, g, cursor, claimed, blocksize, st)
+        frames = pos
+
+    return _audit(project, dest, "denoise", fs, ch, sub, frames, claimed, st, applied,
+                  tf_points=None, op_recs=recs)
+
+
 def _audit(project: Project, dest: str, domain: str, fs: int, ch: int, sub: str,
            frames: int, claimed: int, st: dict, applied: list,
            tf_points: list | None, measured: list | None = None,
@@ -689,6 +778,9 @@ def _audit(project: Project, dest: str, domain: str, fs: int, ch: int, sub: str,
     if domain == "dehum":
         #: 去嗡口径：零相位陷波级联（Q=10 与谐波集由 `dehum.py` 的漂移表定）
         audit["algorithm"] = "zerophase_notch_cascade"
+    if domain == "denoise":
+        #: 去噪口径：判决引导先验 SNR 的 Wiener + 从噪声段学谱，见 `denoise.py`
+        audit["algorithm"] = "wiener_dd_profile"
     return audit
 
 
@@ -723,3 +815,11 @@ def render_dehum(source: str, dest: str, t0: float, t1: float, f0: float,
     qq = DEFAULT_Q if q is None else q
     hs = DEFAULT_HARMONICS if harmonics is None else tuple(harmonics)
     return render(Project(source, [DehumOp(t0, t1, f0, qq, hs)]), dest, **kw)
+
+
+def render_denoise(source: str, dest: str, t0: float, t1: float,
+                   noise_t0: float, noise_t1: float,
+                   reduction_db: float | None = None, **kw) -> dict:
+    """便捷入口：单个**去噪**选区（`render()` 的薄封装；噪声段必须给，见 `DenoiseOp`）。"""
+    rd = DEFAULT_REDUCTION_DB if reduction_db is None else reduction_db
+    return render(Project(source, [DenoiseOp(t0, t1, noise_t0, noise_t1, rd)]), dest, **kw)

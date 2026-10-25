@@ -5,9 +5,12 @@
     audiocheck-edit <源> <目标> --declip --at 3.0-3.5 [--bandwidth 18000] [--ceiling 0.98]   # 去削波
     audiocheck-edit <源> <目标> --declick --at 1.0-2.0 [--threshold 4.0]                    # 去咔哒
     audiocheck-edit <源> <目标> --dehum --at 0-999 --hum-f0 50 [--hum-q 10]                 # 去嗡
+    audiocheck-edit <源> <目标> --denoise --at 10-60 --noise-at 0-2 [--reduction-db 20]     # 去噪
 
 五种操作**必须给且只给一种**：`--gain`（时间选区增益 / 加 `--band` 变时频选区）、
-`--declip`（去削波）、`--declick`（去咔哒）或 `--dehum`（去嗡）。
+`--declip`（去削波）、`--declick`（去咔哒）、`--dehum`（去嗡）或 `--denoise`（去噪）。
+⚠ `--denoise` **必须再给 `--noise-at`**（噪声段：只有噪声的一小段，用来学谱）——
+盲估计被实测否决（见 `denoise.py`），不给就拒绝。
 
 三条约定（与 `core/edit/render.py` 一致，不在这一层偷改）
 --------------------------------------------------------
@@ -26,7 +29,7 @@ import json
 import sys
 
 from .cli import _setup_console
-from .core.edit import BandGainOp, DeclickOp, DeclipOp, DehumOp, GainOp, Project, render
+from .core.edit import BandGainOp, DeclickOp, DeclipOp, DehumOp, DenoiseOp, GainOp, Project, render
 
 
 def _parse_range(s: str) -> tuple[float, float]:
@@ -119,6 +122,14 @@ def build_parser() -> argparse.ArgumentParser:
                     help="去咔哒（只改检出样本）。`--threshold` 可省略（实测标定默认 5.0）")
     ap.add_argument("--dehum", action="store_true",
                     help="去嗡（零相位陷波级联）。`--hum-f0` 或 `--hum-auto` 必须给一个")
+    ap.add_argument("--denoise", action="store_true",
+                    help="去噪（Wiener-DD，噪声谱从 `--noise-at` 学）。`--noise-at` 必须给")
+    ap.add_argument("--noise-at", default=None,
+                    help="**噪声段**（秒，半开区间，例如 0-0.5）：必须只有噪声，用来学谱。"
+                         "⚠ 盲估计被实测否决（+10 dB 持续音上 ΔSDR −8.7 dB）")
+    ap.add_argument("--reduction-db", type=float, default=None,
+                    help="去噪的压制上限（dB，默认 20）：增益不低于 −该值。"
+                         "调大压得更狠，但瞬态被削得更软、musical noise 更多")
     ap.add_argument("--hum-f0", type=float, default=None,
                     help="嗡的基频（Hz）。可测输入（频谱上的嗡线），不自动猜")
     ap.add_argument("--hum-auto", action="store_true",
@@ -158,10 +169,19 @@ def main(argv=None) -> int:
     a = build_parser().parse_args(argv)
 
     n_modes = ((1 if a.gain is not None else 0) + (1 if a.declip else 0)
-               + (1 if a.declick else 0) + (1 if a.dehum else 0))
+               + (1 if a.declick else 0) + (1 if a.dehum else 0)
+               + (1 if a.denoise else 0))
     if n_modes != 1:
         print("参数错误：必须且**只**给一种操作：`--gain`（增益，可加 `--band`）／"
-              "`--declip`（去削波）／`--declick`（去咔哒）／`--dehum`（去嗡）")
+              "`--declip`（去削波）／`--declick`（去咔哒）／`--dehum`（去嗡）／"
+              "`--denoise`（去噪）")
+        return 2
+    if a.denoise and a.noise_at is None:
+        print("参数错误：`--denoise` 需要 `--noise-at`（只有噪声的一小段，用来学谱）——"
+              "盲估计被实测否决（+10 dB 持续音上 ΔSDR −8.7 dB），宁可不做")
+        return 2
+    if not a.denoise and (a.noise_at is not None or a.reduction_db is not None):
+        print("参数错误：`--noise-at` / `--reduction-db` 只对 `--denoise` 有效")
         return 2
     if a.dehum and a.hum_f0 is None and not a.hum_auto:
         print("参数错误：`--dehum` 需要 `--hum-f0` 或 `--hum-auto`——"
@@ -192,10 +212,21 @@ def main(argv=None) -> int:
               "`--iterations` / `--threshold` / `--max-run` 都不是去嗡的参数"
               "（它只有 `--hum-f0` / `--hum-q` / `--hum-harmonics`）")
         return 2
+    if a.denoise and (a.band or a.n_fft is not None or a.hop is not None
+                      or a.ceiling is not None or a.bandwidth is not None
+                      or a.iterations is not None or a.threshold is not None
+                      or a.max_run is not None or a.hum_f0 is not None
+                      or a.hum_q is not None or a.hum_harmonics is not None
+                      or a.hum_auto):
+        print("参数错误：去噪没有 `--band` / `--n-fft` / `--hop` / `--ceiling` / "
+              "`--bandwidth` / `--iterations` / `--threshold` / `--max-run` / "
+              "`--hum-*` 这些参数（它只有 `--at` / `--noise-at` / `--reduction-db`）")
+        return 2
 
     try:
         t0, t1 = _parse_range(a.at)
         f0, f1 = _parse_freq(a.band) if a.band else (None, None)
+        n0, n1 = _parse_range(a.noise_at) if a.noise_at else (None, None)
     except ValueError as e:
         print("参数错误：%s" % e)
         return 2
@@ -230,6 +261,11 @@ def main(argv=None) -> int:
             if a.max_run is not None:
                 dkw["max_run"] = None if a.max_run == 0 else a.max_run
             op = DeclickOp(t0, t1, **dkw)
+        elif a.denoise:
+            dkw = {}
+            if a.reduction_db is not None:
+                dkw["reduction_db"] = a.reduction_db
+            op = DenoiseOp(t0, t1, n0, n1, **dkw)
         elif a.dehum:
             dkw = {}
             if a.hum_q is not None:
@@ -329,6 +365,23 @@ def main(argv=None) -> int:
                 print("⚠ **改动面偏大**（>0.5% 的采样）：阈值可能压到了误报区——实测"
                       "误报率到 ~1e-3 时修复会**把信号修坏**（白噪 −13 dB）⇒ 宁可漏、不可错")
         print("算法  %s（两点预测残差 + 全段 MAD 尺子 + 宽度守卫 + 线性插值）" % audit["algorithm"])
+    elif audit["domain"] == "denoise":
+        for op in audit["ops"]:
+            e = op.get("energy_ratio_measured_db")
+            nr = op.get("noise_reduction_measured_db")
+            print("操作  去噪 %.3f–%.3f s：噪声段 %.3f–%.3f s（%d 采样 / %d 帧）｜ "
+                  "压制上限 %.0f dB ｜ STFT %d/%d"
+                  % (op["t0"], op["t1"], op["noise_t0"], op["noise_t1"],
+                     op["noise_samples"], op["noise_frames"], op["reduction_db"],
+                     op["n_fft"], op["hop"]))
+            print("     实测 噪声段压制 %s dB（同一套增益作用在噪声段上量的）｜ "
+                  "选区能量比 %s dB ｜ 处理 %d 帧"
+                  % ("—" if nr is None else "%+.2f" % nr,
+                     "—" if e is None else "%+.3f" % e, op["processed_frames"]))
+        print("⚠ **去噪改整段选区**（逐帧逐 bin 增益）；**瞬态会被削软**（实测单采样脉冲 "
+              "−13.6 dB）——要保住瞬态就降低 `--reduction-db` 或把去噪放在最后。"
+              "**非稳态噪声**没做（N 是噪声段的平均谱）")
+        print("算法  %s（判决引导先验 SNR 的 Wiener + 从噪声段学谱）" % audit["algorithm"])
     elif audit["domain"] == "dehum":
         for op in audit["ops"]:
             e = op.get("energy_ratio_measured_db")
