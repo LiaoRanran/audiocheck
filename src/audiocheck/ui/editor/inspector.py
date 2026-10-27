@@ -60,6 +60,8 @@ class InspectorPanel(QFrame):
         self.btn_ab.setCheckable(True)
         self.btn_ab.toggled.connect(lambda on: self.abToggled.emit(on))
         self._ab_state = False
+        #: 顶点级编辑：当前选中的顶点下标（0-based）；`_show_poly_points` 负责夹紧到合法区间。
+        self._poly_vertex = 0
         ab.addWidget(self.btn_ab)
         self.btn_export = QPushButton("导出项目记录")
         self.btn_export.clicked.connect(self.exportRequested)
@@ -131,26 +133,95 @@ class InspectorPanel(QFrame):
         self._refresh_tool_enabled()
         self.stack_view.blockSignals(False)
 
-    def _show_poly_points(self) -> None:
-        """选中 `PolyGainOp` 条目 ⇒ 顶点表进审计区（逐行 t/f，人可核对）。
+    def _poly_context(self):
+        """当前选中的 `PolyGainOp` 与其栈下标 → `(idx, op)`；不是 poly 则返回 `None`。
 
-        "记录即选区"要**能被读到**：顶点表就是选区本身，人工核对它是审计的一部分。
-        其它 kind 不动审计区（选区点击不打断现有审计内容）。
+        「记录即选区」的可编辑面：顶点表就是选区本身，所以这里把它当**数据**取出来，
+        展示与顶点级微调用**同一个入口**（避免两处逻辑漂移）。
         """
         item = self.stack_view.currentItem()
         if item is None or self._session is None:
-            return
+            return None
         idx = item.data(_IDX_ROLE)
         ops = self._session.ops
         if idx is None or not (0 <= idx < len(ops)):
-            return
+            return None
         op = ops[idx]
         if op.to_dict().get("kind") != "poly_gain":
+            return None
+        return idx, op
+
+    def _show_poly_points(self) -> None:
+        """选中 `PolyGainOp` 条目 ⇒ 顶点表进审计区（逐行 t/f，**可读 + 可微调**）。
+
+        "记录即选区"要**能被读到**、且**能被改到**：
+        * 只读：逐行列出（人工核对它是审计的一部分）；
+        * **编辑（v1.1.1）**：↑/↓ 选顶点，←/→ 平移，Shift 缩放，Alt+↑↓ 改频率
+          （与画布套索同一套键盘口径，只是粒度降到**单个顶点**）；改动经
+          `session.replace_at` 落回栈（构造新 op ⇒ 非破坏语义不变）并刷新视图。
+        其它 kind 不动审计区（点击不打断现有审计内容）。
+        """
+        ctx = self._poly_context()
+        if ctx is None:
             return
-        lines = ["多边形顶点（%d 个，隐式闭合）：" % len(op.points)]
+        _idx, op = ctx
+        self._poly_vertex = max(0, min(self._poly_vertex, len(op.points) - 1))
+        lines = ["多边形顶点（%d 个，隐式闭合）——↑/↓ 选顶点，←/→ 平移，Shift 缩放，Alt+↑↓ 改频率："
+                 % len(op.points)]
         for i, (t, f) in enumerate(op.points, 1):
-            lines.append("  %d. t=%.4f s  f=%.1f Hz" % (i, t, f))
+            mark = "▶" if (i - 1) == self._poly_vertex else " "
+            lines.append(" %s %d. t=%.4f s  f=%.1f Hz" % (mark, i, t, f))
         self.audit_view.setPlainText("\n".join(lines))
+
+    def keyPressEvent(self, ev):  # noqa: N802
+        """**顶点级微调**（选中 `PolyGainOp` 条目时接管方向键）：
+
+        * ↑/↓  ← 换顶点；←/→ ← 时间平移；Shift+方向键 ← 缩放该顶点坐标；Alt+↑/↓ ← 改频率。
+        与画布套索（`editor_view._move_poly`）同一套语义，只是作用粒度从"整条多边形"
+        降到"单个顶点"——**套索能力的上限形态**：画完不仅能整体挪，还能逐点修。
+        """
+        from PySide6.QtCore import Qt
+
+        ctx = self._poly_context()
+        if ctx is None:
+            super().keyPressEvent(ev)
+            return
+        idx, op = ctx
+        k = ev.key()
+        shift = bool(ev.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+        alt = bool(ev.modifiers() & Qt.KeyboardModifier.AltModifier)
+        pts = list(op.points)
+        vi = max(0, min(self._poly_vertex, len(pts) - 1))
+        t, f = pts[vi]
+        if not shift and not alt and k in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+            self._poly_vertex = (vi + (-1 if k == Qt.Key.Key_Up else 1)) % len(pts)
+            self._show_poly_points()
+            return
+        dt = max(float(t) * 0.002, 1e-4)
+        df = max(float(f) * 0.02, 1.0)
+        if shift:
+            st = 1.05 if k in (Qt.Key.Key_Right, Qt.Key.Key_Up) else 1.0 / 1.05
+            if k in (Qt.Key.Key_Left, Qt.Key.Key_Right):
+                t = float(t) * st
+            elif k in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+                f = float(f) * st
+            else:
+                super().keyPressEvent(ev)
+                return
+        elif alt and k in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+            f = float(f) + (df if k == Qt.Key.Key_Up else -df)
+        elif k in (Qt.Key.Key_Left, Qt.Key.Key_Right):
+            t = float(t) + (-dt if k == Qt.Key.Key_Left else dt)
+        elif k in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+            f = float(f) + (df if k == Qt.Key.Key_Up else -df)
+        else:
+            super().keyPressEvent(ev)
+            return
+        pts[vi] = (max(0.0, float(t)), max(20.0, float(f)))
+        from audiocheck.core.edit.ops import PolyGainOp
+        self._session.replace_at(idx, PolyGainOp(points=pts, gain_db=op.gain_db))
+        self._show_poly_points()
+        self.stackChanged.emit()
 
     def _refresh_tool_enabled(self) -> None:
         has = self.stack_view.count() > 0

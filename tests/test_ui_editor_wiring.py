@@ -721,3 +721,31 @@ def test_lasso_keyboard_nudge_translates_and_scales(audio):
         assert 0.0 <= t <= w.view._dur, "时间必须夹紧到 [0, dur]"
         assert 20.0 <= f <= w.view._f1v * 4.0, "频率必须夹紧到可显示范围"
     w.deleteLater()
+
+
+def test_inspector_vertex_level_edit_moves_one_vertex_only(audio):
+    """★ 顶点级编辑（v1.1.1）：↑/↓ 换顶点，←/→ 只动**选中**那个顶点，其余逐位不动。
+
+    这是套索能力的上限：画完不仅能整体挪，还能逐点修。判据强调"只动一个"。
+    """
+    _app()
+    w = EditorWindow(T.THEMES["dark"])
+    w.open_file(audio["cd_full"])
+    w.ops.kind.setCurrentIndex(w.ops.kind.findData("poly_gain"))
+    w.ops._poly = [(0.3, 1000.0), (1.5, 1000.0), (1.5, 4500.0), (0.3, 4500.0)]
+    w.ops.gain_db.setValue(-6.0)
+    w.ops._apply()
+    insp = w.inspector_panel
+    insp.stack_view.setCurrentRow(0)
+    insp._show_poly_points()
+
+    before = list(insp._session.ops[-1].points)
+    # ↓ 换到顶点 2（索引 1），← 平移 ⇒ 只有索引 1 改变
+    insp.keyPressEvent(_key(0x01000015))          # Down → 顶点索引 1
+    insp.keyPressEvent(_key(0x01000012))          # Left → 时间减小
+    after = list(insp._session.ops[-1].points)
+    assert len(after) == 4
+    changed = [i for i in range(4) if after[i] != before[i]]
+    assert changed == [1], "只应改动选中的顶点（得到 %s）" % changed
+    assert after[1][0] < before[1][0], "← 必须使时间减小"
+    w.deleteLater()

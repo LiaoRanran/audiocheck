@@ -25,6 +25,7 @@ from audiocheck.core.edit import (
     DenoiseOp,
     EditSession,
     GainOp,
+    PolyGainOp,
     Project,
     op_from_dict,
 )
@@ -403,3 +404,34 @@ def test_single_op_stack_renders_direct(tmp_path):
     a = sess.render(d, overwrite=True)
     assert "prefix_cache_hits" not in a and "prefix_cache_used" not in a
     assert os.path.exists(d)
+
+
+# ------------------------------------------------- 顶点级编辑（v1.1.1）
+def test_replace_at_swaps_op_and_keeps_depth(tmp_path):
+    """★ `replace_at`（新增）：就地替换一个算子（顶点编辑的底座）。
+
+    非破坏语义不变：替换只是构造新 op，源文件只读；撤销深度不变（不是 apply/undo 的
+    组合，避免污染 redo 栈）。
+    """
+    src = _src(tmp_path, np.zeros((FS, 1)))
+    s = EditSession(src, [GainOp(0.0, 1.0, -2.0)])
+    assert s.replace_at(0, GainOp(0.0, 1.0, -6.0)) is True
+    assert s.ops[0].gain_db == -6.0 and s.undo_depth == 1
+    assert s.redo_depth == 0, "替换不该压 redo"
+    assert s.replace_at(5, GainOp(0.0, 1.0, -1.0)) is False, "越界必须拒绝"
+
+
+def test_poly_vertex_edit_is_recomputable(tmp_path):
+    """★ 顶点编辑端到端：改一个顶点 ⇒ 新 op 替换 ⇒ 渲染结果随之改变且可复算。"""
+    src = _src(tmp_path, np.zeros((FS, 1)))
+    s = EditSession(src, [GainOp(0.0, 1.0, -2.0)])
+    a1 = s.render(str(tmp_path / "o1.wav"), overwrite=True)
+    s.apply(PolyGainOp([(0.0, 100.0), (1.0, 100.0), (1.0, 5000.0), (0.0, 5000.0)], -6.0))
+    a2 = s.render(str(tmp_path / "o2.wav"), overwrite=True)
+    assert a2["audit_digest"] != a1["audit_digest"]
+    # 顶点编辑：把上边界从 5000 收到 2000 ⇒ 改动量必须下降
+    edited = PolyGainOp([(0.0, 100.0), (1.0, 100.0), (1.0, 2000.0), (0.0, 2000.0)], -6.0)
+    s.replace_at(1, edited)
+    a3 = s.render(str(tmp_path / "o3.wav"), overwrite=True)
+    assert a3["ops"][-1]["points"] == [[0.0, 100.0], [1.0, 100.0], [1.0, 2000.0], [0.0, 2000.0]]
+    assert a3["audit_digest"] != a2["audit_digest"]

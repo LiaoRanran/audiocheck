@@ -107,6 +107,22 @@ class EditSession:
         self._redo.clear()
         return True
 
+    def replace_at(self, idx: int, op) -> bool:
+        """**就地替换**第 `idx` 个操作（顶点编辑 / 参数微调的底座）。
+
+        为什么需要它（而不是"undo + apply"）：
+        * 顶点编辑要**保持栈位置**（替换后仍在原处，不影响其它算子的相对顺序）；
+        * 不进 undo/redo —— 它是**同一个作品状态的一次精修**，不是一次新的编辑
+          （与 `remove_at` 同语义：动了栈就清空 redo，避免分叉）。
+        * 非破坏语义不变：只是构造新 op 对象，源文件只读。
+        越界返回 `False`（UI 可无脑调）。
+        """
+        if not (0 <= idx < len(self._ops)):
+            return False
+        self._ops[idx] = op
+        self._redo.clear()
+        return True
+
     def remove_at(self, idx: int) -> bool:
         """删除第 `idx` 个操作（**不进 undo 栈**：删除是破坏性编辑，与"撤销到空栈可复算"
         的判据冲突——撤销应回到"上一版作品"，而不是"少了一项的半截栈"）。
