@@ -290,13 +290,13 @@ EQUIVALENT: dict[str, str] = {
         "`min(blocksize, end − pos)` → `end + pos`：`_copy_range` 只在**首段**（pos=0，两式相同）"
         "与**尾段**（end=claimed）被调用，而 libsndfile 读到 EOF 会截短、循环判据又是 `pos < end`"
         "⇒ 写出的帧数逐位相同。",
-    "src/audiocheck/core/edit/render.py:406:bin:-->+":
+    "src/audiocheck/core/edit/render.py:492:bin:-->+":
         "`(ce − cs + 2*n_fft)` → `ce + cs + …`：**只是把缓冲区加长**。真实音频由 "
         "`buf[lo − src_lo : …] = raw` 按**固定偏移**填入（与总长无关），加长部分全在请求区间 "
         "`[n_fft, n_fft+(ce−cs))` 之外 ⇒ 输出逐位相同。",
-    "src/audiocheck/core/edit/render.py:456:bin:-->+":
+    "src/audiocheck/core/edit/render.py:502:bin:-->+":
         "报错**文案**里的 `hi − lo` → `hi + lo`：只进字符串，没有任何判据读它。",
-    "src/audiocheck/core/edit/render.py:468:cmp:<=-><":
+    "src/audiocheck/core/edit/render.py:504:cmp:<=-><":
         "`if ce <= cs: break`：这一支只在**源被截断**时走到，而上一行已经把 "
         "`st[\"read_error\"]` 置上了 ⇒ 无论 break 与否，外层 `while st[\"read_error\"] is None …`"
         "都会立刻退出（多跑的只是一个长度为 0 的空块）⇒ 输出逐位相同。",
@@ -316,11 +316,11 @@ EQUIVALENT: dict[str, str] = {
     "src/audiocheck/core/edit/stft.py:179:bin:-->+":
         "`wss = np.zeros((M − 1) * hop + n)` → `M + 1`：同上（归一化分母同步加长，"
         "`[n0:n1]` 上逐位相同）⇒ 输出逐位相同。",
-    "src/audiocheck/core/edit/render.py:346:cmp:<=-><":
+    "src/audiocheck/core/edit/render.py:382:cmp:<=-><":
         "`if k1 <= k0: continue` → `<`：两式只在 `k1 == k0` 时不同，而那一点上 "
         "`b[k0−pos:k1−pos]` 是**空切片**（`*=` 无操作）、`applied[i] += k1 − k0 = 0` "
         "⇒ 输出与审计都逐位相同。（`k1 < k0` 时两式都 `continue`。）",
-    "src/audiocheck/core/edit/render.py:467:bin:+->-":
+    "src/audiocheck/core/edit/render.py:503:bin:+->-":
         "`ce = min(ce, lo + len(raw))` → `lo − len(raw)`：这一支只在**短读**时走到，"
         "而实测本机 libsndfile：**WAV** 被截断时按文件大小**重算帧数**（`claimed` 就等于实有帧数"
         "⇒ 永不短读）、**FLAC** 截断后读到损坏处会**抛** `LibsndfileError`（走 `except` 支）"
@@ -345,12 +345,12 @@ EQUIVALENT: dict[str, str] = {
     "src/audiocheck/core/edit/corpus.py:192:bin:*->/":
         "`amp * sign` → `amp / sign`：本函数的 `sign` 语义是**脉冲极性**（`±1`），"
         "而 `±1` 的倒数等于自身 ⇒ 两种写法逐位相同（判据 `test_click_train_*` 用的是 `sign=1`）。",
-    "src/audiocheck/core/edit/render.py:610:bin:-->+":
+    "src/audiocheck/core/edit/render.py:646:bin:-->+":
         "`_render_declip` 报错**文案**里的 `k1 − k0` → `k1 + k0`：只进字符串，"
         "没有任何判据读它（与 band 路径的同型条目一致）。",
-    "src/audiocheck/core/edit/render.py:681:bin:-->+":
+    "src/audiocheck/core/edit/render.py:717:bin:-->+":
         "`_render_declick` 报错**文案**里的 `k1 − k0` → `k1 + k0`：同上，只进字符串。",
-    "src/audiocheck/core/edit/render.py:754:bin:-->+":
+    "src/audiocheck/core/edit/render.py:791:bin:-->+":
         "`_render_dehum` 报错**文案**里的 `k1 − k0` → `k1 + k0`：同上，只进字符串。",
     # --- 2026-10-20（去咔哒这一轮）：declick.py 的等价体 ---
     "src/audiocheck/core/edit/declick.py:259:cmp:>=->>":
@@ -369,16 +369,16 @@ EQUIVALENT: dict[str, str] = {
     "src/audiocheck/core/edit/report.py:242:bool:or->and":
         "`os.makedirs(os.path.dirname(p) or '.')`：`write_report` 先 `abspath` 再落盘 "
         "⇒ `dirname(p)` 永不为空，`or '.'` 支在可达域内不可执行 ⇒ 等价。",
-    "src/audiocheck/core/edit/render.py:668:cmp:<=-><":
+    "src/audiocheck/core/edit/render.py:704:cmp:<=-><":
         "`_render_declick` 的 `if k1 <= k0: continue` → `<`：两式只在 `k1 == k0`（空选区）时不同，"
         "而那一点上 `f.read(0)` 返回空数组、`declick.declick` 对空数组不产出任何样本、"
         "`_copy_range(cursor, k0)` 也不写任何字节 ⇒ 输出与审计都逐位相同。",
     # --- 2026-10-25（复合操作这一轮）：`PHASE` 的秩只关心相对顺序 ---
-    "src/audiocheck/core/edit/render.py:235:const:5->6":
+    "src/audiocheck/core/edit/render.py:271:const:5->6":
         "`gain` 的相位 5 → 6：已知 kind 只占 **0–5**（declick 0 / declip 1 / dehum 2 / "
         "denoise 3 / band_gain 4 / gain 5），6 仍严格大于全部已知相位、小于未知兜底(99) ⇒ "
         "任何输入下排序结果完全相同。",
-    "src/audiocheck/core/edit/render.py:240:const:99->100":
+    "src/audiocheck/core/edit/render.py:276:const:99->100":
         "未知 kind 的兜底相位 99 → 100：两者都大于全部已知相位（0–5），稳定排序下未知操作"
         "仍排在最后、且未知操作之间保持输入顺序 ⇒ 输出逐位相同。",
     # --- 2026-10-26（去噪这一轮）：P 的分子守卫 + 两处只进字符串的算术 ---
@@ -390,10 +390,10 @@ EQUIVALENT: dict[str, str] = {
         "gamma 守卫 `max(P,1e-30)`：P ≥ 0 恒成立，P ∈ (0,1e-30) 测度为零，P=0 时两版都给"
         "gamma≈0 ⇒ 在可达域内数值恒同（判据 test_digital_silence_inside_segment_stays_finite "
         "钉住的是'有限'，两版都满足）。",
-    "src/audiocheck/core/edit/render.py:815:bin:-->+":
+    "src/audiocheck/core/edit/render.py:874:bin:-->+":
         "`_render_denoise` 报错**文案**里的 `nk1 − nk0` → `nk1 + nk0`：只进字符串，"
         "没有任何判据读它（与其它路径的同型条目一致）。",
-    "src/audiocheck/core/edit/render.py:840:bin:-->+":
+    "src/audiocheck/core/edit/render.py:877:bin:-->+":
         "`_render_denoise` 报错**文案**里的 `k1 − k0` → `k1 + k0`：同上，只进字符串。",
     # --- 2026-10-26（破音语料）：极性只取 ±1 ⇒ 乘除同值 ---
     "src/audiocheck/core/edit/corpus.py:224:bin:*->/":

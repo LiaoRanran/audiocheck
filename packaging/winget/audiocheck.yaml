@@ -1,0 +1,26 @@
+# winget 清单模板（提交到 microsoft/winget-pkgs 时拆成三条 manifest：
+# version / installer / locale.zh-CN）。占位符 <...> 在发布时用真实值替换。
+PackageIdentifier: LiaoRanran.audiocheck
+PackageName: audiocheck
+Publisher: LiaoRanran
+License: MIT
+ShortDescription: 可审计的音频修复工作站（去削波/去咔哒/去嗡/去噪 + 频谱体检）
+Moniker: audiocheck
+Tags:
+  - audio
+  - audio-restoration
+  - audacity-alternative
+  - spectral-analysis
+  - hippo
+PackageUrl: https://github.com/LiaoRanran/audiocheck
+InstallerType: zip
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/LiaoRanran/audiocheck/releases/download/v1.1.0/audiocheck-1.1.0-win64.zip
+    InstallerSha256: <installer-sha256>
+    NestedInstallerType: portable
+    NestedInstallerFiles:
+      - RelativeFilePath: audiocheck\audiocheck.exe
+        PortableCommandAlias: audiocheck
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

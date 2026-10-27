@@ -211,12 +211,13 @@ def test_silence_is_a_noop(tmp_path):
 
 
 # ------------------------------------------------------------------ 4. 两条拒绝
-def test_overlapping_declip_selections_are_refused(tmp_path):
+def test_overlapping_declip_selections_chain_in_stack_order(tmp_path):
+    """★ 重叠不再拒绝（v1.1）：走链式渲染，栈顺序即语义。"""
     p = _pack()
     src = _write(tmp_path / "a.wav", p["clipped"])
     proj = Project(src, [DeclipOp(0.0, 0.5, B), DeclipOp(0.4, 0.9, B)])
-    with pytest.raises(ValueError, match="重叠"):
-        render(proj, str(tmp_path / "b.wav"))
+    audit = render(proj, str(tmp_path / "b.wav"))
+    assert audit.get("chained") is True and len(audit["stages"]) == 2
 
 
 def test_disjoint_declip_selections_are_applied_in_order(tmp_path):

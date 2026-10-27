@@ -200,16 +200,20 @@ def test_declick_op_validates_its_inputs():
     assert DeclickOp(0.0, 1.0, max_run=1).max_run == 1
 
 
-def test_overlapping_selections_are_refused_but_mixing_is_chained(tmp_path):
-    """同域**重叠**仍拒绝（同一段处理两遍的语义未立判据）；
-    混用不同域的算子**不再拒绝** —— 2026-10-24 起按规范顺序链式渲染（见 `test_edit_chain.py`）。"""
+def test_overlapping_and_mixing_both_chain(tmp_path):
+    """同域**重叠**与混域一样走链式（v1.1 起：栈顺序即语义）。
+
+    历史：同域重叠此前拒绝（"先改哪段没有定义"）；现在定义 = **后一个作用在前一个的
+    结果上**——与混域链式同一条原则。
+    """
     clean = _smooth()
     src = _write(tmp_path / "a.wav", _clicked(clean)["clicked"])
-    with pytest.raises(ValueError, match="重叠"):
-        render(Project(src, [DeclickOp(0.0, 1.0), DeclickOp(0.5, 1.5)]), str(tmp_path / "b.wav"))
-    audit = render(Project(src, [DeclickOp(0.0, 1.0), DeclipOp(0.0, 1.0, 21600.0)]),
-                   str(tmp_path / "c.wav"))
-    assert audit["chained"] is True and len(audit["stages"]) == 2
+    a1 = render(Project(src, [DeclickOp(0.0, 1.0), DeclickOp(0.5, 1.5)]),
+                str(tmp_path / "b.wav"))
+    assert a1["chained"] is True and len(a1["stages"]) == 2
+    a2 = render(Project(src, [DeclickOp(0.0, 1.0), DeclipOp(0.0, 1.0, 21600.0)]),
+                str(tmp_path / "c.wav"))
+    assert a2["chained"] is True and len(a2["stages"]) == 2
 
 
 def test_silence_is_a_noop(tmp_path):

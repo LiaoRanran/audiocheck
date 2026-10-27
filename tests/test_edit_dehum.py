@@ -193,11 +193,12 @@ def test_render_changes_the_selection_and_nothing_else(tmp_path):
     assert not np.array_equal(y[k0:k1], x[k0:k1])
 
 
-def test_render_refuses_overlapping_dehum_selections(tmp_path):
+def test_overlapping_dehum_selections_chain_in_stack_order(tmp_path):
+    """★ 重叠不再拒绝（v1.1）：走链式渲染（前一个的输出是后一个的输入）。"""
     src = _write(tmp_path, np.zeros((FS, 1)))
     dst = str(tmp_path / "out.wav")
-    with pytest.raises(ValueError, match="重叠"):
-        render(Project(src, [DehumOp(0.0, 0.6, 50.0), DehumOp(0.4, 0.8, 60.0)]), dst)
+    audit = render(Project(src, [DehumOp(0.0, 0.6, 50.0), DehumOp(0.4, 0.8, 60.0)]), dst)
+    assert audit.get("chained") is True and len(audit["stages"]) == 2
 
 
 def test_render_chains_dehum_with_other_domains(tmp_path):

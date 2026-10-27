@@ -18,7 +18,7 @@ import soundfile as sf
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
-from audiocheck.core.edit import GainOp, Project, render, render_gain  # noqa: E402
+from audiocheck.core.edit import DeclickOp, GainOp, Project, render, render_gain  # noqa: E402
 
 FS = 48000
 
@@ -333,3 +333,45 @@ def test_source_hash_is_content_addressed(tmp_path):
     a2 = render(Project(s2, [GainOp(0.0, 1.0, -2.0)]), str(tmp_path / "o2.wav"))
     assert a1["source_sha256"] == a2["source_sha256"], "同内容源 ⇒ 同源哈希"
     assert a1["audit_digest"] == a2["audit_digest"], "⇒ 同审计摘要"
+
+
+# ------------------------------------------------- 同域多算子：重叠改为顺序串联（v1.1）
+def test_overlapping_same_domain_ops_chain_in_stack_order(tmp_path):
+    """★ **同域重叠不再拒绝**：两个 DeclickOp 重叠 ⇒ 按栈顺序串联（后者作用在前者结果上）。
+
+    此前实现直接拒绝（"先改哪段没有定义"）。现在有定义：**操作栈的顺序就是语义**——
+    与混域链式渲染同一条原则。判据：重叠两算子的结果 == 逐个串行渲染的中间产物
+    （1-ULP float32 容差，链式中间文件是 FLOAT）。
+    """
+    import numpy as np
+    x = (0.4 * np.sin(2 * np.pi * 440 * np.arange(2 * FS) / FS))[:, None].copy()
+    for pos in (0.5, 1.0, 1.5):
+        x[int(pos * FS), 0] += 0.9
+    src = str(tmp_path / "a.wav")
+    sf.write(src, x.astype(np.float32), FS, subtype="FLOAT")
+
+    ops = [DeclickOp(0.0, 1.2), DeclickOp(0.8, 2.0)]      # 重叠 [0.8, 1.2)
+    d1 = str(tmp_path / "o1.wav")
+    audit = render(Project(src, list(ops)), d1)
+    assert audit.get("chained") is True, "同域多算子应走链式路径"
+    assert len(audit["stages"]) == 2
+
+    # 串行等价：先渲第一个，再把结果当源渲第二个
+    mid = str(tmp_path / "mid.wav")
+    render(Project(src, [ops[0]]), mid)
+    d2 = str(tmp_path / "o2.wav")
+    render(Project(mid, [ops[1]]), d2)
+    a, _ = sf.read(d1, dtype="float64", always_2d=True)
+    b, _ = sf.read(d2, dtype="float64", always_2d=True)
+    tol = np.finfo(np.float32).eps * 8.0 * float(np.abs(a).max() + 1e-12)
+    assert float(np.abs(a - b).max()) <= tol, float(np.abs(a - b).max())
+
+
+def test_non_overlapping_same_domain_still_single_pass(tmp_path):
+    """不重叠的同域多算子**仍可**走单趟路径（性能不变）——不强制链式。"""
+    x = (0.3 * np.sin(2 * np.pi * 440 * np.arange(2 * FS) / FS))[:, None].copy()
+    src = str(tmp_path / "a.wav")
+    sf.write(src, x.astype(np.float32), FS, subtype="FLOAT")
+    audit = render(Project(src, [DeclickOp(0.0, 0.4), DeclickOp(1.0, 1.4)]),
+                   str(tmp_path / "o.wav"))
+    assert not audit.get("chained"), "不重叠应保持单趟"

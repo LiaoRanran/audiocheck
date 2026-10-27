@@ -200,6 +200,20 @@ def render(project: Project, dest: str, *, subtype: str | None = None,
     if not ops or all(isinstance(o, GainOp) for o in ops):
         return _render_time(project, dest, subtype=subtype, blocksize=blocksize,
                             overwrite=overwrite, dither=dither)
+    # ⚠ **同域多算子且选区重叠** ⇒ 走链式（v1.1 起）：重叠的"先后语义"现在有定义了——
+    # **操作栈的顺序就是语义**（后一个作用在前一个的结果上），与混域链式同一条原则。
+    # 不重叠时仍走单趟路径（性能不变）。判据：
+    # `test_overlapping_same_domain_ops_chain_in_stack_order`。
+    same_domain_single = (
+        all(isinstance(o, (BandGainOp, PolyGainOp)) for o in ops)
+        or all(isinstance(o, DeclipOp) for o in ops)
+        or all(isinstance(o, DeclickOp) for o in ops)
+        or all(isinstance(o, DehumOp) for o in ops)
+        or all(isinstance(o, DenoiseOp) for o in ops))
+    if same_domain_single and len(ops) > 1 and _spans_overlap(ops):
+        return _render_chained(project, dest, subtype=subtype, blocksize=blocksize,
+                               overwrite=overwrite, n_fft=n_fft, hop=hop,
+                               chunk_hops=chunk_hops, dither=dither)
     if all(isinstance(o, (BandGainOp, PolyGainOp)) for o in ops):
         return _render_band(project, dest, subtype=subtype, blocksize=blocksize,
                             overwrite=overwrite, n_fft=n_fft, hop=hop,
@@ -219,6 +233,28 @@ def render(project: Project, dest: str, *, subtype: str | None = None,
     return _render_chained(project, dest, subtype=subtype, blocksize=blocksize,
                            overwrite=overwrite, n_fft=n_fft, hop=hop,
                            chunk_hops=chunk_hops, dither=dither)
+
+
+def _spans_overlap(ops) -> bool:
+    """同域多算子的时间选区是否**两两重叠**（按 `[t0, t1)` 排序后扫一遍）。
+
+    `PolyGainOp` 用顶点时间包络；其它用 `t0/t1`。重叠 ⇒ 单趟路径无法表达顺序语义
+    ⇒ 调用方转链式渲染。
+    """
+    spans = []
+    for o in ops:
+        if isinstance(o, PolyGainOp):
+            ts = [t for t, _ in o.points]
+            spans.append((min(ts), max(ts)))
+        else:
+            spans.append((float(o.t0), float(o.t1)))
+    spans.sort()
+    end = float("-inf")
+    for lo, hi in spans:
+        if lo < end:
+            return True
+        end = max(end, hi)
+    return False
 
 
 #: 复合操作的**规范顺序**（相位号，小的先做）。依据是 `packaging/op_order_probe.py`：
@@ -559,8 +595,8 @@ def _render_declip(project: Project, dest: str, *, subtype: str | None,
     "带限"这条**全局**约束（对整个选区做一次 FFT），分块会把约束切断、接缝处必然出现
     台阶。所以本路径把**选区**整段载入内存：内存 ≈ `选区采样 × 声道 × 8 B × ~4`。
     选区之外**逐位不变**（原样拷贝）；选区之内**非饱和样本逐位不变**。
-    ⚠ 多个去削波的选区**不许重叠**（顺序语义未立判据）⇒ 这里先校验完再动目标文件，
-    免得留下半截输出。
+    ⚠ 多个去削波的选区**重叠时会走链式渲染**（`render()` 分派，v1.1 起：栈顺序即语义）。
+    本函数只处理**不重叠**的多选区（单趟、性能不变）。
     """
     src, dst = _check_dest(project.source, dest, overwrite)
     ops = list(project.ops)
@@ -585,7 +621,7 @@ def _render_declip(project: Project, dest: str, *, subtype: str | None,
         end = 0
         for i in order:
             if spans[i][0] < end:
-                raise ValueError("多个去削波选区**重叠**：先改哪段没有定义（宁可不做）")
+                raise AssertionError("重叠应由 render() 分派到链式路径——这是内部不变量")
             end = spans[i][1]
 
         with sf.SoundFile(dst, "w", samplerate=fs, channels=ch, subtype=sub) as g:
@@ -631,7 +667,7 @@ def _render_declick(project: Project, dest: str, *, subtype: str | None,
     """去咔哒路径：**逐选区整段载入**（探测器的 MAD 尺子是**全段**统计量 ⇒ **不分块**），
 
     只改**检出样本**：选区之外**逐位不变**，选区之内**未被检出的样本逐位不变**。
-    ⚠ 多个去咔哒的选区**不许重叠**（顺序语义未立判据）⇒ 先校验完再动目标文件。
+    ⚠ 多个去咔哒的选区**重叠时走链式渲染**（栈顺序即语义）；本函数只处理不重叠的多选区。
     """
     src, dst = _check_dest(project.source, dest, overwrite)
     ops = list(project.ops)
@@ -656,7 +692,7 @@ def _render_declick(project: Project, dest: str, *, subtype: str | None,
         end = 0
         for i in order:
             if spans[i][0] < end:
-                raise ValueError("多个去咔哒选区**重叠**：先改哪段没有定义（宁可不做）")
+                raise AssertionError("重叠应由 render() 分派到链式路径——这是内部不变量")
             end = spans[i][1]
 
         with sf.SoundFile(dst, "w", samplerate=fs, channels=ch, subtype=sub) as g:
@@ -704,7 +740,8 @@ def _render_dehum(project: Project, dest: str, *, subtype: str | None,
 
     ⚠ 与去削波/去咔哒的差别：陷波是 **LTI** ⇒ **整段选区都被改动**（不是"只改检出样本"）。
     选区之外仍然**逐位不变**（原样拷贝）；选区之内被改的采样数如实记 `changed_samples`。
-    ⚠ 多个去嗡的选区**不许重叠**（同一段被滤两遍的语义未立判据）⇒ 先校验完再动目标文件。
+    ⚠ 多个去嗡的选区**重叠时走链式渲染**（栈顺序即语义，前一个的输出是后一个的输入）；
+    本函数只处理不重叠的多选区。
     """
     src, dst = _check_dest(project.source, dest, overwrite)
     ops = list(project.ops)
@@ -729,7 +766,7 @@ def _render_dehum(project: Project, dest: str, *, subtype: str | None,
         end = 0
         for i in order:
             if spans[i][0] < end:
-                raise ValueError("多个去嗡选区**重叠**：同一段被滤两遍没有定义（宁可不做）")
+                raise AssertionError("重叠应由 render() 分派到链式路径——这是内部不变量")
             end = spans[i][1]
 
         with sf.SoundFile(dst, "w", samplerate=fs, channels=ch, subtype=sub) as g:
@@ -802,7 +839,7 @@ def _render_denoise(project: Project, dest: str, *, subtype: str | None,
         end = 0
         for i in order:
             if spans[i][0] < end:
-                raise ValueError("多个去噪选区**重叠**：同一段被处理两遍没有定义（宁可不做）")
+                raise AssertionError("重叠应由 render() 分派到链式路径——这是内部不变量")
             end = spans[i][1]
         nspans = [(max(0, min(_sample_at(o.noise_t0, fs), claimed)),
                    max(0, min(_sample_at(o.noise_t1, fs), claimed))) for o in ops]

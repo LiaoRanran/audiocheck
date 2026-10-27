@@ -284,14 +284,15 @@ def test_short_noise_read_is_reported_even_when_the_segment_is_full(tmp_path, mo
     assert audit["frames"] < audit["frames_claimed"], "短读后不该继续写完整文件"
 
 
-def test_overlapping_denoise_selections_are_refused(tmp_path):
+def test_overlapping_denoise_selections_chain_in_stack_order(tmp_path):
+    """★ 重叠不再拒绝（v1.1）：走链式渲染，栈顺序即语义（后者作用在前者结果上）。"""
     _, noisy, _, lead = _pack()
     src = _write(tmp_path, noisy)
     dst = str(tmp_path / "out.wav")
-    with pytest.raises(ValueError, match="重叠"):
-        render(Project(src, [DenoiseOp(LEAD, 1.4, 0.0, LEAD),
-                             DenoiseOp(1.2, 2.0, 0.0, LEAD)]), dst)
-    assert not os.path.exists(dst), "拒绝路径不许留下半截目标"
+    audit = render(Project(src, [DenoiseOp(LEAD, 1.4, 0.0, LEAD),
+                                 DenoiseOp(1.2, 2.0, 0.0, LEAD)]), dst)
+    assert audit.get("chained") is True and len(audit["stages"]) == 2
+    assert os.path.exists(dst)
 
 
 def test_profile_outside_the_file_is_rejected_before_writing(tmp_path):
