@@ -326,10 +326,10 @@ EQUIVALENT: dict[str, str] = {
         "⇒ 永不短读）、**FLAC** 截断后读到损坏处会**抛** `LibsndfileError`（走 `except` 支）"
         "⇒ 在已验证的两种容器上不可达；留着是**防御性**的（未穷举其它容器）。",
     # --- 2026-10-18（P3 去削波这一轮）：新模块 declip.py / corpus.py 的等价体 ---
-    "src/audiocheck/core/edit/declip.py:162:cmp:>=->>":
+    "src/audiocheck/core/edit/declip.py:175:cmp:>=->>":
         "`sign = np.where(a >= 0.0, 1, −1)` → `>`：两者只在 `a == 0.0` 时分叉，而 `sign` **只**在"
         "饱和样本处被读（`sg[s]`），饱和样本满足 `|a| ≥ ceiling > 0` ⇒ 恒非 0 ⇒ 该等号不可达。",
-    "src/audiocheck/core/edit/declip.py:158:cmp:<=-><":
+    "src/audiocheck/core/edit/declip.py:171:cmp:<=-><":
         "`ambiguous = bool(margin <= 0.0)` → `<`：两者只在 `margin` **恰好等于 0.0** 时分叉，"
         "而 margin = `(1−f) − B/(fs/2)` 是两个连续量之差 ⇒ 该等号**概率为 0**（不可区分；"
         "门槛两侧的语义都是「边界」）。",

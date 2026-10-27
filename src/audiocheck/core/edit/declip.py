@@ -38,6 +38,16 @@ import numpy as np
 #: 不是"够用了"的手感；调用方可显式调大（`DeclipOp.iterations`）。
 DEFAULT_ITERATIONS = 128
 
+#: **超松弛系数**（over-relaxation，2026-10-27 落地；`packaging/declip_relax_probe.py` 实测）。
+#: 迭代末尾对整体更新做外推：`x ← x + λ·(P(x) − x)`，λ=1 即经典 POCS。
+#: 实测（中度削波，128 次）：λ=1 → ΔSDR **+41.0**；λ=2 → **+70.2**（+29.2 dB）。
+#: **为何取 2.0 而不是更大**：λ∈{2.5,3,4} 仍在改善（+85/+100/+130），但 λ=6 发散
+#: （末步 +216 dB、幅度爆炸）——λ=2 距发散点 3 倍余量，且恰在凸集交替投影的
+#: 经典收敛上界。**硬约束在各 λ 下均严格成立**（实测）：已知样本逐位不变、
+#: 饱和样本 |x|≥c 且同号、带外泄漏随 λ 增大单调下降（−85.8 → −173.7 dB @λ=4）。
+#: 全语料 10/10 不退化（含欠定、强先验、带限白噪、不同迭代数）。
+DEFAULT_RELAXATION = 2.0
+
 
 def _as2d(x: np.ndarray) -> np.ndarray:
     a = np.asarray(x, dtype=np.float64)
@@ -59,7 +69,8 @@ def _runs(mask_1d: np.ndarray) -> list:
 
 
 def reconstruct(y: np.ndarray, ceiling: float | None, fs: int, bandwidth: float,
-                iterations: int = DEFAULT_ITERATIONS):
+                iterations: int = DEFAULT_ITERATIONS,
+                relaxation: float = DEFAULT_RELAXATION):
     """对 `(samples, channels)` 做去削波，返回 `(out, stats)`。**只改饱和样本**。
 
     三相交替投影（每轮）：
@@ -115,6 +126,8 @@ def reconstruct(y: np.ndarray, ceiling: float | None, fs: int, bandwidth: float,
         "runs": 0,
         "longest_run": 0,
         "iterations": int(iterations),
+        #: 超松弛系数（1.0 = 经典 POCS；默认 2.0，见 `DEFAULT_RELAXATION` 的实测表）
+        "relaxation": float(relaxation),
         "band_limited": False,
         "noop": False,
         "replaced_samples": 0,
@@ -168,12 +181,19 @@ def reconstruct(y: np.ndarray, ceiling: float | None, fs: int, bandwidth: float,
         sg = sign[:, c]
         d = 0.0
         for _ in range(int(iterations)):
-            before = x
+            before = x.copy()
             X = np.fft.rfft(x)
             X[~keep] = 0.0
             x = np.fft.irfft(X, n=n)
             x[k] = a[k, c]                           # 已知样本逐位写回
             x[s] = sg[s] * np.maximum(np.abs(x[s]), ceiling)   # 削波不等式投影
+            if relaxation != 1.0:
+                # **超松弛外推**：x ← before + λ·(P(before) − before)。外推后**重新施加
+                # 两个硬投影**（已知样本逐位、削波不等式）——外推只加速"往解去"，
+                # 绝不允许破坏硬约束（判据 `test_declip_relaxation_keeps_hard_constraints`）。
+                x = before + relaxation * (x - before)
+                x[k] = a[k, c]
+                x[s] = sg[s] * np.maximum(np.abs(x[s]), ceiling)
             d = float(np.sqrt(np.mean((x - before) ** 2)))
         step_last = max(step_last, d)                # 跨声道取**末步**最坏那个
         out[:, c] = x

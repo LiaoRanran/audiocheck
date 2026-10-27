@@ -270,17 +270,32 @@ def test_step_and_converged_are_measured_not_guessed():
     """`step_rms_db` = 迭代**末步**相对本段的 dB；`converged` = 末步**恰好为 0**（精确判据）。
 
     ⚠ 值也是**钉住的**（同一输入下 `20·log10(step/scale)` 只能得到一个数）：这样
-    "dB 系数""比值方向""分母"这类改动**都跑不掉**（实测 moderate/B=21.6k/128 次 ⇒ **−89.0 dB**）。
+    "dB 系数""比值方向""分母"这类改动**都跑不掉**。
+
+    ⚠ **超松弛（默认 λ=2.0）改变收敛形态**（2026-10-27 实测）：λ=1 在轻削波 3000 次到
+    **精确**不动点（末步 0 ⇒ `None`）；λ=2 则以极小步长持续微调（末步 −335.7 dB，
+    比 λ=1 精确得多但**非精确 0**）。所以：
+    * 经典收敛判据用 **λ=1 显式**钉住（回归保护）；
+    * 默认 λ=2 的判据改为"末步极小且 `converged=False`"（如实反映"还在动"）。
     """
     p = corpus.band_limited_noise(1.0, fs=FS, bandwidth=21600.0, seed=1)
-    q = corpus.clipped(p, "light")                  # 轻削波：迭代很快到**精确**不动点
-    few = declip.reconstruct(q["clipped"], q["ceiling"], FS, 21600.0, iterations=4)[1]
-    many = declip.reconstruct(q["clipped"], q["ceiling"], FS, 21600.0, iterations=3000)[1]
+    q = corpus.clipped(p, "light")                  # 轻削波：λ=1 时很快到**精确**不动点
+    few = declip.reconstruct(q["clipped"], q["ceiling"], FS, 21600.0, iterations=4,
+                             relaxation=1.0)[1]
+    many = declip.reconstruct(q["clipped"], q["ceiling"], FS, 21600.0, iterations=3000,
+                              relaxation=1.0)[1]
     assert few["converged"] is False and few["step_rms_db"] is not None
     assert many["converged"] is True and many["step_rms_db"] is None, "末步为 0 就该报 None"
 
+    # 默认 λ=2：末步极小但仍非精确 0（"还在微调"，如实报 False）
+    dflt = declip.reconstruct(q["clipped"], q["ceiling"], FS, 21600.0, iterations=3000)[1]
+    assert dflt["relaxation"] == 2.0
+    assert dflt["converged"] is False
+    assert dflt["step_rms_db"] < -200.0, dflt["step_rms_db"]
+
     m = corpus.clipped(p, "moderate")
-    st = declip.reconstruct(m["clipped"], m["ceiling"], FS, 21600.0, iterations=128)[1]
+    st = declip.reconstruct(m["clipped"], m["ceiling"], FS, 21600.0, iterations=128,
+                            relaxation=1.0)[1]
     assert st["converged"] is False
     assert -89.5 < st["step_rms_db"] < -88.5, st["step_rms_db"]
 
@@ -399,3 +414,53 @@ def test_reconstruct_refuses_a_fully_saturated_segment():
     """整段都在饱和 ⇒ 一个已知样本都没有 ⇒ 重建纯属编造，**抛错**（宁可不做）。"""
     with pytest.raises(ValueError, match="整段都在饱和"):
         declip.reconstruct(np.full((256, 1), 0.5), 0.5, FS, B)
+
+
+# ------------------------------------------------- 超松弛（v1.1.3，实测落地）
+def test_relaxation_is_the_default_and_reported():
+    """★ 超松弛默认 2.0 且进审计；显式 1.0 回到经典 POCS（口径可查）。"""
+    p = corpus.clipped(corpus.band_limited_noise(0.5, fs=FS, bandwidth=18000.0, seed=1),
+                       "moderate")
+    st = declip.reconstruct(p["clipped"], p["ceiling"], FS, 18000.0, iterations=32)[1]
+    assert st["relaxation"] == 2.0
+    st1 = declip.reconstruct(p["clipped"], p["ceiling"], FS, 18000.0, iterations=32,
+                             relaxation=1.0)[1]
+    assert st1["relaxation"] == 1.0
+
+
+def test_relaxation_keeps_hard_constraints():
+    """★ **超松弛绝不允许破坏硬约束**：已知样本逐位不变、饱和样本 |x|≥c 且同号。
+
+    外推后重新施加两个硬投影就是为了这条（实测 λ 直到 4 都严格成立）。
+    """
+    c = corpus.harmonic_tone(1.0, FS, amp=0.5, seed=3)
+    truth = c * 2.2
+    y = np.clip(truth, -0.9, 0.9)
+    floor = 0.9
+    sat = (np.abs(y[:, 0]) >= floor * (1 - 1e-12))
+    known = ~sat
+    sg = np.where(y[:, 0] >= 0, 1.0, -1.0)
+    for lam in (1.5, 2.0, 3.0):
+        out, _ = declip.reconstruct(y, floor, FS, 18000.0, iterations=64, relaxation=lam)
+        o1 = out[:, 0]
+        assert np.array_equal(o1[known], y[known, 0]), "λ=%.1f 破坏了已知样本逐位不变" % lam
+        s = o1[sat]
+        assert np.all(np.abs(s) >= floor * (1 - 1e-9)), "λ=%.1f 破坏了 |x|≥c" % lam
+        assert np.all(np.sign(s) == sg[sat]), "λ=%.1f 破坏了符号" % lam
+
+
+def test_relaxation_improves_recovery_without_regression():
+    """★ 超松弛的收益（实测）：中度削波 128 次 ΔSDR +41.0(λ=1) → **+70.2(λ=2)**；
+    且**带限白噪**上同样不退化（+19.0 → +21.6）。"""
+    for label, truth in (("谐波", corpus.harmonic_tone(1.0, FS, amp=0.5, seed=3) * 2.2),
+                         ("白噪", corpus.band_limited_noise(1.0, fs=FS, bandwidth=15000.0,
+                                                            seed=7) * 2.0)):
+        y = np.clip(truth, -0.9, 0.9)
+        base = sdr_db(y, truth) or 0.0
+        o1, _ = declip.reconstruct(y, 0.9, FS, 18000.0, iterations=128, relaxation=1.0)
+        o2, _ = declip.reconstruct(y, 0.9, FS, 18000.0, iterations=128, relaxation=2.0)
+        d1 = (sdr_db(o1, truth) or 0) - base
+        d2 = (sdr_db(o2, truth) or 0) - base
+        assert d2 >= d1, "%s：超松弛不许退化（λ=1 %.2f vs λ=2 %.2f）" % (label, d1, d2)
+        if label == "谐波":
+            assert d2 - d1 > 20.0, "谐波素材上应显著提升（实测 +29.2），得到 %+.2f" % (d2 - d1)
