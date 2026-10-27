@@ -1,0 +1,15 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+PackageIdentifier: LiaoRanran.audiocheck
+PackageVersion: 1.1.2
+PackageLocale: zh-CN
+Publisher: LiaoRanran
+PackageName: audiocheck
+License: MIT
+ShortDescription: 可审计的音频修复工作站（去削波/去咔哒/去嗡/去噪 + 频谱体检）
+Tags:
+  - audio
+  - audio-restoration
+  - audacity-alternative
+  - spectral-analysis
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

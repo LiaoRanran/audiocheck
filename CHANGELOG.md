@@ -62,6 +62,10 @@ Gerkmann–Hendriks 软 SPP、一致性交叉淡化（+0.00）、稀疏/ADMM 去
   不进 undo/redo（"同一作品状态的精修"而非新编辑）；越界返回 `False`。
 - 判据 3 条（替换不污染 redo 栈、顶点编辑端到端可复算、只动选中顶点）。
 - 发布物料：制品 126.6MB zip + SHA256；GUI 冒烟（offscreen 启动成功）。
+- **已发布**：<https://github.com/LiaoRanran/audiocheck/releases/tag/v1.1.2> —— 含
+  `audiocheck-1.1.2-win64.zip`（126.6MB，SHA256 见 `.sha256`）。源码与 3 个 tag
+  （v1.1.0 / v1.1.1 / v1.1.2）已推送 origin。
+- winget 清单（`packaging/winget-pkgs/`，三条 manifest 已备）待提交 microsoft/winget-pkgs PR。
 
 ---
 
