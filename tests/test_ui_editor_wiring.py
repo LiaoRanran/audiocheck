@@ -682,3 +682,42 @@ def test_inspector_shows_poly_vertex_details_on_selection(audio):
     assert "多边形顶点（4 个" in txt
     assert "t=0.3000 s  f=1000.0 Hz" in txt
     w.deleteLater()
+
+
+def _key(code, mods=None):
+    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtGui import QKeyEvent
+
+    return QKeyEvent(QEvent.Type.KeyPress, code,
+                     Qt.KeyboardModifier(mods) if mods else Qt.KeyboardModifier.NoModifier)
+
+
+def test_lasso_keyboard_nudge_translates_and_scales(audio):
+    """★ 套索键盘微调（v1.1.1）：方向键平移、Shift+方向键缩放、Alt+↑/↓ 频率平移。
+
+    此前套索画完只能重画——这是 P2 可用性的缺口。步长口径与矩形选区一致（视野 2%）。
+    """
+    _app()
+    w = EditorWindow(T.THEMES["dark"])
+    w.open_file(audio["cd_full"])
+    w.view._poly_sel = [(0.4, 1000.0), (0.8, 1000.0), (0.8, 4000.0), (0.4, 4000.0)]
+    got = []
+    w.view.polySelected.connect(lambda pts: got.append(list(pts)))
+
+    # ← 平移（时间减小）
+    w.view.keyPressEvent(_key(0x01000012))          # Qt.Key_Left
+    assert len(got) == 1
+    moved = got[-1]
+    assert moved[0][0] < 0.4, "← 必须向时间减小方向平移"
+    # Shift+→ 缩放（横向放大）
+    before = [t for t, _ in w.view._poly_sel]
+    w.view.keyPressEvent(_key(0x01000014, 0x02000000))   # Key_Right + Shift
+    after = [t for t, _ in w.view._poly_sel]
+    assert (max(after) - min(after)) > (max(before) - min(before)), "Shift+→ 必须横向放大"
+    # 夹紧：疯狂左移后不得出现负数或超出时长
+    for _ in range(200):
+        w.view.keyPressEvent(_key(0x01000012))
+    for t, f in w.view._poly_sel:
+        assert 0.0 <= t <= w.view._dur, "时间必须夹紧到 [0, dur]"
+        assert 20.0 <= f <= w.view._f1v * 4.0, "频率必须夹紧到可显示范围"
+    w.deleteLater()

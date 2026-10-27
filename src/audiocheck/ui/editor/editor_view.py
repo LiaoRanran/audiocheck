@@ -99,8 +99,9 @@ class EditorView(BaseCanvas):
         self._t0, self._t1 = 0.0, 1.0
         self._f0v, self._f1v = F_MIN, F_MAX
 
-        # 选区
+        # 选区（矩形 `[t0,t1]×[f0,f1]`；`_poly_sel` = 套索顶点表，二者互斥存其一）
         self._sel: tuple[float, float, float, float] | None = None
+        self._poly_sel: list[tuple[float, float]] = []
         self._selecting = False
         self._sel_anchor: tuple[float, float] | None = None
 
@@ -341,6 +342,8 @@ class EditorView(BaseCanvas):
         self._lasso_pts = []
         self._clear_lasso_line()
         if len(pts) >= 3:
+            # 保留顶点表 ⇒ 之后可用方向键微调（不必重画）
+            self._poly_sel = pts
             self.polySelected.emit(pts)
         self.draw_idle()
 
@@ -488,11 +491,62 @@ class EditorView(BaseCanvas):
             return
         # 键盘选区：方向键微调 / Shift+方向扩展（验收 §"键盘可建/可调选区"）。
         # 步长取当前视野的 2%（可见即所调），不依赖绝对栅格。
-        if self._has_data() and self._move_selection(ev):
+        if self._has_data() and self._move_selection(ev):        # poly 优先（见 _move_poly）
             return
         super().keyPressEvent(ev)
 
+    def _move_poly(self, ev) -> bool:
+        """**套索（多边形）选区的键盘微调**（v1.1.1）：画完不必重画。
+
+        * 方向键 ←/→  ⇒ 整体**平移**（按视野 2% 的步长，与矩形同口径）；
+        * Shift+方向键 ⇒ 以包围盒中心**缩放**（横向 ×1.05，纵向 ×1.05）；
+        * Alt+↑/↓      ⇒ 频率方向**平移**；
+        * 平移后**夹紧**到 `[0, dur]` × `[F_MIN, F_MAX]`（超界即钳住，不静默丢弃）。
+        返回是否处理了按键。
+        """
+        pts = self._poly_sel
+        if not pts:
+            return False
+        k = ev.key()
+        shift = bool(ev.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+        alt = bool(ev.modifiers() & Qt.KeyboardModifier.AltModifier)
+        dt = max((self._t1 - self._t0) * 0.02, self._dur * 1e-4)
+        ts = [t for t, _ in pts]
+        fs_ = [f for _, f in pts]
+        if shift:                                   # 绕包围盒中心缩放
+            ct = (min(ts) + max(ts)) / 2.0
+            cf = (min(fs_) + max(fs_)) / 2.0
+            st = 1.05 if k in (Qt.Key.Key_Right, Qt.Key.Key_Up) else 1.0 / 1.05
+            if k in (Qt.Key.Key_Left, Qt.Key.Key_Right):
+                pts = [((ct + (t - ct) * st), f) for t, f in pts]
+            elif k in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+                pts = [(t, cf + (f - cf) * st) for t, f in pts]
+            else:
+                return False
+        else:                                       # 平移
+            if alt and k in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+                df = max((self._f1v - self._f0v) * 0.02, 1.0)
+                d = df if k == Qt.Key.Key_Up else -df
+                pts = [(t, f + d) for t, f in pts]
+            elif k in (Qt.Key.Key_Left, Qt.Key.Key_Right):
+                d = -dt if k == Qt.Key.Key_Left else dt
+                pts = [(t + d, f) for t, f in pts]
+            elif k in (Qt.Key.Key_Up, Qt.Key.Key_Down):
+                df = max((self._f1v - self._f0v) * 0.02, 1.0)
+                d = df if k == Qt.Key.Key_Up else -df
+                pts = [(t, f + d) for t, f in pts]
+            else:
+                return False
+        # 夹紧（超界钳住，不静默丢点）
+        pts = [(min(max(0.0, t), self._dur), min(max(F_MIN, f), F_MAX)) for t, f in pts]
+        self._poly_sel = pts
+        self.polySelected.emit(pts)
+        self.draw_idle()
+        return True
+
     def _move_selection(self, ev) -> bool:
+        if self._poly_sel:
+            return self._move_poly(ev)
         sel = self._sel
         if sel is None:
             # 还没选区：方向键先建一个默认选区（全程中点一段）
