@@ -44,6 +44,9 @@ SECONDS = 1.0
 SIDE = 16          # 每侧锚点数
 PG_ITER = 400      # P-G 迭代次数
 
+#: 探针用的超松弛系数：**跟内核默认走**（从内核读，不在这里写死第二份）。
+RELAXATION = __import__("audiocheck.core.edit.declip", fromlist=["DEFAULT_RELAXATION"]).DEFAULT_RELAXATION
+
 
 # ------------------------------------------------------------------ 候选重建法
 def _anchors(v, mask, a, b, side):
@@ -115,22 +118,13 @@ def recon_pocs(y, ceiling, fs, bandwidth, n_iter=PG_ITER):
 
     三轮交替投影：① 砍带外（带限集）② 写回已知样本（一致集）③ 饱和样本钳到 `>= c`。
     """
-    out = y.copy()
-    n = y.shape[0]
-    f = np.fft.rfftfreq(n, 1.0 / fs)
-    keep = f <= bandwidth
-    for ch in range(y.shape[1]):
-        x = out[:, ch].copy()
-        sat = saturation_mask(x[:, None], ceiling)[:, 0]
-        k = ~sat
-        sign = np.where(out[:, ch] >= 0.0, 1.0, -1.0)
-        for _ in range(n_iter):
-            X = np.fft.rfft(x)
-            X[~keep] = 0.0
-            x = np.fft.irfft(X, n=n)
-            x[k] = out[k, ch]
-            x[sat] = sign[sat] * np.maximum(np.abs(x[sat]), ceiling)
-        out[:, ch] = x
+    # ⚠ **委托内核**（2026-10-27）：探针此前有自己的一份 POCS 实现，与内核漂移了
+    # （内核 v1.1.3 起默认超松弛 λ=2.0）。探针必须量**真实在跑的实现**，否则
+    # 收敛表与文档会和产品不符。`relaxation` 参数留给"经典 vs 超松弛"对照。
+    from audiocheck.core.edit import declip as _kernel
+    out, _stats = _kernel.reconstruct(y, ceiling, fs, bandwidth,
+                                      iterations=n_iter, relaxation=RELAXATION)
+    return out
     return out
 
 
