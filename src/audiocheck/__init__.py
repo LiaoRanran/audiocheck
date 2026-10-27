@@ -17,7 +17,7 @@ summarize   批量结果汇总
 '伪 Hi-Res（容器 96.0kHz，内容仅到 19.0kHz）'
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __all__ = ["analyze", "collect_files", "Thresholds", "ANALYZERS", "register", "Analyzer"]
 
 from .config import Thresholds  # noqa: E402

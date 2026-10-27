@@ -43,10 +43,27 @@ from .core.edit import (
     DehumOp,
     DenoiseOp,
     GainOp,
+    PolyGainOp,
     Project,
     op_from_dict,
     render,
 )
+
+
+def _parse_poly(s: str):
+    """`--poly` 顶点串 → [(t, f), …]：分号分隔、逗号成对；数值交给 `PolyGainOp` 校验。"""
+    pts = []
+    for chunk in s.split(";"):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        parts = chunk.split(",")
+        if len(parts) != 2:
+            raise ValueError("顶点必须是 \"t,f\" 数对，得到 %r" % chunk)
+        pts.append((float(parts[0]), float(parts[1])))
+    if len(pts) < 3:
+        raise ValueError("多边形至少 3 个顶点，得到 %d" % len(pts))
+    return pts
 
 
 def _parse_range(s: str) -> tuple[float, float]:
@@ -129,8 +146,10 @@ def _auto_hum_f0(source: str) -> tuple[float, dict]:
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="audiocheck-edit",
                                  description="非破坏编辑：把操作渲染到新文件，并给出审计记录")
-    ap.add_argument("source", help="源音频（只读，永不修改）")
-    ap.add_argument("dest", help="输出文件（不许等于源）")
+    ap.add_argument("source", nargs="?", default=None,
+                    help="源音频（只读，永不修改）。`--batch`／`--batch-help` 模式下可省略")
+    ap.add_argument("dest", nargs="?", default=None,
+                    help="输出文件（不许等于源）。`--batch` 模式下省略（目标写在清单里）")
     ap.add_argument("--gain", type=float, default=None,
                     help="选区增益（dB）。0 = 无操作（no-op，逐位不变）")
     ap.add_argument("--declip", action="store_true",
@@ -144,6 +163,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--noise-at", default=None,
                     help="**噪声段**（秒，半开区间，例如 0-0.5）：必须只有噪声，用来学谱。"
                          "⚠ 盲估计被实测否决（+10 dB 持续音上 ΔSDR −8.7 dB）")
+    ap.add_argument("--no-floor-track", action="store_true",
+                    help="关掉**逐帧噪声底跟踪**（默认开：噪声床在选区里台阶变化时跟随；"
+                         "稳态素材上代价 ≤0.7 dB，关掉回到 v1 固定谱行为）")
     ap.add_argument("--reduction-db", type=float, default=None,
                     help="去噪的压制上限（dB，默认 20）：增益不低于 −该值。"
                          "调大压得更狠，但瞬态被削得更软、musical noise 更多")
@@ -174,11 +196,20 @@ def build_parser() -> argparse.ArgumentParser:
                     help="**项目记录**（JSON，`Project.to_dict` 的格式）：按记录里的操作栈"
                          "**链式渲染**（规范顺序）。与逐操作参数互斥；记录里的 source 必须与"
                          "命令行给的一致")
+    ap.add_argument("--batch", default=None,
+                    help="**批处理**：JSON 作业清单（见 `--batch-help`），每项是一个独立的小"
+                         "工程（source + 操作栈 + 目标）。逐项渲染、**互相隔离**（一项失败不会"
+                         "拖累其余）；汇总每项的成功/失败。与 `--project`／逐操作参数互斥")
+    ap.add_argument("--batch-help", action="store_true",
+                    help="打印批处理作业清单的格式说明并退出")
     ap.add_argument("--save-project", default=None,
                     help="把**本次实际执行**的项目记录写成 JSON（可复算）。"
                          "⚠ 不能与 `--project` 同时用（读进来的记录不需要再存一遍）")
     ap.add_argument("--band", default=None,
                     help="频段（Hz，半开区间），给了就走**时频**路径，形如 4000-8000")
+    ap.add_argument("--poly", default=None,
+                    help='**多边形选区**（与 --gain 搭配，代替 --at/--band）：顶点串'
+                         '="t1,f1;t2,f2;…"（秒,Hz，≥3 对；隐式闭合）。属内判据=射线法')
     ap.add_argument("--n-fft", type=int, default=None,
                     help="时频路径的 STFT 窗长（默认 4096；只对 --band 有效）")
     ap.add_argument("--hop", type=int, default=None,
@@ -189,16 +220,128 @@ def build_parser() -> argparse.ArgumentParser:
                          "⚠ 全文件重量化：未编辑处的逐位不变承诺不再成立")
     ap.add_argument("--overwrite", action="store_true", help="允许覆盖已存在的目标")
     ap.add_argument("--audit", default=None, help="把审计记录另存为 JSON")
+    ap.add_argument("--report", default=None,
+                    help="把审计记录排成**人可读的 Markdown 报告**（机械排版：不新增判断、"
+                         "不改写数值；None 排成'未测'；与 --audit 同用可得机器+人两份")
+    ap.add_argument("--chain", default=None,
+                    help="套用**修复链预设**（只含操作栈、不绑源的 JSON，`save_chain` 产出）："
+                         "把同一套修复配方套到本命令给的源上；与算子 flag/--at/--project 互斥")
     return ap
+
+
+def _with_timestamp(audit: dict) -> dict:
+    """CLI 层给审计补 **UTC 时间戳**（SWGDE 口径）——`render` 保持纯函数，墙钟属调用方。"""
+    from datetime import datetime, timezone
+    out = dict(audit)
+    out["timestamp_utc"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return out
+
+
+def _save_report(a, audit: dict) -> int:
+    """`--report`：把审计记录排成人可读 Markdown（机械排版，见 `core/edit/report.py`）。"""
+    if not a.report:
+        return 0
+    from audiocheck.core.edit.report import write_report
+    try:
+        write_report(audit, a.report)
+    except OSError as e:
+        print("审计报告写不出去：%s" % e)
+        return 2
+    print("报告  %s" % a.report)
+    return 0
+
+
+def _main_chain(a) -> int:
+    """`--chain`：把**修复链预设**（无源操作栈）套到本命令的源上渲染。
+
+    与 `--project` 的分工：项目记录 = 源 + 栈（复算一个具体产物，源必须一致）；
+    修复链 = 栈（配方，套到**任何**源——同一套修复批量过曲库的入口）。
+    渲染走的是同一条链式路径（规范顺序 + 审计），没有任何"链特例"。
+    """
+    from audiocheck.core.edit.ops import Project, load_chain
+
+    try:
+        ops = load_chain(a.chain)
+    except OSError as e:
+        print("修复链读不了：%s" % e)
+        return 2
+    except ValueError as e:
+        print("拒绝：%s" % e)
+        return 2
+    proj = Project(a.source, list(ops))
+    kw = {}
+    if a.n_fft is not None:
+        kw["n_fft"] = a.n_fft
+    if a.hop is not None:
+        kw["hop"] = a.hop
+    try:
+        audit = render(proj, a.dest, subtype=a.subtype,
+                       overwrite=a.overwrite, dither=a.dither, **kw)
+    except FileExistsError as e:
+        print("目标已存在：%s（要覆盖请加 --overwrite）" % e)
+        return 5
+    except ValueError as e:
+        print("拒绝：%s" % e)
+        return 2
+    except Exception as e:                       # noqa: BLE001 —— 源读不了的各种形态
+        print("**源读不了**：%s" % e)
+        return 4
+
+    print("源    %s" % audit["source"])
+    print("目标  %s" % audit["dest"])
+    print("格式  %d Hz ｜ %d 声道 ｜ %s" % (audit["samplerate"], audit["channels"],
+                                            audit["subtype"]))
+    print("链    %s（%d 个操作）" % (a.chain, len(ops)))
+    print("长度  %d 帧（%.3f s）" % (audit["frames"], audit["duration_s"]))
+    if a.audit:
+        try:
+            with open(a.audit, "w", encoding="utf-8") as f:
+                json.dump(_with_timestamp(audit), f, ensure_ascii=False, indent=2)
+        except OSError as e:
+            print("审计记录写不出去：%s" % e)
+            return 2
+        print("审计  %s" % a.audit)
+    rc = _save_report(a, audit)
+    if rc:
+        return rc
+    if a.save_project:
+        try:
+            with open(a.save_project, "w", encoding="utf-8") as f:
+                json.dump(proj.to_dict(), f, ensure_ascii=False, indent=2)
+        except OSError as e:
+            print("项目记录写不出去：%s" % e)
+            return 2
+        print("项目  %s" % a.save_project)
+    return 0
 
 
 def main(argv=None) -> int:
     _setup_console()
     a = build_parser().parse_args(argv)
+    if a.batch_help:
+        _print_batch_help()
+        return 0
+    if a.batch is not None:
+        return _main_batch(a)
     if a.project is not None:
         return _main_project(a)
-    if a.at is None:
-        print("参数错误：需要 `--at`（时间选区，例如 12.5-14.0）；"
+    if a.chain is not None:
+        n_modes = ((1 if a.gain is not None else 0) + (1 if a.declip else 0)
+                   + (1 if a.declick else 0) + (1 if a.dehum else 0)
+                   + (1 if a.denoise else 0))
+        if n_modes != 0 or a.at is not None:
+            print("参数错误：`--chain` 不能与算子 flag / `--at` 同给"
+                  "（链文件里已经是完整操作栈）")
+            return 2
+        return _main_chain(a)
+    if a.poly is not None and (a.at is not None or a.band is not None):
+        print("参数错误：`--poly` 自带完整选区，不能与 `--at`/`--band` 同给")
+        return 2
+    if a.poly is not None and a.gain is None:
+        print("参数错误：`--poly` 与 `--gain` 搭配使用（多边形内施加增益）")
+        return 2
+    if a.at is None and a.poly is None:
+        print("参数错误：需要 `--at`（时间选区，例如 12.5-14.0）或 `--poly`（多边形选区）；"
               "要按项目记录跑请用 `--project`")
         return 2
 
@@ -258,9 +401,10 @@ def main(argv=None) -> int:
         return 2
 
     try:
-        t0, t1 = _parse_range(a.at)
+        t0, t1 = _parse_range(a.at) if a.at is not None else (0.0, 0.0)
         f0, f1 = _parse_freq(a.band) if a.band else (None, None)
         n0, n1 = _parse_range(a.noise_at) if a.noise_at else (None, None)
+        poly_pts = _parse_poly(a.poly) if a.poly is not None else None
     except ValueError as e:
         print("参数错误：%s" % e)
         return 2
@@ -299,6 +443,8 @@ def main(argv=None) -> int:
             dkw = {}
             if a.reduction_db is not None:
                 dkw["reduction_db"] = a.reduction_db
+            if a.no_floor_track:
+                dkw["track_floor"] = False
             op = DenoiseOp(t0, t1, n0, n1, **dkw)
         elif a.dehum:
             dkw = {}
@@ -320,6 +466,8 @@ def main(argv=None) -> int:
             else:
                 f0_hum = a.hum_f0
             op = DehumOp(t0, t1, f0_hum, **dkw)
+        elif a.poly is not None:
+            op = PolyGainOp(points=poly_pts, gain_db=a.gain)
         else:
             op = (BandGainOp(t0, t1, f0, f1, a.gain) if a.band
                   else GainOp(t0, t1, a.gain))
@@ -345,9 +493,14 @@ def main(argv=None) -> int:
     if audit["domain"] == "band":
         for op in audit["ops"]:
             m = op.get("attenuation_measured_db")
-            print("操作  时频选区 %.3f–%.3f s × %.1f–%.1f Hz：设定 %+.1f dB ｜ 实测 %s ｜ 改动 %d 个时频点"
-                  % (op["t0"], op["t1"], op["f0"], op["f1"], op["gain_db"],
-                     "—" if m is None else "%+.2f dB" % m, op["applied_tf_points"]))
+            if op.get("kind") == "poly_gain":
+                print("操作  多边形选区（%d 顶点）：设定 %+.1f dB ｜ 实测 %s ｜ 改动 %d 个时频点"
+                      % (len(op.get("points", [])), op["gain_db"],
+                         "—" if m is None else "%+.2f dB" % m, op["applied_tf_points"]))
+            else:
+                print("操作  时频选区 %.3f–%.3f s × %.1f–%.1f Hz：设定 %+.1f dB ｜ 实测 %s ｜ 改动 %d 个时频点"
+                      % (op["t0"], op["t1"], op["f0"], op["f1"], op["gain_db"],
+                         "—" if m is None else "%+.2f dB" % m, op["applied_tf_points"]))
         print("STFT  n_fft %d ｜ hop %d ｜ 窗 %s"
               % (audit["n_fft"], audit["hop"], audit["window"]))
         # 实测为什么可能比设定浅/深：在**同一套 STFT 表示**里量，所以这里报的是
@@ -463,11 +616,14 @@ def main(argv=None) -> int:
     if a.audit:
         try:
             with open(a.audit, "w", encoding="utf-8") as f:
-                json.dump(audit, f, ensure_ascii=False, indent=2)
+                json.dump(_with_timestamp(audit), f, ensure_ascii=False, indent=2)
         except OSError as e:
             print("审计记录写不出去：%s" % e)
             return 2
         print("审计  %s" % a.audit)
+    rc = _save_report(a, audit)
+    if rc:
+        return rc
     if a.save_project:
         try:
             with open(a.save_project, "w", encoding="utf-8") as f:
@@ -517,6 +673,125 @@ def _print_chain(audit: dict) -> None:
                      "无（全零信号）" if floor is None else "%.1f" % floor))
     if audit.get("reordered_from"):
         print("注  顺序被规范化（原始顺序见审计 `reordered_from`）")
+
+
+def _print_batch_help() -> None:
+    print("批处理作业清单格式（JSON 数组，每项一个小工程）：")
+    print()
+    print('  [')
+    print('    { "source": "in1.wav", "dest": "out1.wav",')
+    print('      "ops": [ {"kind":"declip","t0":3.0,"t1":3.5,"ceiling":null,')
+    print('                "bandwidth":18000,"bandwidth_source":"given","iterations":128} ],')
+    print('      "subtype": "PCM_16", "overwrite": false },')
+    print('    { "source": "in2.flac", "dest": "out2.flac", "ops": [ ... ] }')
+    print('  ]')
+    print()
+    print("  ⚠ 每项的 `ops` 是 `Project.to_dict` 里 `ops` 数组的**同一个格式**（kind + 精确字段集）。")
+    print("  ⚠ 与 `--project` 同源：记录里的 `source` 被忽略、**改用作业项自己的 source**")
+    print("    （批处理里 source 必须可枚举，不藏在记录里）；`dest` 必须给。")
+    print("  ⚠ 通用项：`subtype`（默认沿用各 source）、`overwrite`（默认 false）、`dither`（默认 false）。")
+    print()
+    print("退出码：0 = 全部成功 ｜ 2 = 清单本身不可用（读不了/不是数组/缺字段）｜")
+    print("        否则仍 0，但汇总会列出**逐项**的成功/失败（失败项不阻断其余）。")
+
+
+def _migrate_and_parse(op_dict, ver: int):
+    """批处理作业的 op 解析：先按作业版本显式迁移，再走严格 schema（与 --project 同源）。"""
+    from audiocheck.core.edit.ops import _migrate
+    return op_from_dict(_migrate(op_dict, ver))
+
+
+def _main_batch(a) -> int:
+    """`--batch`：逐项渲染一个作业清单，**互相隔离**（一项失败不影响其余）。
+
+    这就是 `Project.to_dict` 记录的可复算能力在"多条音轨"上的延展：每条作业就是一个
+    独立的小工程，复用 `--project` 已经验证过的 `Project.from_dict` + `render` 链路。
+    与单条 `--project` 的区别：
+    * source 在作业项里给（不藏在记录里），更符合"批处理要枚举一堆输入"的用法；
+    * 任一项抛异常都被**就地接住**，记成该项的失败，继续跑下一项；
+    * 末尾汇总"几项成功 / 几项失败 + 失败原因"，让用户一眼看到哪条没跑成。
+    """
+    if a.dest is not None and a.source is not None:
+        print("参数错误：`--batch` 是清单驱动，不能再用 `<源> <目标>` 位置参数"
+              "（把源/目标写进清单每一项）")
+        return 2
+    if a.project is not None or a.at is not None or a.gain is not None \
+            or a.declip or a.declick or a.dehum or a.denoise:
+        print("参数错误：`--batch` 与 `--project`／逐操作参数互斥（清单自己决定每项做什么）")
+        return 2
+    try:
+        with open(a.batch, encoding="utf-8") as f:
+            jobs = json.load(f)
+    except OSError as e:
+        print("批处理清单读不了：%s" % e)
+        return 2
+    except json.JSONDecodeError as e:
+        print("批处理清单不是合法 JSON：%s" % e)
+        return 2
+    if not isinstance(jobs, list) or not jobs:
+        print("批处理清单必须是非空数组（每项一个小工程），得到 %r" % type(jobs).__name__)
+        return 2
+
+    # 先做**结构**校验：每一项都必须是 dict 且带 `source`/`dest`。这是"清单本身
+    # 不可用"的判定（帮助里写的 `缺字段 ⇒ 2`）——只要有一项结构残缺就整体拒绝，
+    # 不让用户带着坏清单跑掉 99 项才发现问题。运行期故障（kind 不认识、源读不了、
+    # 写出失败）则留在下面的逐项 try/except 里**互相隔离**，不阻断其余。
+    for i, job in enumerate(jobs):
+        if not isinstance(job, dict):
+            print("批处理清单第 %d 项不是对象（dict），得到 %r" % (i, type(job).__name__))
+            return 2
+        if "source" not in job or "dest" not in job:
+            print("批处理清单第 %d 项缺 `source` 或 `dest`，结构不可用" % i)
+            return 2
+
+    n_ok = 0
+    n_fail = 0
+    failures = []
+    for i, job in enumerate(jobs):
+        tag = job.get("dest") or job.get("source") or ("#%d" % i)
+        try:
+            # 作业可带 `"version": 1|2`（缺省 1 = 历史清单：denoise 无 track_floor 键
+            # ⇒ 显式迁移补 False，旧清单可复算）。v2 = 严格 schema（缺键按缺字段拒）。
+            ver = int(job.get("version", 1))
+            if ver not in (1, 2):
+                raise ValueError("不认识的作业版本 %r（支持 1 / 2）" % job.get("version"))
+            ops = job.get("ops", [])
+            proj = Project(job["source"], [_migrate_and_parse(x, ver) for x in ops])                 if ops else None
+            if proj is None:
+                proj = Project(job["source"], [])  # 空栈（恒等渲染，便于"只转格式"）
+            audit = render(proj, job["dest"],
+                           subtype=job.get("subtype"),
+                           overwrite=bool(job.get("overwrite", False)),
+                           dither=bool(job.get("dither", False)))
+            if job.get("audit"):
+                with open(job["audit"], "w", encoding="utf-8") as fh:
+                    json.dump(audit, fh, ensure_ascii=False, indent=2)
+            if job.get("report"):
+                from audiocheck.core.edit.report import write_report
+                write_report(audit, job["report"])
+        except (ValueError, json.JSONDecodeError, FileExistsError, OSError) as e:
+            n_fail += 1
+            failures.append((tag, str(e)))
+            print("✗ [%s] 失败：%s" % (tag, e))
+            continue
+        except Exception as e:                          # noqa: BLE001 —— 源读不了等杂项
+            n_fail += 1
+            failures.append((tag, "**源读不了**：%s" % e))
+            print("✗ [%s] 失败：%s" % (tag, e))
+            continue
+        n_ok += 1
+        print("✓ [%s] 成功 → %s（%d 个操作 ｜ %d 帧）"
+              % (tag, audit["dest"], len(audit["ops"]), audit["frames"]))
+
+    print("\n批处理汇总：%d 项成功 ／ %d 项失败（共 %d 项）"
+          % (n_ok, n_fail, len(jobs)))
+    if failures:
+        print("失败明细：")
+        for tag, why in failures:
+            print("  - %s：%s" % (tag, why))
+    # 全部成功才 0；有失败但清单合法 ⇒ 仍以 0 退出（失败已逐项记录，不阻断其余）；
+    # 只有"清单本身不可用"才 2（上面已 return）。
+    return 0 if n_fail == 0 else 0
 
 
 def _main_project(a) -> int:
@@ -578,11 +853,14 @@ def _main_project(a) -> int:
     if a.audit:
         try:
             with open(a.audit, "w", encoding="utf-8") as f:
-                json.dump(audit, f, ensure_ascii=False, indent=2)
+                json.dump(_with_timestamp(audit), f, ensure_ascii=False, indent=2)
         except OSError as e:
             print("审计记录写不出去：%s" % e)
             return 2
         print("审计  %s" % a.audit)
+    rc = _save_report(a, audit)
+    if rc:
+        return rc
     return 0
 
 

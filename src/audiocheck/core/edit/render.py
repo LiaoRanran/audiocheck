@@ -51,7 +51,7 @@ from .declick import DEFAULT_MAX_RUN, DEFAULT_THRESHOLD
 from .dehum import DEFAULT_HARMONICS, DEFAULT_Q
 from .denoise import DEFAULT_REDUCTION_DB
 from .metrics import band_gain_db, energy_ratio_db
-from .ops import BandGainOp, DeclickOp, DeclipOp, DehumOp, DenoiseOp, GainOp, Project
+from .ops import BandGainOp, DeclickOp, DeclipOp, DehumOp, DenoiseOp, GainOp, PolyGainOp, Project
 
 #: 一次读入的帧数（与 `analyzers/basic.py` 的读块同量级）。
 BLOCKSIZE = 1 << 16
@@ -68,8 +68,11 @@ _DITHER_SEED = 0
 #: 频域路径的默认 STFT 参数。**这个 `n_fft` 与频谱图显示用的 `nperseg=16384` 不同，
 #: 是有意的**（显示要平滑的统计谱，编辑要局部性：4096 @48k ⇒ 时间分辨率 ~85 ms、
 #: 频率分辨率 ~11.7 Hz）。`docs/theory.md §12.1` 要求"视图与编辑共用同一套 STFT 参数"
-#: ——那是对**在频谱图上直接刷**的 P2 视图的要求；等 P2 的选区视图落地时必须把两边
-#: 口径对齐，否则"看到的"和"刷到的"不是同一个时频格。CLI 已暴露 `--n-fft`/`--hop`。
+#: ——那是对**在频谱图上直接刷**的 P2 视图的要求。**P2 套索已落地（2026-10-27）**：
+#: 套索顶点是连续 (t, f) 数据坐标、与显示网格无关 ⇒ 看/刷口径在多边形语义下天然解耦
+#: （显示格比编辑格细是有意的——显示要平滑统计、编辑要局部性；解析注记见
+#: `editor_view` 模块 docstring）。矩形/多边形掩膜的**粒度**仍是本文件的编辑网格
+#: （4096）；CLI 已暴露 `--n-fft`/`--hop`。
 DEFAULT_N_FFT = 4096
 
 #: 频域路径的分块粒度（块长 = `CHUNK_HOPS * hop` 个采样）。内存 ≈ 4×块长×声道×8B。
@@ -197,7 +200,7 @@ def render(project: Project, dest: str, *, subtype: str | None = None,
     if not ops or all(isinstance(o, GainOp) for o in ops):
         return _render_time(project, dest, subtype=subtype, blocksize=blocksize,
                             overwrite=overwrite, dither=dither)
-    if all(isinstance(o, BandGainOp) for o in ops):
+    if all(isinstance(o, (BandGainOp, PolyGainOp)) for o in ops):
         return _render_band(project, dest, subtype=subtype, blocksize=blocksize,
                             overwrite=overwrite, n_fft=n_fft, hop=hop,
                             chunk_hops=chunk_hops, dither=dither)
@@ -228,7 +231,8 @@ def render(project: Project, dest: str, *, subtype: str | None = None,
 #: * 电平类（band_gain / gain）**最后**：修复阶段应当看到**原始电平**——自动削波电平
 #:   （`ceiling=None` 时从数据里读峰值）与检测门限都从数据里量，先改电平会让它们读错。
 #: 同相位内保持用户给的相对顺序（`sorted` 是稳定的）。
-PHASE = {"declick": 0, "declip": 1, "dehum": 2, "denoise": 3, "band_gain": 4, "gain": 5}
+PHASE = {"declick": 0, "declip": 1, "dehum": 2, "denoise": 3, "band_gain": 4,
+         "poly_gain": 4, "gain": 5}
 
 
 def canonical_order(ops) -> list:
@@ -353,6 +357,50 @@ def _render_time(project: Project, dest: str, *, subtype: str | None,
                   tf_points=None, dither=dither)
 
 
+def _point_in_poly(px: np.ndarray, py: np.ndarray, poly) -> np.ndarray:
+    """**射线法**（ray casting）向量化：点 `(px, py)` 是否在多边形 `poly` 内部。
+
+    `px/py` 任意广播形状；返回同形状 bool。**边界行为是实现定义**（`px < x_edge` 的
+    严格不等号给出"左/下边缘在外"的语义）——选区坐标应偏离谱点网格以避开边界
+    （见 `PolyGainOp` 的 docstring）。完全确定性、无随机。
+    """
+    inside = np.zeros(np.broadcast_shapes(np.shape(px), np.shape(py)), dtype=bool)
+    n = len(poly)
+    for i in range(n):
+        x1, y1 = poly[i]
+        x2, y2 = poly[(i + 1) % n]
+        if y1 == y2:
+            continue                                  # 水平边：对跨线计数无贡献
+        crosses = (y1 > py) != (y2 > py)
+        x_at = (x2 - x1) * (py - y1) / (y2 - y1) + x1
+        inside ^= crosses & (px < x_at)
+    return inside
+
+
+def _op_t0(op) -> float:
+    """选区起始时间（矩形用 t0；多边形用顶点最小 t）。"""
+    if isinstance(op, PolyGainOp):
+        return min(t for t, _ in op.points)
+    return op.t0
+
+
+def _op_t1(op) -> float:
+    """选区结束时间（矩形用 t1；多边形用顶点最大 t）。"""
+    if isinstance(op, PolyGainOp):
+        return max(t for t, _ in op.points)
+    return op.t1
+
+
+def _region_mask(op, bins: np.ndarray, times: np.ndarray | None):
+    """算子的时频掩膜。矩形（BandGainOp）：`times is None` 时给 **bin 向**掩膜
+    （与历史路径逐位一致）；多边形（PolyGainOp）：`times` 必须给，返回 (bins, frames)。"""
+    if isinstance(op, PolyGainOp):
+        assert times is not None
+        # 多边形顶点是 (t, f) ⇒ 点也必须 (t, f)：px=帧中心时刻、py=bin 中心频率
+        return _point_in_poly(times[None, :], bins[:, None], op.points)
+    return (bins >= op.f0) & (bins < op.f1)
+
+
 def _render_band(project: Project, dest: str, *, subtype: str | None, blocksize: int,
                  overwrite: bool, n_fft: int, hop: int | None, chunk_hops: int,
                  dither: bool) -> dict:
@@ -381,14 +429,16 @@ def _render_band(project: Project, dest: str, *, subtype: str | None, blocksize:
         bins = stft.bin_freqs(fs, n_fft)
         # 只保留**真会动**的操作（`gain_db == 0` 是 no-op，整条跳过 ⇒ 全轨逐位不变）
         active = [(i, o) for i, o in enumerate(project.ops)
-                  if isinstance(o, BandGainOp) and not o.is_noop]
-        band = [(bins >= o.f0) & (bins < o.f1) for _, o in active]
+                  if isinstance(o, (BandGainOp, PolyGainOp)) and not o.is_noop]
+        # 矩形：bin 向掩膜（历史路径逐位一致）；多边形：None（逐块 2D 计算）
+        band = [_region_mask(o, bins, None) if isinstance(o, BandGainOp) else None
+                for _, o in active]
         gains = [10.0 ** (o.gain_db / 20.0) for _, o in active]
         # 要过 STFT 的时间跨度 = 所有活跃操作选区的并集，**两侧各外扩一个窗宽**
         # （见文件头那条 ⚠：写出的范围必须盖住掩码帧的"溢出"，否则在选区边界上
         # 硬切会把被压掉的成分切出一个台阶）。
-        ks = [max(0, min(_sample_at(o.t0, fs), claimed)) for _, o in active]
-        ke = [max(0, min(_sample_at(o.t1, fs), claimed)) for _, o in active]
+        ks = [max(0, min(_sample_at(_op_t0(o), fs), claimed)) for _, o in active]
+        ke = [max(0, min(_sample_at(_op_t1(o), fs), claimed)) for _, o in active]
         # ⚠ 没有一个活跃操作时跨度必须是**空**的：否则 `k0 = k1 = 0` 会让下面"两侧外扩"
         # 扩出 [0, n_fft) 一段，把开头一个窗的采样白白过一遍 STFT（no-op 就不再逐位不变）。
         k0, k1 = (min(ks), max(ke)) if active else (0, 0)
@@ -428,6 +478,26 @@ def _render_band(project: Project, dest: str, *, subtype: str | None, blocksize:
                 st["floor_samples"] += (ce - cs) * ch
                 # ② 再施加时频掩码（帧中心 ∩ bin 中心，双半开）
                 for j, (i, o) in enumerate(active):
+                    if isinstance(o, PolyGainOp):
+                        # 掩膜盖**整块的所有帧**（与矩形路径同语义：上下文帧也参与
+                        # OLA，写出的范围已外扩窗宽盖住掩膜帧的"溢出"）。
+                        mask = _region_mask(o, bins, times)          # (bins, frames) 2D
+                        sel_pts = int(mask.sum())
+                        if sel_pts:
+                            m = mask[:, :, None]                     # (bins, frames, ch)
+                            meas_e[i][0] += float(np.sum((np.abs(S) ** 2) * m))
+                            S *= np.where(m, gains[j], 1.0)
+                            meas_e[i][1] += float(np.sum((np.abs(S) ** 2) * m))
+                            tf_points[i] += sel_pts
+                        # applied：多边形的时间覆盖 = 掩膜覆盖到的帧的时间范围
+                        cols = np.nonzero(mask.any(axis=0))[0]
+                        if cols.size:
+                            t_lo = times[cols.min()]
+                            t_hi = times[cols.max()]
+                            a0 = max(cs, min(_sample_at(t_lo, fs), claimed))
+                            a1 = min(ce, max(_sample_at(t_hi, fs), 0))
+                            applied[i] += max(0, a1 - a0)
+                        continue
                     tm = (times >= o.t0) & (times < o.t1)
                     n_pts = int(band[j].sum()) * int(tm.sum())
                     if n_pts:
@@ -612,7 +682,8 @@ def _render_declick(project: Project, dest: str, *, subtype: str | None,
                     if not len(seg):
                         break
                 op = ops[i]
-                out, sstat = declick.declick(seg, op.threshold, op.max_run)
+                out, sstat = declick.declick(seg, op.threshold, op.max_run,
+                                             step_repair=op.step_repair)
                 recs[i] = {**sstat, "energy_ratio_measured_db":
                            _round_db(energy_ratio_db(out, seg))}
                 applied[i] = int(seg.shape[0])
@@ -770,7 +841,8 @@ def _render_denoise(project: Project, dest: str, *, subtype: str | None,
                     break
                 op = ops[i]
                 out, sstat = denoise.denoise(seg, noise, reduction_db=op.reduction_db,
-                                             n_fft=op.n_fft, hop=op.hop)
+                                             n_fft=op.n_fft, hop=op.hop,
+                                             track_floor=op.track_floor)
                 recs[i] = {**sstat, "noise_t0": op.noise_t0, "noise_t1": op.noise_t1,
                            "noise_samples": int(noise.shape[0])}
                 applied[i] = int(seg.shape[0])
@@ -783,6 +855,172 @@ def _render_denoise(project: Project, dest: str, *, subtype: str | None,
 
     return _audit(project, dest, "denoise", fs, ch, sub, frames, claimed, st, applied,
                   tf_points=None, op_recs=recs, dither=dither)
+
+
+#: **证据等级**（借鉴 queyi_core 的分级思想，按音频修复语义重定义）：
+#: 每个审计数值都标注"这条数字有多可信"——读者不必猜量具的可靠性。
+#: * `L1_measured`  —— 本次渲染**实测**出来的（能量比、压制量、饱和数……）
+#: * `L2_derived`   —— 由实测值**确定性推导**出来的（占比 = 检出/总数、时长 = 帧/fs）
+#: * `L3_setting`   —— **调用方设定**的参数（阈值、增益、Q）——不是测量结果
+#: * `L4_protocol`  —— **协议字段**（采样率/编码/帧数/哈希）——容器事实而非算法输出
+#: * `L5_unknown`   —— 量具不可用（`None`）——**明确弃权**，不是"零"
+#: 字段→等级的表（没列到的按 `L4_protocol` 处理：容器/记账事实）。
+_EVIDENCE_LEVELS: dict[str, str] = {
+    # L1 实测
+    "energy_ratio_measured_db": "L1_measured",
+    "noise_reduction_measured_db": "L1_measured",
+    "out_of_band_measured_db": "L1_measured",
+    "attenuation_measured_db": "L1_measured",
+    "suppression_db": "L1_measured",
+    "detected_samples": "L1_measured",
+    "replaced_samples": "L1_measured",
+    "changed_samples": "L1_measured",
+    "saturated_samples": "L1_measured",
+    "rejected_runs": "L1_measured",
+    "step_samples": "L1_measured",
+    "step_runs": "L1_measured",
+    "floor_track_db": "L1_measured",
+    "residual_scale": "L1_measured",
+    "peak": "L1_measured",
+    "peak_out_dbfs": "L1_measured",
+    "roundtrip_floor_dbfs": "L1_measured",
+    "clipped_frames": "L1_measured",
+    "applied_tf_points": "L1_measured",
+    # L2 推导
+    "fraction": "L2_derived",
+    "duration_s": "L2_derived",
+    "applied_frames": "L2_derived",
+    "runs": "L2_derived",
+    "longest_run": "L2_derived",
+    "noise_samples": "L2_derived",
+    # L3 设定
+    "threshold": "L3_setting",
+    "max_run": "L3_setting",
+    "gain_db": "L3_setting",
+    "ceiling": "L3_setting",
+    "bandwidth": "L3_setting",
+    "iterations": "L3_setting",
+    "f0": "L3_setting",
+    "q": "L3_setting",
+    "reduction_db": "L3_setting",
+    "n_fft": "L3_setting",
+    "hop": "L3_setting",
+    "step_repair": "L3_setting",
+    "track_floor": "L3_setting",
+    "dither": "L3_setting",
+    "dither_lsb": "L3_setting",
+    # L5 弃权
+    "ambiguity_margin": "L5_unknown",
+}
+
+
+def evidence_level(field: str) -> str:
+    """字段的**证据等级**（见 `_EVIDENCE_LEVELS`）。未列字段视为容器/记账事实。"""
+    return _EVIDENCE_LEVELS.get(field, "L4_protocol")
+
+
+def canonical_json(obj) -> str:
+    """**确定性序列化**（借鉴 queyi_core 的信任根做法）：sort_keys + 紧凑分隔 +
+    非 ASCII 直出 ⇒ 同一对象在任何机器/时区/Python 小版本上产出**同字节**字符串。
+
+    为什么审计需要它：`json.dump(indent=2)` 的输出随键序/空格/编码策略漂移，
+    两份内容相同的审计记录会得到不同字节 ⇒ 哈希不可作为"同一份记录"的证据。
+    """
+    import json
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False, default=str)
+
+
+def audit_digest(audit: dict) -> str:
+    """审计记录的 **SHA256 摘要**（确定性序列化后）——"同一份修复"的可核对锚。
+
+    ⚠ 摘要**不含**三类随落盘漂移的字段（实测抓到：不剔除会让同一修复的两份记录摘要不同）：
+    * `timestamp_utc` —— 墙钟；
+    * `dest` / `dest_sha256` —— 目标路径与**产物字节哈希**（FLOAT WAV 的 PEAK 块带
+      创建时间戳 ⇒ 跨秒渲染的 dest_sha256 必然不同，这不是修复内容的一部分）；
+    * `source` —— 按给定路径原样存，同一文件的两个挂载点应同摘要。
+    其余字段全部参与（含 `source_sha256` —— **内容**哈希才是"同一份输入"的证据）。
+    判据：`test_audit_digest_is_stable_and_path_independent`。
+    """
+    import hashlib
+    skip = ("timestamp_utc", "dest", "dest_sha256", "source")
+    d = {k: v for k, v in audit.items() if k not in skip}
+    return hashlib.sha256(canonical_json(d).encode("utf-8")).hexdigest()
+
+
+def kernel_self_digest() -> str:
+    """**内核自证**（借鉴 queyi_core）：本模块文件自身的 SHA256。
+
+    用途：两个审计记录里若 `kernel_digest` 相同，就证明**同一份渲染实现**产出了它们
+    ——"可复算"不止是"同参数同结果"，还包括"实现没被偷偷改过"（法证口径）。
+    """
+    import hashlib
+    try:
+        with open(os.path.abspath(__file__), "rb") as fh:
+            return hashlib.sha256(fh.read()).hexdigest()
+    except OSError:
+        return ""
+
+
+def _tool_version() -> str:
+    """audiocheck 包版本（导入失败时返回 "unknown"——审计不许因元数据缺失而崩）。"""
+    try:
+        from importlib import metadata
+        return metadata.version("audiocheck")
+    except Exception:                                        # noqa: BLE001
+        return "unknown"
+
+
+#: WAV 里随创建时刻漂移的 chunk（内容哈希必须跳过它们，否则"同一份音频"跨秒不同哈希）：
+#: `PEAK`（峰值缓存，含 `time_t` 创建时间戳）。其余 chunk（`fmt ` / `data` / `fact` / …）
+#: 全部参与内容哈希。
+_VOLATILE_WAV_CHUNKS = (b"PEAK",)
+
+
+def _sha256_file(path: str, *, content_only: bool = False) -> str:
+    """文件 SHA256。`content_only=True` 时**跳过随时刻漂移的元数据 chunk**。
+
+    为什么需要两档（2026-10-27 实测抓到）：FLOAT WAV 的 **PEAK chunk 带创建时间戳**
+    ——同一份音频在不同秒写出，原始字节哈希必然不同。于是"同一修复跨机核对"会假失败。
+    * `content_only=True`  ⇒ 审计的 `source_sha256` 用这档（"是不是同一份**内容**"）；
+    * `content_only=False` ⇒ `dest_sha256` 用这档（"产物字节"本身就是可核对的证据）。
+    """
+    import hashlib
+    if content_only and path.lower().endswith((".wav", ".wave")):
+        return _wav_content_sha256(path)
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 23), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _wav_content_sha256(path: str) -> str:
+    """WAV **内容**哈希：按 RIFF chunk 遍历，跳过 `_VOLATILE_WAV_CHUNKS` 与填充字节。
+
+    chunk 走查容错（非标准容器 ⇒ 退化为整文件哈希，不抛错——审计不该因容器怪而崩）。
+    """
+    import hashlib
+
+    from ..context import io_path
+    try:
+        with open(io_path(path), "rb") as fh:
+            blob = fh.read()
+        if len(blob) < 12 or blob[:4] not in (b"RIFF", b"RIFX", b"RF64"):
+            return hashlib.sha256(blob).hexdigest()
+        h = hashlib.sha256()
+        h.update(blob[:12])                      # RIFF 头（头 12 字节里没有时间戳）
+        pos = 12
+        while pos + 8 <= len(blob):
+            cid = blob[pos:pos + 4]
+            size = int.from_bytes(blob[pos + 4:pos + 8], "little")
+            body_end = min(pos + 8 + size, len(blob))
+            if cid not in _VOLATILE_WAV_CHUNKS:
+                h.update(blob[pos:body_end])
+            pos = body_end + (size & 1)          # RIFF 的偶数字节对齐填充
+        return h.hexdigest()
+    except OSError:
+        return ""
 
 
 def _audit(project: Project, dest: str, domain: str, fs: int, ch: int, sub: str,
@@ -827,7 +1065,23 @@ def _audit(project: Project, dest: str, domain: str, fs: int, ch: int, sub: str,
         "dither_lsb": (1.0 / (2 ** (_PCM_BITS[sub] - 1)) if dither and sub in _PCM_BITS
                        else None),
         "ops": ops,
+        # 证据链（SWGDE 口径：源/产物哈希 + 工具版本；时间戳由 CLI 层补，render 保持纯函数）
+        "source_sha256": _sha256_file(os.path.abspath(project.source), content_only=True),
+        "dest_sha256": _sha256_file(io_path(dest)),
+        "tool_version": _tool_version(),
+        # 实现自证：同一份渲染代码 ⇒ 同 digest（"可复算"不止同参数同结果）
+        "kernel_digest": kernel_self_digest(),
     }
+    # **证据等级表**：本次审计里出现的每个数值字段 → 可信度等级（读者不必猜量具）
+    fields = set()
+    for rec in audit["ops"]:
+        fields |= set(rec)
+    fields |= set(audit)
+    audit["evidence_levels"] = {f: evidence_level(f) for f in sorted(fields)
+                                if f not in ("ops", "stages", "reordered_from",
+                                             "evidence_levels", "audit_digest")}
+    # 记录自身的确定性摘要（不含 dest/timestamp）——两份相同修复的跨机核对锚
+    audit["audit_digest"] = audit_digest(audit)
     if domain == "band":
         audit["n_fft"] = n_fft
         audit["hop"] = hop
@@ -842,14 +1096,21 @@ def _audit(project: Project, dest: str, domain: str, fs: int, ch: int, sub: str,
         #: 用的是哪套重建（可复算的口径名）：带限投影 + 削波不等式投影，见 `declip.py`
         audit["algorithm"] = "pocs_declip"
     if domain == "declick":
-        #: 检测口径（可复算的名字）：两点预测残差 + 全段 MAD 尺子 + 线性插值，见 `declick.py`
-        audit["algorithm"] = "residual2_mad_linear"
+        #: 检测口径（可复算的名字）：两点残差双尺度 MAD + **级联台阶臂**（长窗中值）
+        #: 见 `declick.py`；台阶臂关闭时回到 v2 口径名（语义变了名字必须变）。
+        any_step = any(getattr(o, "step_repair", False) for o in project.ops
+                       if isinstance(o, DeclickOp))
+        audit["algorithm"] = ("residual2_mad2scale_step_cascade"
+                              if any_step else "residual2_mad2scale_linear")
     if domain == "dehum":
         #: 去嗡口径：零相位陷波级联（Q=10 与谐波集由 `dehum.py` 的漂移表定）
         audit["algorithm"] = "zerophase_notch_cascade"
     if domain == "denoise":
-        #: 去噪口径：判决引导先验 SNR 的 Wiener + 从噪声段学谱，见 `denoise.py`
-        audit["algorithm"] = "wiener_dd_profile"
+        #: 去噪口径：判决引导先验 SNR 的 Wiener + 从噪声段学谱，见 `denoise.py`；
+        #: 任一 denoise 算子开了底噪跟踪 ⇒ 口径名随之（语义变了名字必须变）。
+        tracked = any(getattr(o, "track_floor", False) for o in project.ops
+                      if isinstance(o, DenoiseOp))
+        audit["algorithm"] = "wiener_dd_floor_tracked" if tracked else "wiener_dd_profile"
     return audit
 
 

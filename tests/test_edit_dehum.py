@@ -207,3 +207,19 @@ def test_render_chains_dehum_with_other_domains(tmp_path):
     audit = render(Project(src, [GainOp(0.0, 0.5, -3.0), DehumOp(0.0, 0.5, 50.0)]), dst)
     assert audit["chained"] is True
     assert [s["op"]["kind"] for s in audit["stages"]] == ["dehum", "gain"]
+
+
+def test_selection_past_eof_renders_as_clean_copy(tmp_path):
+    """选区**完全越界**（EOF 之后）：守卫 `k1 <= k0 ⇒ continue` ⇒ 干净跳过、整轨逐位不变。
+
+    变异轮实测缺口：把守卫写成 `<` 会去对**空段**做零相位滤波 ⇒ `dehum.dehum` 抛
+    "选区太短" ⇒ 整个渲染崩掉。"越界选区 = 跳过"是真实用户行为（选区拖过文件尾），钉死。
+    （FLOAT WAV 字节比较用归一化 PEAK 时间戳的口径，见 test_edit_cli._bytes。）
+    """
+    x = np.zeros((FS, 1))
+    src = _write(tmp_path, x)
+    dst = str(tmp_path / "out.wav")
+    audit = render(Project(src, [DehumOp(2.0, 3.0, 50.0)]), dst)   # 源只有 1 s
+    assert audit["read_incomplete"] is False
+    from test_edit_cli import _bytes
+    assert _bytes(dst) == _bytes(src)

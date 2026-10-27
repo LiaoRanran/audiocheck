@@ -89,7 +89,7 @@ def test_denoise_cli_writes_the_audit_and_keeps_the_noise_segment(tmp_path):
                "--reduction-db", "12", "--audit", audit_path])
     assert rc == 0
     rec = json.load(open(audit_path, encoding="utf-8"))
-    assert rec["domain"] == "denoise" and rec["algorithm"] == "wiener_dd_profile"
+    assert rec["domain"] == "denoise" and rec["algorithm"] == "wiener_dd_floor_tracked"
     assert rec["ops"][0]["reduction_db"] == 12.0
     lead = int(0.5 * FS)
     assert np.array_equal(_read(src)[:lead], _read(dst)[:lead])
@@ -228,7 +228,7 @@ def test_declick_cli_end_to_end(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "去咔哒" in out and "检出" in out and "MAD" in out
     rec = json.loads(open(aud, encoding="utf-8").read())
-    assert rec["domain"] == "declick" and rec["algorithm"] == "residual2_mad_linear"
+    assert rec["domain"] == "declick" and rec["algorithm"] == "residual2_mad2scale_step_cascade"
     op = rec["ops"][0]
     assert op["threshold"] == 5.0 and op["detected_samples"] >= 3
     assert op["fraction"] <= 2e-3, "改动面过大（误报区）"
@@ -435,7 +435,21 @@ def test_dehum_harmonics_list_is_parsed_and_validated(tmp_path, capsys):
 
 # ------------------------------------------------------------------ 项目记录（复合操作的 CLI 入口）
 def _bytes(p) -> bytes:
-    return open(str(p), "rb").read()
+    """读文件字节，但把 libsndfile **PEAK 块的创建时间戳归零**后再比较。
+
+    ★ 实测踩到的 flaky（2026-10-26，全量负载下 test_project_chained_render_and_stage_report
+    挂过 3 次）：libsndfile 给 **FLOAT WAV** 写 PEAK 块（version + time_t 时间戳 + 各声道峰值），
+    时间戳是**创建时刻**——同一份音频渲染两次，只要跨过 1 秒边界，字节比较就会恰好差 1 字节
+    （失败样本实核对过：768088 字节里**唯一**差异在偏移 60 的时间戳 `0x6adf6043 vs 0x6adf6044`，
+    768 KB 音频数据逐位相同）。归零时间戳后，字节比较才表达"同样的音频"这个真实判据，
+    而不是"两次渲染恰好落在同一秒里"。
+    """
+    b = bytearray(open(str(p), "rb").read())
+    i = b.find(b"PEAK")
+    if i >= 0:
+        # PEAK 块布局：'PEAK'(4) + size(4) + version(4) + timeStamp(4) + 各声道(峰值4+位置4)
+        b[i + 12:i + 16] = b"\x00\x00\x00\x00"
+    return bytes(b)
 
 
 def test_save_project_then_load_renders_the_same_bytes(tmp_path):
@@ -446,7 +460,7 @@ def test_save_project_then_load_renders_the_same_bytes(tmp_path):
     assert main([src, d1, "--gain", "-6", "--at", "0.2-0.8",
                  "--save-project", rec]) == 0
     saved = json.loads(open(rec, encoding="utf-8").read())
-    assert saved["version"] == 1 and saved["source"] == src
+    assert saved["version"] == 3 and saved["source"] == src   # v3：declick 增 step_repair
     assert saved["ops"][0]["kind"] == "gain" and saved["ops"][0]["gain_db"] == -6.0
     d2 = str(tmp_path / "c.wav")
     assert main([src, d2, "--project", rec]) == 0
@@ -514,3 +528,249 @@ def test_bad_project_record_is_rejected_without_traceback(tmp_path, capsys):
     assert main([src, str(tmp_path / "c.wav"), "--project", bad_schema]) == 2
     out = capsys.readouterr().out
     assert "项目记录" in out and "Traceback" not in out
+
+
+# ---------------------------------------------------------------- 批处理
+def test_batch_runs_all_jobs_and_isolates_failures(tmp_path, capsys):
+    """`--batch`：逐项渲染、互相隔离；一项失败不拖累其余，汇总列出失败。"""
+    a = _write(tmp_path / "a.wav", _tone())
+    b = _write(tmp_path / "b.wav", _tone())
+    jobs = [
+        {"source": a, "dest": str(tmp_path / "oa.wav"),
+         "ops": [{"kind": "gain", "t0": 0.0, "t1": 1.0, "gain_db": -3.0}]},
+        {"source": b, "dest": str(tmp_path / "ob.wav"), "ops": []},          # 空栈恒等
+        {"source": a, "dest": str(tmp_path / "ofail.wav"),
+         "ops": [{"kind": "nonsense"}]},                                   # 未知 kind ⇒ 单条失败
+    ]
+    jb = tmp_path / "jobs.json"
+    jb.write_text(json.dumps(jobs), encoding="utf-8")
+    rc = main(["--batch", str(jb)])
+    out = capsys.readouterr().out
+    assert rc == 0, "有失败但清单合法 ⇒ 仍 0（失败已逐项记录）"
+    assert os.path.exists(tmp_path / "oa.wav")
+    assert os.path.exists(tmp_path / "ob.wav")
+    assert not os.path.exists(tmp_path / "ofail.wav")
+    assert "1 项失败" in out and "nonsense" in out
+
+
+def test_batch_rejects_non_array_or_missing_fields(tmp_path, capsys):
+    """清单本身不可用（非数组 / 缺 source/dest）⇒ 退出码 2。"""
+    bad = tmp_path / "bad.json"
+    bad.write_text("{}", encoding="utf-8")
+    assert main(["--batch", str(bad)]) == 2
+    miss = tmp_path / "miss.json"
+    miss.write_text(json.dumps([{"dest": "x.wav"}]), encoding="utf-8")
+    assert main(["--batch", str(miss)]) == 2
+
+
+def test_batch_help_exits_zero(capsys):
+    assert main(["--batch-help"]) == 0
+    assert "批处理作业清单格式" in capsys.readouterr().out
+
+
+def test_report_flag_writes_markdown_next_to_audit(tmp_path, capsys):
+    """`--report`：审计 dict 排成人可读 Markdown（机械排版）——CLI 侧的"可审计"落地。
+
+    同跑 `--audit`（机器 JSON）+ `--report`（人读 Markdown）：两份都必须在、且报告里
+    有算法名与实测字段；报告内容必须与 `audit_report(audit)` 逐字节一致（纯函数判据的 CLI 侧）。
+    """
+    src = _write(tmp_path / "a.wav", _tone())
+    x, _ = sf.read(src, dtype="float64", always_2d=True)
+    x[500, 0] += 0.9                          # 单采样咔哒
+    sf.write(src, x.astype(np.float32), FS, subtype="FLOAT")
+    dst = str(tmp_path / "out.wav")
+    aj = str(tmp_path / "a.json")
+    rp = str(tmp_path / "r.md")
+    assert main([src, dst, "--declick", "--at", "0-2", "--overwrite",
+                 "--audit", aj, "--report", rp]) == 0
+    assert os.path.exists(aj) and os.path.exists(rp)
+    txt = open(rp, encoding="utf-8").read()
+    assert "audiocheck 编辑审计报告" in txt
+    assert "residual2_mad2scale_step_cascade" in txt
+    assert "检出采样" in txt
+    # 与纯函数口径逐字节一致
+    audit = json.load(open(aj, encoding="utf-8"))
+    from audiocheck.core.edit.report import audit_report
+    assert txt == audit_report(audit)
+
+
+def test_report_flag_works_for_project_chained_render(tmp_path, capsys):
+    """链式工程（--project）同样能出报告：阶段表 + 规范化顺序在场。"""
+    src = _write(tmp_path / "a.wav", _tone())
+    proj = Project(src, [GainOp(0.5, 1.5, -3.0), DeclickOp(0.5, 1.5)])
+    p = str(tmp_path / "p.json")
+    json.dump(proj.to_dict(), open(p, "w", encoding="utf-8"), ensure_ascii=False)
+    dst = str(tmp_path / "out.wav")
+    rp = str(tmp_path / "r.md")
+    assert main([src, dst, "--project", p, "--overwrite", "--report", rp]) == 0
+    txt = open(rp, encoding="utf-8").read()
+    assert "## 链式渲染" in txt and "顺序被规范化" in txt
+    assert "去咔哒" in txt and "时间选区增益" in txt
+
+
+def test_v1_project_record_migrates_bit_identically(tmp_path):
+    """★ v1 项目记录（denoise 无 track_floor）显式迁移 ⇒ 渲染与 v1 语义**逐位相同**。
+
+    v2 迁移纪律：补 `track_floor=False`（v1 的全部语义就是固定谱），旧产物可复现、
+    新语义不被静默套到旧记录上。
+    """
+    src = _write(tmp_path / "a.wav", _tone())
+    d1 = json.dumps({"version": 1, "source": src, "ops": [
+        {"kind": "denoise", "t0": 0.5, "t1": 1.5, "noise_t0": 0.0, "noise_t1": 0.5,
+         "reduction_db": 20.0, "n_fft": 4096, "hop": None}]})
+    p = tmp_path / "v1.json"
+    p.write_text(d1, encoding="utf-8")
+    dst1 = str(tmp_path / "o1.wav")
+    assert main([src, dst1, "--project", str(p)]) == 0
+    # 直接构造 track_floor=False 的项目渲染同一记录语义 ⇒ 字节必须相同（v1 忠实复现）
+    from audiocheck.core.edit.ops import DenoiseOp, Project
+    from audiocheck.core.edit.render import render
+    dst3 = str(tmp_path / "o3.wav")
+    render(Project(src, [DenoiseOp(0.5, 1.5, 0.0, 0.5, track_floor=False)]), dst3)
+    assert _bytes(dst1) == _bytes(dst3)
+
+
+def test_unknown_project_version_is_rejected(tmp_path):
+    """v4（不存在的未来版本）必须报错，不许被误读。"""
+    src = _write(tmp_path / "a.wav", _tone())
+    p = tmp_path / "v4.json"
+    p.write_text(json.dumps({"version": 4, "source": src, "ops": []}), encoding="utf-8")
+    dst = str(tmp_path / "o.wav")
+    assert main([src, dst, "--project", str(p)]) == 2
+
+
+def test_no_floor_track_flag_switches_algorithm(tmp_path, capsys):
+    """`--no-floor-track`：审计口径名从 floor_tracked 回到 profile（旗标接到了内核）。"""
+    src = _write(tmp_path / "a.wav", _tone())
+    d1 = str(tmp_path / "o1.wav")
+    a1 = str(tmp_path / "a1.json")
+    assert main([src, d1, "--denoise", "--at", "0.5-1.5", "--noise-at", "0-0.5",
+                 "--overwrite", "--audit", a1]) == 0
+    d2 = str(tmp_path / "o2.wav")
+    a2 = str(tmp_path / "a2.json")
+    assert main([src, d2, "--denoise", "--at", "0.5-1.5", "--noise-at", "0-0.5",
+                 "--no-floor-track", "--overwrite", "--audit", a2]) == 0
+    rec1 = json.loads(open(a1, encoding="utf-8").read())
+    rec2 = json.loads(open(a2, encoding="utf-8").read())
+    assert rec1["algorithm"] == "wiener_dd_floor_tracked"
+    assert rec2["algorithm"] == "wiener_dd_profile"
+    assert rec1["ops"][0]["track_floor"] is True and rec2["ops"][0]["track_floor"] is False
+    assert not np.array_equal(_read(d1), _read(d2)), "两种口径的产物应该不同"
+
+
+def test_batch_v1_manifest_denops_migrates(tmp_path):
+    """★ 回归（schema v2 引入）：v1 批处理清单的 denoise 作业（无 track_floor 键）
+    必须显式迁移后**照常跑通**——旧清单可复算，不许被严格解析整体拒绝。"""
+    src = _write(tmp_path / "a.wav", _tone())
+    manifest = [{"source": src, "dest": str(tmp_path / "o.wav"),
+                 "ops": [{"kind": "denoise", "t0": 0.5, "t1": 1.5,
+                          "noise_t0": 0.0, "noise_t1": 0.5,
+                          "reduction_db": 20.0, "n_fft": 4096, "hop": None}]}]
+    mf = tmp_path / "jobs.json"
+    mf.write_text(json.dumps(manifest), encoding="utf-8")
+    assert main(["--batch", str(mf)]) == 0
+    assert os.path.exists(str(tmp_path / "o.wav"))
+
+
+def test_batch_v2_manifest_rejects_missing_key_per_job(tmp_path, capsys):
+    """`version: 2` 的作业走严格 schema：denoise 缺 track_floor ⇒ **该作业**失败（隔离）。"""
+    src = _write(tmp_path / "a.wav", _tone())
+    ok_src = _write(tmp_path / "b.wav", _tone())
+    manifest = [
+        {"source": src, "dest": str(tmp_path / "o1.wav"), "version": 2,
+         "ops": [{"kind": "denoise", "t0": 0.5, "t1": 1.5, "noise_t0": 0.0,
+                  "noise_t1": 0.5, "reduction_db": 20.0, "n_fft": 4096, "hop": None}]},
+        {"source": ok_src, "dest": str(tmp_path / "o2.wav"), "version": 2, "ops": []},
+    ]
+    mf = tmp_path / "jobs.json"
+    mf.write_text(json.dumps(manifest), encoding="utf-8")
+    assert main(["--batch", str(mf)]) == 0          # 清单合法；坏作业被隔离记失败
+    out = capsys.readouterr().out
+    assert "1 项失败" in out and "track_floor" in out
+    assert os.path.exists(str(tmp_path / "o2.wav"))  # 好作业照常
+    assert not os.path.exists(str(tmp_path / "o1.wav"))
+
+
+def test_batch_per_job_audit_and_report(tmp_path):
+    """作业级 `"audit"`/`"report"`：每项渲染后落机器 JSON + 人读 Markdown（P4 收尾）。"""
+    src = _write(tmp_path / "a.wav", _tone())
+    manifest = [{"source": src, "dest": str(tmp_path / "o.wav"),
+                 "ops": [{"kind": "gain", "t0": 0.5, "t1": 1.5, "gain_db": -3.0}],
+                 "audit": str(tmp_path / "a.json"),
+                 "report": str(tmp_path / "r.md")}]
+    mf = tmp_path / "jobs.json"
+    mf.write_text(json.dumps(manifest), encoding="utf-8")
+    assert main(["--batch", str(mf)]) == 0
+    audit = json.loads(open(str(tmp_path / "a.json"), encoding="utf-8").read())
+    assert audit["ops"][0]["kind"] == "gain"
+    txt = open(str(tmp_path / "r.md"), encoding="utf-8").read()
+    assert "audiocheck 编辑审计报告" in txt
+
+
+def test_poly_flag_renders_and_saves_project(tmp_path):
+    """`--poly`：多边形选区增益的 CLI 出口（与 --band 平级的最后一块算子表面）。"""
+    src = _write(tmp_path / "a.wav", _tone())
+    dst = str(tmp_path / "o.wav")
+    rec = str(tmp_path / "p.json")
+    assert main([src, dst, "--gain", "-6", "--poly",
+                 "0.3,1000.3;1.7,1000.3;1.7,4500.7;0.3,4500.7"]) == 0
+    assert main([src, str(tmp_path / "o2.wav"), "--gain", "-6", "--poly",
+                 "0.3,1000.3;1.7,1000.3;1.7,4500.7;0.3,4500.7",
+                 "--save-project", rec]) == 0
+    saved = json.loads(open(rec, encoding="utf-8").read())
+    assert saved["ops"][0]["kind"] == "poly_gain"
+    assert len(saved["ops"][0]["points"]) == 4
+    # 同参数两个产物逐位一致（PEAK 归一化）
+    assert _bytes(dst) == _bytes(str(tmp_path / "o2.wav"))
+
+
+def test_poly_flag_mutual_exclusions(tmp_path, capsys):
+    src = _write(tmp_path / "a.wav", _tone())
+    dst = str(tmp_path / "o.wav")
+    pts = "0.3,1000.3;1.7,1000.3;1.7,4500.7;0.3,4500.7"
+    assert main([src, dst, "--gain", "-6", "--poly", pts, "--at", "0.5-1.5"]) == 2
+    assert "不能与 `--at`/`--band` 同给" in capsys.readouterr().out
+    assert main([src, dst, "--gain", "-6", "--poly", pts, "--band", "1000-4500"]) == 2
+    assert main([src, dst, "--poly", pts]) == 2            # 缺 --gain
+    assert main([src, dst, "--gain", "-6", "--poly", "0.3,1000;1.7,1000"]) == 2  # <3 顶点
+    assert "至少 3 个顶点" in capsys.readouterr().out
+
+
+def test_audit_evidence_chain_fields(tmp_path):
+    """★ 证据链（SWGDE 口径）：审计带源/产物 SHA256（重算核对）+ 工具版本；
+    CLI 层补 UTC 时间戳；**render 本体不带时间戳**（纯函数纪律）。"""
+    import hashlib
+    src = _write(tmp_path / "a.wav", _tone())
+    dst = str(tmp_path / "o.wav")
+    aj = str(tmp_path / "a.json")
+    assert main([src, dst, "--gain", "-3", "--at", "0.5-1.5", "--overwrite",
+                 "--audit", aj]) == 0
+    audit = json.loads(open(aj, encoding="utf-8").read())
+    # 源哈希是**内容**哈希（跳过 PEAK 时间戳）——用同一口径重算核对
+    from audiocheck.core.edit.render import _sha256_file
+    assert audit["source_sha256"] == _sha256_file(src, content_only=True),         "源哈希必须等于同口径重算值"
+    h2 = hashlib.sha256(open(dst, "rb").read()).hexdigest()
+    assert audit["dest_sha256"] == h2
+    assert audit["tool_version"] == "1.0.0"
+    assert "timestamp_utc" in audit and audit["timestamp_utc"].endswith("Z")
+    # 纯函数纪律：render 返回的 audit 本体没有时间戳（CLI 才注入）
+    from audiocheck.core.edit import GainOp, Project, render
+    d2 = str(tmp_path / "o2.wav")
+    raw_audit = render(Project(src, [GainOp(0.5, 1.5, -3.0)]), d2, overwrite=True)
+    assert "timestamp_utc" not in raw_audit
+
+
+def test_evidence_chain_hashes_differ_when_source_differs(tmp_path):
+    """不同源文件 ⇒ 审计哈希不同（内容寻址，可核对、可交接）。"""
+    src1 = _write(tmp_path / "a.wav", _tone())
+    x2 = _tone() * 0.5
+    src2 = _write(tmp_path / "b.wav", x2)
+    a1 = str(tmp_path / "a1.json")
+    a2 = str(tmp_path / "a2.json")
+    assert main([src1, str(tmp_path / "o1.wav"), "--gain", "-1", "--at", "0-1",
+                 "--overwrite", "--audit", a1]) == 0
+    assert main([src2, str(tmp_path / "o2.wav"), "--gain", "-1", "--at", "0-1",
+                 "--overwrite", "--audit", a2]) == 0
+    r1 = json.loads(open(a1, encoding="utf-8").read())
+    r2 = json.loads(open(a2, encoding="utf-8").read())
+    assert r1["source_sha256"] != r2["source_sha256"]

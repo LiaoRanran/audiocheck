@@ -258,3 +258,78 @@ def test_measurement_crosscheck(tmp_path):
     assert abs(p_dst - 20 * math.log10(0.1)) < 0.05, (
         "导出后峰值 %.2f dBFS 不等于选区外的 0.1（%.2f）——增益没有只作用在选区内"
         % (p_dst, 20 * math.log10(0.1)))
+
+
+# ------------------------------------------------- 审计摘要与实现自证（借鉴 queyi_core）
+def test_audit_digest_is_stable_and_path_independent(tmp_path):
+    """★ `audit_digest`：同一修复的两个落盘位置 ⇒ **同摘要**（dest 不参与）；
+    不同参数 ⇒ 不同摘要；`kernel_digest` 在场且等长。"""
+    import numpy as np
+
+    from audiocheck.core.edit import GainOp, Project, render
+
+    src = str(tmp_path / "a.wav")
+    sf.write(src, (0.4 * np.sin(2 * np.pi * 440 * np.arange(FS) / FS))[:, None].astype(np.float32),
+             FS, subtype="FLOAT")
+    a1 = render(Project(src, [GainOp(0.2, 0.8, -3.0)]), str(tmp_path / "o1.wav"))
+    a2 = render(Project(src, [GainOp(0.2, 0.8, -3.0)]), str(tmp_path / "o2.wav"))
+    assert a1["audit_digest"] == a2["audit_digest"], "同修复不同路径 ⇒ 同摘要"
+    a3 = render(Project(src, [GainOp(0.2, 0.8, -6.0)]), str(tmp_path / "o3.wav"))
+    assert a3["audit_digest"] != a1["audit_digest"], "不同参数 ⇒ 不同摘要"
+    assert len(a1["kernel_digest"]) == 64 and a1["kernel_digest"] == a3["kernel_digest"]
+
+
+def test_canonical_json_is_deterministic():
+    """★ `canonical_json`：键序无关、紧凑、非 ASCII 直出（跨平台同字节）。"""
+    from audiocheck.core.edit.render import canonical_json
+    a = canonical_json({"b": 1, "a": "中文", "c": [3, 2]})
+    b = canonical_json({"c": [3, 2], "a": "中文", "b": 1})
+    assert a == b, "键序不同 ⇒ 同字节"
+    assert a == '{"a":"中文","b":1,"c":[3,2]}'
+
+
+def test_audit_digest_excludes_timestamp(tmp_path):
+    """★ `timestamp_utc`（CLI 注入的墙钟）不参与摘要——同一修复跨时刻可核对。"""
+    import numpy as np
+
+    from audiocheck.core.edit import GainOp, Project, render
+    from audiocheck.core.edit.render import audit_digest
+
+    src = str(tmp_path / "a.wav")
+    sf.write(src, (0.3 * np.sin(2 * np.pi * 440 * np.arange(FS) / FS))[:, None].astype(np.float32),
+             FS, subtype="FLOAT")
+    a = render(Project(src, [GainOp(0.0, 1.0, -2.0)]), str(tmp_path / "o.wav"))
+    a_ts1 = dict(a, timestamp_utc="2026-01-01T00:00:00Z")
+    a_ts2 = dict(a, timestamp_utc="2026-12-31T23:59:59Z")
+    assert audit_digest(a_ts1) == audit_digest(a_ts2)
+
+
+def test_wav_content_hash_skips_peak_timestamp(tmp_path):
+    """★ WAV **内容**哈希跳过 PEAK 时间戳：同一份音频两次写出（跨秒）⇒ 同源哈希。
+
+    根因（2026-10-27 演示脚本抓到）：FLOAT WAV 的 PEAK chunk 带 time_t，原始字节
+    哈希跨秒必不同 ⇒ "同一修复跨机核对"会假失败。
+    """
+    from audiocheck.core.edit.render import _sha256_file
+    x = (0.4 * np.sin(2 * np.pi * 440 * np.arange(FS) / FS))[:, None]
+    p1, p2 = str(tmp_path / "a.wav"), str(tmp_path / "b.wav")
+    sf.write(p1, x.astype(np.float32), FS, subtype="FLOAT")
+    sf.write(p2, x.astype(np.float32), FS, subtype="FLOAT")
+    # 内容哈希一致；原始字节哈希可能不同（PEAK 时间戳）——两档口径都要在
+    assert _sha256_file(p1, content_only=True) == _sha256_file(p2, content_only=True)
+    # 非 WAV 或未开 content_only ⇒ 整文件哈希（口径明确，不是"总是跳过"）
+    assert _sha256_file(p1) == _sha256_file(p1)
+
+
+def test_source_hash_is_content_addressed(tmp_path):
+    """★ 审计的 `source_sha256` 是**内容**哈希：同内容不同文件 ⇒ 同源哈希，
+    但 `dest_sha256` 仍是产物字节哈希（两档口径各司其职）。"""
+    from audiocheck.core.edit import GainOp, Project, render
+    x = (0.3 * np.sin(2 * np.pi * 440 * np.arange(FS) / FS))[:, None]
+    s1, s2 = str(tmp_path / "s1.wav"), str(tmp_path / "s2.wav")
+    sf.write(s1, x.astype(np.float32), FS, subtype="FLOAT")
+    sf.write(s2, x.astype(np.float32), FS, subtype="FLOAT")
+    a1 = render(Project(s1, [GainOp(0.0, 1.0, -2.0)]), str(tmp_path / "o1.wav"))
+    a2 = render(Project(s2, [GainOp(0.0, 1.0, -2.0)]), str(tmp_path / "o2.wav"))
+    assert a1["source_sha256"] == a2["source_sha256"], "同内容源 ⇒ 同源哈希"
+    assert a1["audit_digest"] == a2["audit_digest"], "⇒ 同审计摘要"

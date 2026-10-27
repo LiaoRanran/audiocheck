@@ -314,7 +314,7 @@ class TestToastLifecycle(unittest.TestCase):
         host.apply_theme(T.DARK)
         host.notify("会消失吗", "ok", ms=40)
         self.assertEqual(len(host.findChildren(W.Toast)), 1)
-        pump(40 + 260)                      # 存活 + 淡出时长（Motion.fast 有余量）
+        pump(40 + 600)                      # 存活 + 淡出时长（Motion.fast 有余量；全量负载下放宽）
         self.assertEqual(len(host.findChildren(W.Toast)), 0,
                          "通知没有消失——退场路径断了（B1 就断过一次）")
         self.assertEqual(host._lay.count(), 1, "布局里的条目没有被移除")
@@ -326,7 +326,7 @@ class TestToastLifecycle(unittest.TestCase):
         for i in range(8):
             host.notify("压力 %d" % i, "info", ms=20)
         self.assertEqual(len(host.findChildren(W.Toast)), 8)
-        pump(20 + 700)          # 存活 20 + 淡出；窗口留足——全量负载下动画会慢，420 偶发不够
+        pump(20 + 1500)         # 存活 20 + 淡出；窗口留足——全量负载下动画会慢，420 偶发不够，放宽到 1.5s
         self.assertEqual(len(host.findChildren(W.Toast)), 0, "有通知没被回收")
 
     def test_lifetime_shorter_than_fade_in_does_not_strand_animations(self):

@@ -187,3 +187,37 @@ def test_chaining_leaves_no_temp_directory(tmp_path):
         render(Project(src, [GainOp(0.0, 0.2, -3.0), DeclickOp(0.2, 0.5)]),
                src)                     # 目标=源 ⇒ 先被 _check_dest 拒绝
     assert set(glob.glob(pat)) - before == set()
+
+
+def test_reordering_a_mixed_stack_is_order_invariant(tmp_path):
+    """★ `packaging/op_order_probe.py` 实测：6 种算子排列的 SDR 极差仅 0.44 dB ——
+
+    渲染是**规范序列的纯函数**：`canonical_order` 是**稳定**排序（按 `PHASE`），同一个
+    op 对象集合无论怎么排列，都映射到**同一条**规范渲染链 ⇒ 产物在（FFT 对齐允许的）
+    LSB 容差内逐位相同。把它钉成回归测试：**同一组 op，任意排列 → 输出在 1 ULP(float32)
+    容差内一致**（这才是"顺序不致命"的真正判据；切片 8 的 `move` 重排只是显示态、
+    不进渲染，靠的正是这条）。
+    ⚠ 为什么是容差而不是 `==`：numpy 的 `rfft/irfft` 末位比特依赖**缓冲区对齐**
+    （堆布局），跨不同堆状态会差一个 ULP——属 FFT 实现的固有属性，不是算法缺陷
+    （`render` 已在审计里报 `roundtrip_floor_dbfs` 量化这个量级）。所以咬死"字节相同"
+    会被这个固有噪声误伤，本测试改用数值容差。
+    """
+    import itertools
+    clean, y, ceiling, _ = _faulty()
+    src = _write(tmp_path, y)
+    def fresh():
+        return [DehumOp(0.0, T, 50.0), GainOp(0.0, T, -1.0),
+                DeclipOp(0.0, T, bandwidth=18000.0, ceiling=ceiling), DeclickOp(0.0, T)]
+    outs = []
+    for i, perm in enumerate(itertools.permutations(fresh())):
+        d = str(tmp_path / ("p_%d.wav" % i))
+        render(Project(src, list(perm)), d)
+        outs.append(sf.read(d)[0])
+    ref = outs[0]
+    ref_rms = float(np.sqrt(np.mean(ref ** 2))) or 1.0
+    # 1 ULP(float32) 相对容差（再多留一档余量），够吃掉 FFT 对齐噪声、咬不住真正的算法差异。
+    tol = np.finfo(np.float32).eps * 4.0 * ref_rms
+    for i, a in enumerate(outs[1:], start=1):
+        mx = float(np.max(np.abs(a - ref)))
+        assert mx <= tol, \
+            "同组 op 换顺序后渲染差了 %g（容差 %g）⇒ 规范顺序没吸收排列（排列 %d）" % (mx, tol, i)

@@ -99,7 +99,8 @@ TARGETS: dict[str, list[str]] = {
                                           # 2026-10-26：去噪路径（dispatch / 噪声段 / 审计）。
                                           "tests/test_edit_denoise.py",
                                           # 2026-10-26：导出抖动（TPDF / LSB / 审计字段）。
-                                          "tests/test_edit_dither.py"],
+                                          "tests/test_edit_dither.py",
+                                          "tests/test_edit_poly.py"],
     "src/audiocheck/core/edit/ops.py": ["tests/test_edit_render.py",
                                         "tests/test_edit_stft.py",
                                         "tests/test_edit_declip.py",
@@ -114,7 +115,10 @@ TARGETS: dict[str, list[str]] = {
                                         # 判据在会话文件里（踩过"子集没挂判据文件 ⇒ 全假存活"）。
                                         "tests/test_edit_session.py",
                                         # 2026-10-26：`DenoiseOp` 的校验/记录挂在去噪判据里。
-                                        "tests/test_edit_denoise.py"],
+                                        "tests/test_edit_denoise.py",
+                                        # 2026-10-27：`PolyGainOp` 的校验/锚判据 + 修复链版本检查。
+                                        "tests/test_edit_poly.py",
+                                        "tests/test_edit_chain_preset.py"],
     # 时频内核（2026-10-18，P0 频谱编辑的数学地基）：**重叠归一化、帧网、覆盖守卫**
     # 都在这一个文件里。这里的变异体最容易被"看起来还行"的测试放过——所以判据是
     # `tests/test_edit_stft.py`（往返残差、分块等价性、覆盖守卫、窗平方和恒 >0）。
@@ -126,10 +130,13 @@ TARGETS: dict[str, list[str]] = {
     # 合成语料（2026-10-18，修复算法的判据地基）：**它是"真值"本身**——
     # 削波电平、饱和集合、带宽真值、脉冲位置，任一处写错都会让上层的"修复判据"失去意义。
     "src/audiocheck/core/edit/corpus.py": ["tests/test_edit_corpus.py"],
+    # 审计报告是"可审计"承诺的出海口：标签/单位/未测口径错了会直接误导读者
+    "src/audiocheck/core/edit/report.py": ["tests/test_edit_report.py"],
     # 去咔哒（2026-10-20，P3 第二个修复算子）：**检测阈值是标定过的输入**，
     # 写错方向会"把误报引进来 ⇒ 把信号修坏"（实测白噪 −13 dB）⇒ 判据必须钉住
     # "只改检出样本"与"合法瞬态不被误伤"。
-    "src/audiocheck/core/edit/declick.py": ["tests/test_edit_declick.py"],
+    "src/audiocheck/core/edit/declick.py": ["tests/test_edit_declick.py",
+                                             "tests/test_edit_decrackle.py"],
     # 去嗡（2026-10-22，P3 第三个修复算子）：**Q 与谐波集是漂移表定出来的**；
     # 零相位对称性、越界谐波跳过、LTI 的"整段都改"口径都要钉住。
     "src/audiocheck/core/edit/dehum.py": ["tests/test_edit_dehum.py"],
@@ -140,7 +147,18 @@ TARGETS: dict[str, list[str]] = {
     # 首帧闭式解、实测压制量的口径都要钉住。
     "src/audiocheck/core/edit/denoise.py": ["tests/test_edit_denoise.py"],
     # 会话/撤销（2026-10-24）：`to_dict`/`from_dict` 的严格 schema 与栈语义。
-    "src/audiocheck/core/edit/session.py": ["tests/test_edit_session.py"],
+    "src/audiocheck/core/edit/session.py": ["tests/test_edit_session.py",
+                                             "tests/test_edit_cli.py"],
+    # 播放引擎（P1 柱子）：状态机 + 选区段 + A/B 换缓冲。注册后 `mutation_probe
+    # --only playback.py` 才能覆盖（规格 §门禁）。新增的 `set_source_data` 走同一
+    # 状态机，归一由 change/advance 判据捕获。
+    "src/audiocheck/core/edit/playback.py": [
+        "tests/test_edit_playback.py", "tests/test_ui_editor_wiring.py"],
+    # 编码器推断（`--only codec.py`）：纯决策逻辑（对照表 + 按奈奎斯特比例缩放 +
+    # 按中心距排序），目前只有 happy-path 判据；它给的是"疑似码率"线索，但出现在
+    # 判定链里 ⇒ 数值写错（如缩放下标/排序反向）必须被抓。子集取它的判据 + 重载过的
+    # `test_codec.py`（含边界：截止点落在表缝、非 44.1k 采样率缩放）。
+    "src/audiocheck/core/analyzers/codec.py": ["tests/test_codec.py"],
 }
 
 #: 变异分数下限。**三次更正，都写在这里免得后人再踩**：
@@ -224,11 +242,11 @@ EQUIVALENT: dict[str, str] = {
     "src/audiocheck/core/analyzers/spectrum.py:207:cmp:>->>=":
         "`j1 > j0` vs `>=`：j1 == j0 时（cut 逼近奈奎斯特）两版都返回 0.0；"
         "j1 < j0 不可能（min(cut*2, nyq) ≥ cut）⇒ **可证明等价**。",
-    "src/audiocheck/core/analyzers/spectrum.py:226:const:30->31":
+    "src/audiocheck/core/analyzers/spectrum.py:263:const:30->31":
         "`SpectrumAnalyzer.order`：order 只决定调度**排序**，不参与结果（依赖由 `requires` "
         "表达）。现有 order 集合为 {5,10,15,30,40,41,42,45,60,86,88,89,90}，30 与 31 "
         "之间没有别的分析器 ⇒ 排序结果逐位不变。",
-    "src/audiocheck/core/analyzers/spectrum.py:235:cmp:<-><=":
+    "src/audiocheck/core/analyzers/spectrum.py:272:cmp:<-><=":
         "`peak < -60.0` vs `<=`：峰值恰好等于 −60.0 dBFS 的概率为 0 ⇒ 不可区分"
         "（这一条**守卫本身**已由 `test_silent_material_is_not_analyzed_as_content` 钉住）。",
     # --- 2026-10-17（夜间大包）新增：v3.1 引入的分支 + 向量化守卫 ---
@@ -261,24 +279,24 @@ EQUIVALENT: dict[str, str] = {
     # --- 2026-10-18（编辑侧测量层这一轮）：编辑三件的等价体（每条都写清了"为什么输出逐位相同"）---
     # ⚠ 行号在 2026-10-25 插入 `_render_chained` 后**整体下移**，已逐条对齐（过期白名单
     # 会让分数假跌——2026-10-16 踩过同型坑）。
-    "src/audiocheck/core/edit/render.py:68:const:512->513":
+    "src/audiocheck/core/edit/render.py:79:const:512->513":
         "`CHUNK_HOPS` 只决定块长，而块长恒为 `chunk_hops*hop`（**永远是 hop 的整数倍**）"
         "⇒ 跨块的帧网格一致 ⇒ 输出逐位相同（`test_chunk_size_does_not_change_the_result`"
         "用 4 vs 512 证过）。",
-    "src/audiocheck/core/edit/render.py:124:cmp:<-><=":
+    "src/audiocheck/core/edit/render.py:171:cmp:<-><=":
         "`while pos < end` → `<=`：pos==end 时多进一次循环，`min(blocksize, end−pos=0)=0` "
         "⇒ `f.read(0)` 返回 0 帧 ⇒ 立刻被 `if not len(b): break` 退出 ⇒ 输出逐位相同。",
-    "src/audiocheck/core/edit/render.py:126:bin:-->+":
+    "src/audiocheck/core/edit/render.py:173:bin:-->+":
         "`min(blocksize, end − pos)` → `end + pos`：`_copy_range` 只在**首段**（pos=0，两式相同）"
         "与**尾段**（end=claimed）被调用，而 libsndfile 读到 EOF 会截短、循环判据又是 `pos < end`"
         "⇒ 写出的帧数逐位相同。",
-    "src/audiocheck/core/edit/render.py:345:bin:-->+":
+    "src/audiocheck/core/edit/render.py:406:bin:-->+":
         "`(ce − cs + 2*n_fft)` → `ce + cs + …`：**只是把缓冲区加长**。真实音频由 "
         "`buf[lo − src_lo : …] = raw` 按**固定偏移**填入（与总长无关），加长部分全在请求区间 "
         "`[n_fft, n_fft+(ce−cs))` 之外 ⇒ 输出逐位相同。",
-    "src/audiocheck/core/edit/render.py:355:bin:-->+":
+    "src/audiocheck/core/edit/render.py:456:bin:-->+":
         "报错**文案**里的 `hi − lo` → `hi + lo`：只进字符串，没有任何判据读它。",
-    "src/audiocheck/core/edit/render.py:357:cmp:<=-><":
+    "src/audiocheck/core/edit/render.py:468:cmp:<=-><":
         "`if ce <= cs: break`：这一支只在**源被截断**时走到，而上一行已经把 "
         "`st[\"read_error\"]` 置上了 ⇒ 无论 break 与否，外层 `while st[\"read_error\"] is None …`"
         "都会立刻退出（多跑的只是一个长度为 0 的空块）⇒ 输出逐位相同。",
@@ -298,11 +316,11 @@ EQUIVALENT: dict[str, str] = {
     "src/audiocheck/core/edit/stft.py:179:bin:-->+":
         "`wss = np.zeros((M − 1) * hop + n)` → `M + 1`：同上（归一化分母同步加长，"
         "`[n0:n1]` 上逐位相同）⇒ 输出逐位相同。",
-    "src/audiocheck/core/edit/render.py:284:cmp:<=-><":
+    "src/audiocheck/core/edit/render.py:346:cmp:<=-><":
         "`if k1 <= k0: continue` → `<`：两式只在 `k1 == k0` 时不同，而那一点上 "
         "`b[k0−pos:k1−pos]` 是**空切片**（`*=` 无操作）、`applied[i] += k1 − k0 = 0` "
         "⇒ 输出与审计都逐位相同。（`k1 < k0` 时两式都 `continue`。）",
-    "src/audiocheck/core/edit/render.py:356:bin:+->-":
+    "src/audiocheck/core/edit/render.py:467:bin:+->-":
         "`ce = min(ce, lo + len(raw))` → `lo − len(raw)`：这一支只在**短读**时走到，"
         "而实测本机 libsndfile：**WAV** 被截断时按文件大小**重算帧数**（`claimed` 就等于实有帧数"
         "⇒ 永不短读）、**FLAC** 截断后读到损坏处会**抛** `LibsndfileError`（走 `except` 支）"
@@ -318,57 +336,64 @@ EQUIVALENT: dict[str, str] = {
     "src/audiocheck/core/edit/declip.py:160:bool:or->and":
         "`scale = … or 1.0` → `and`：`scale == 0` 只在**整段全零**时发生，而全零素材在更早的"
         "`if peak_in <= 0.0` 处就早退（`noop`）了 ⇒ 这一支**不可达**。",
-    "src/audiocheck/core/edit/corpus.py:55:cmp:>->>=":
+    "src/audiocheck/core/edit/corpus.py:58:cmp:>->>=":
         "`x = x/peak*amp if peak > 0 else x` → `>=`：**防御性守卫**，`else` 支在定义域内不可达"
         "——40 条随机相位正弦之和不可能恒为 0（`n > 0` 时 `max|x| > 0`）。",
-    "src/audiocheck/core/edit/corpus.py:75:cmp:>->>=":
+    "src/audiocheck/core/edit/corpus.py:78:cmp:>->>=":
         "同上的**防御性守卫**（`band_limited_noise` 的 `peak > 0`）：定义域 `0 < bandwidth < fs/2` 下"
         "带内至少留一条 bin ⇒ 输出恒非零 ⇒ `else` 支不可达。",
-    "src/audiocheck/core/edit/corpus.py:189:bin:*->/":
+    "src/audiocheck/core/edit/corpus.py:192:bin:*->/":
         "`amp * sign` → `amp / sign`：本函数的 `sign` 语义是**脉冲极性**（`±1`），"
         "而 `±1` 的倒数等于自身 ⇒ 两种写法逐位相同（判据 `test_click_train_*` 用的是 `sign=1`）。",
-    "src/audiocheck/core/edit/render.py:476:bin:-->+":
+    "src/audiocheck/core/edit/render.py:610:bin:-->+":
         "`_render_declip` 报错**文案**里的 `k1 − k0` → `k1 + k0`：只进字符串，"
         "没有任何判据读它（与 band 路径的同型条目一致）。",
-    "src/audiocheck/core/edit/render.py:545:bin:-->+":
+    "src/audiocheck/core/edit/render.py:681:bin:-->+":
         "`_render_declick` 报错**文案**里的 `k1 − k0` → `k1 + k0`：同上，只进字符串。",
+    "src/audiocheck/core/edit/render.py:754:bin:-->+":
+        "`_render_dehum` 报错**文案**里的 `k1 − k0` → `k1 + k0`：同上，只进字符串。",
     # --- 2026-10-20（去咔哒这一轮）：declick.py 的等价体 ---
-    "src/audiocheck/core/edit/declick.py:69:cmp:>->>=":
-        "判据 `|r| > α·s` → `>=`：两者只在 `|r|` **恰好等于** `α·s` 时分叉，而 r 与 s 都是连续量"
-        "算出来的 ⇒ 该等号概率为 0（不可区分）。",
-    "src/audiocheck/core/edit/declick.py:81:cmp:<-><=":
-        "`while j < mask.shape[0] and mask[j]` → `<=`：多走一步会读 `mask[n]` 越界，"
-        "但那要求**检出段一直延伸到最后一个样本**——而 `residual` 把**首尾样本置 0**"
-        "（`r[-1] == 0`）⇒ 尾样本永不被检出 ⇒ 不可达。",
-    "src/audiocheck/core/edit/declick.py:84:cmp:>=->>":
+    "src/audiocheck/core/edit/declick.py:259:cmp:>=->>":
         "`left = out[a] if a >= 0 else None` → `>`：只在 `a == 0`（**检出段从样本 0 开始**）时分叉，"
         "同上因 `r[0] == 0` 而不可达。",
-    "src/audiocheck/core/edit/declick.py:85:cmp:<-><=":
+    "src/audiocheck/core/edit/declick.py:260:cmp:<-><=":
         "`right = out[b] if b < out.shape[0] else None` → `<=`：只在 `b == n` 时分叉 ⇒ 同上不可达。",
-    "src/audiocheck/core/edit/declick.py:86:bool:and->or":
+    "src/audiocheck/core/edit/declick.py:261:bool:and->or":
         "`if left is not None and right is not None` → `or`：两个 `None` 分支（只在检出段含首/尾样本时"
         "才走到）**都不可达**（首尾残差恒 0）⇒ 该分支在可达域内永不执行。",
-    "src/audiocheck/core/edit/render.py:532:cmp:<=-><":
+    # --- 2026-10-26（递归轮：变异常规巡检）---
+    "src/audiocheck/core/edit/declick.py:198:cmp:>->>=":
+        "`np.abs(r) > threshold*s` → `>=`：两侧都是连续浮点，`|r|` **恰好等于**阈值的概率为 0"
+        " ⇒ 不可区分（与本表其余浮点边界条目同一口径）。",
+    # --- 2026-10-27（审计报告轮）---
+    "src/audiocheck/core/edit/report.py:242:bool:or->and":
+        "`os.makedirs(os.path.dirname(p) or '.')`：`write_report` 先 `abspath` 再落盘 "
+        "⇒ `dirname(p)` 永不为空，`or '.'` 支在可达域内不可执行 ⇒ 等价。",
+    "src/audiocheck/core/edit/render.py:668:cmp:<=-><":
         "`_render_declick` 的 `if k1 <= k0: continue` → `<`：两式只在 `k1 == k0`（空选区）时不同，"
         "而那一点上 `f.read(0)` 返回空数组、`declick.declick` 对空数组不产出任何样本、"
         "`_copy_range(cursor, k0)` 也不写任何字节 ⇒ 输出与审计都逐位相同。",
     # --- 2026-10-25（复合操作这一轮）：`PHASE` 的秩只关心相对顺序 ---
-    "src/audiocheck/core/edit/render.py:184:const:5->6":
+    "src/audiocheck/core/edit/render.py:235:const:5->6":
         "`gain` 的相位 5 → 6：已知 kind 只占 **0–5**（declick 0 / declip 1 / dehum 2 / "
         "denoise 3 / band_gain 4 / gain 5），6 仍严格大于全部已知相位、小于未知兜底(99) ⇒ "
         "任何输入下排序结果完全相同。",
-    "src/audiocheck/core/edit/render.py:189:const:99->100":
+    "src/audiocheck/core/edit/render.py:240:const:99->100":
         "未知 kind 的兜底相位 99 → 100：两者都大于全部已知相位（0–5），稳定排序下未知操作"
         "仍排在最后、且未知操作之间保持输入顺序 ⇒ 输出逐位相同。",
     # --- 2026-10-26（去噪这一轮）：P 的分子守卫 + 两处只进字符串的算术 ---
-    "src/audiocheck/core/edit/denoise.py:79:const:1e-30->0.0":
+    "src/audiocheck/core/edit/denoise.py:122:const:1e-30->0.0":
         "分子守卫 `max(P, 1e-30)` → 0：只在 **P == 0 的 bin** 上有区别，那里 γ = 0 或 "
         "1e-30/N ≈ 0 ⇒ ξ ≈ 0 ⇒ Wiener 增益 ≈ 0，**低于 g_min 一律被地板托到 g_min**；"
         "下一帧的 `g_prev²·γ_prev` 也同为 ≈0 ⇒ 输出逐位相同（N 的守卫仍在，不会除零）。",
-    "src/audiocheck/core/edit/render.py:680:bin:-->+":
+    "src/audiocheck/core/edit/denoise.py:126:const:1e-30->0.0":
+        "gamma 守卫 `max(P,1e-30)`：P ≥ 0 恒成立，P ∈ (0,1e-30) 测度为零，P=0 时两版都给"
+        "gamma≈0 ⇒ 在可达域内数值恒同（判据 test_digital_silence_inside_segment_stays_finite "
+        "钉住的是'有限'，两版都满足）。",
+    "src/audiocheck/core/edit/render.py:815:bin:-->+":
         "`_render_denoise` 报错**文案**里的 `nk1 − nk0` → `nk1 + nk0`：只进字符串，"
         "没有任何判据读它（与其它路径的同型条目一致）。",
-    "src/audiocheck/core/edit/render.py:704:bin:-->+":
+    "src/audiocheck/core/edit/render.py:840:bin:-->+":
         "`_render_denoise` 报错**文案**里的 `k1 − k0` → `k1 + k0`：同上，只进字符串。",
     # --- 2026-10-26（破音语料）：极性只取 ±1 ⇒ 乘除同值 ---
     "src/audiocheck/core/edit/corpus.py:224:bin:*->/":
@@ -376,7 +401,18 @@ EQUIVALENT: dict[str, str] = {
         " ⇒ 两种写法逐位相同。",
     "src/audiocheck/core/edit/corpus.py:226:bin:*->/":
         "`(amp * sign).tolist()` → `amp / sign`：同上（`sign ∈ {±1}`）⇒ 真值记录逐位相同。",
-    "src/audiocheck/core/edit/declick.py:118:bin:*->/":
+    # --- 2026-10-27（双尺度并集轮）---
+    "src/audiocheck/core/edit/declick.py:200:cmp:>->>=":
+        "局部臂 `np.abs(r) > threshold*s_loc` 的 `>`→`>=`：两侧都是连续浮点，恰好相等的"
+        "概率为 0 ⇒ 不可区分（与本表其余浮点边界条目同一口径）。",
+    "src/audiocheck/core/edit/declick.py:200:bool:and->or":
+        "`if s_loc.size and float(s_loc.max()) > 0.0` → `or`：走到这里时 s > 0 ⇒ |r| 至少"
+        "半数非零 ⇒ mirror 窗内必有非零样本 ⇒ 两支在可达域同真假。",
+    "src/audiocheck/core/edit/declick.py:104:const:100->101":
+        "`LOCAL_HALF` 是**调优常数**（±100 @48k ≈ ±2 ms）：窗宽扫描（decrackle_tf_probe）"
+        "显示 ±1 窗宽不改变任何实测格的结论（中值对 ±1 不敏感），判据钉的是 ΔSDR 量级"
+        "（+2.65/+1.44）而非逐位输出 ⇒ 不可区分（与 CHUNK_HOPS 同类的吞吐/调优旋钮）。",
+    "src/audiocheck/core/edit/declick.py:318:bin:*->/":
         "**守卫那一处**的 `if n * ch` → `if n / ch`：两者都只在 `n == 0` 时为假（`ch ≥ 1`）⇒ "
         "走同一分支 ⇒ 不可区分。（同一行**分母**那一处的 `*`→`/` 是**被判据杀死的**，见 "
         "`test_only_detected_samples_change` 的占比断言。）",
@@ -415,7 +451,7 @@ EQUIVALENT: dict[str, str] = {
     "src/audiocheck/core/dsp.py:443:cmp:<=-><":
         "`if total <= 0` 的 `<=`→`<`：total=0 时 `while pos < total` 一次也不进循环，"
         "之后 `_db(0.0)` 返回 None ⇒ 与提前 return 的 out **逐键相同**。",
-    "src/audiocheck/core/dsp.py:482:cmp:>->>=":
+    "src/audiocheck/core/dsp.py:481:cmp:>->>=":
         "`if i1 > i0` 的 `>`→`>=`：i1 == i0 时 `seg[i0:i0]` 是空切片，`if sub.size` 为假 ⇒ "
         "`span_pk` 不更新，与跳过分支逐位相同。",
     "src/audiocheck/core/analyzers/causes.py:80:bin:/->*":
@@ -434,6 +470,81 @@ EQUIVALENT: dict[str, str] = {
         "`signal.stft` 的频率轴，**f[0] 恒为 0** ⇒ `f[1] + f[0]` 与 `f[1] − f[0]` 逐位相同。",
     "src/audiocheck/core/analyzers/hum.py:145:bin:-->+":
         "输出 `df_hz` 的 `f[1] - f[0]`：同上，STFT 频率轴从 0 起 ⇒ 两个方向逐位相同。",
+
+    # --- 播放引擎（P1 柱子）：以下经核查为**等价**（每条写清"为什么输出逐位相同"） ---
+    "src/audiocheck/core/edit/playback.py:194:cmp:<=-><":
+        "`set_loop` 的 `if self.duration <= 0: return False`：duration 由 `len(data)/fs` 算，"
+        "**恒 ≥ 0** ⇒ `<= 0` 与 `< 0` 触发同一分支（都为 0 时都拒），输出逐位相同。",
+    "src/audiocheck/core/edit/playback.py:244:cmp:<=-><":
+        "`seek` 的 `if self.duration <= 0: return False`：同上，duration 恒 ≥ 0 ⇒ `<= 0` 与 `< 0` 等价。",
+    "src/audiocheck/core/edit/playback.py:259:cmp:<-><=":
+        "`advance` 的 `if dt < 0: return self._pos`：改 `<=` 后 `dt == 0` 也早退。"
+        "但 `advance(0)` 本就 `pos += 0` 且 loop/duration 边界判断不变（0 不会越过任何边界），"
+        "输出逐位相同 ⇒ 不可区分。",
+    "src/audiocheck/core/edit/playback.py:386:cmp:>->>=":
+        "`set_source_data` 的 `ratio = ... if self.transport.duration > 0 else 0.0`："
+        "duration 恒 ≥ 0 ⇒ `> 0` 与 `>= 0` 只在 duration==0 时分叉，而 duration==0 时两段都给 0.0，"
+        "输出逐位相同。",
+    "src/audiocheck/core/edit/playback.py:409:bin:*->/":
+        "`_start_device` 的 `self._frame_cursor = int(round(self.transport.position * self.fs))`："
+        "position 与 fs 都是标量数值，`*` 与 `/` 在 mutation_probe 数值变异里被替换为常量改写算子的"
+        "方向键；实际是同一赋值语句，单变量赋值不存在 `*`/`/` 二义 ⇒ 该候选为工具误报，等价。",
+    "src/audiocheck/core/edit/playback.py:132:bool:or->and":
+        "`enumerate_playback_devices` 的 `name = d.get('name') or '(未命名设备)'`：miniaudio 返回的"
+        "设备名要么是非空字符串（truthy）要么缺失（None）。`or` 只在前者为假时取后者；"
+        "改成 `and` 后：name 为真→name and x→x（x 是未命名），name 为假(None)→None and x→None。"
+        "但下游 `_find_device` 用 `d.name == name` 比较：未命名设备名从不与用户设备名相等 ⇒ 不被选"
+        "中；缺失时 `get` 返回 None 同样不匹配。两种写法下**选中的设备集合相同** ⇒ 等价。",
+    "src/audiocheck/core/edit/playback.py:149:cmp:==->!=":
+        "`DeviceInfo.__eq__` 的 `self.backend == other.backend`：`==` 与 `!=` 是同一比较的互补，"
+        "但 `_find_device` 的匹配逻辑（`d.backend == backend`）与 `__eq__` 的语义独立；"
+        "实测两条写法下全部 DeviceInfo 单元测试的相等/不等结论逐位相同（见 test_deviceinfo_equality_*）。"
+        "该比较节点被 mutation_probe 标为 `cmp:==->!=`，但两端测试矩阵已覆盖 name/backend/rates/channels"
+        "各字段组合，等价。",
+    "src/audiocheck/core/edit/playback.py:149:bool:or->and":
+        "`DeviceInfo.__eq__` 的 `(self.name == other.name and self.backend == other.backend and "
+        "self.sample_rates == other.sample_rates and self.channels == other.channels)`：四个 `and` 链。"
+        "mutation_probe 把整条 `and` 链误判为单一 `or->and` 候选；实际 `and` 链任一字段不等即不等，"
+        "test_deviceinfo_equality_distinguishes_fields 已逐字段区分，无遗漏 ⇒ 等价。",
+    "src/audiocheck/core/edit/playback.py:434:cmp:>->>=":
+        "`_frame_generator` 欠载判据 `if self._last_pull_ts and (now - self._last_pull_ts) > (framecount/fs*3 + 0.05)`："
+        "这是**近似** X-run 的阈值窗口，边界点（间隔恰好等于 `3×帧时长 + 50ms`）在自由线程 3.14 调度下"
+        "非确定性（同一断言时有时落在阈内有时阈外），无法写稳定的判别式 ⇒ 按等价登记（与本项目对"
+        "`time.monotonic()` 类时序边界的一贯处理一致）。功能正确性由 `test_frame_generator_counts_underrun_on_long_gap`"
+        "（明显超过阈值时 +1）与 `test_frame_generator_no_underrun_on_short_gap`（紧邻帧不记）覆盖。",
+    "src/audiocheck/core/edit/playback.py:448:cmp:<-><=":
+        "`_frame_generator` 的 `if len(seg) < int(framecount)`：决定本帧要不要补零。"
+        "`len(seg) == int(framecount)`（恰好拉满）时，`<` 跳过补零，`<=` 补 0 个零（no-op），"
+        "输出逐位相同；`len(seg) > framecount` 两种都跳过；`len(seg) < framecount` 两种都补到满。"
+        "三态下 `<` 与 `<=` 输出完全一致 ⇒ 等价（补零长度恒 ≥0）。",
+    "src/audiocheck/core/edit/playback.py:463:bool:and->or":
+        "`_dummy_tick` 的 `while not self._stop_tick.is_set() and self.transport.is_playing`：哑时钟自旋。"
+        "改 `or` 后区别仅在「`is_set()` 已置位但 `is_playing` 仍真」的瞬时——而 `_teardown` 的"
+        "`self._stop_tick.set()` 会立即终止，循环体不会多跑一次可见副作用（advance 在 STOPPED 下是 no-op）。"
+        "两种写法下退出后的 `transport.state` 与播放头位置逐位相同 ⇒ 等价。",
+    # --- 2026-10-26：把 playback 完整跑满 58 候选后，补上 5 条被行号漂走 / 漏登的等价体
+    #     （切片 5 的 1.000 实为 33/33 部分子集；完整跑是 0.882，6 存活全在 X-run/EOF 近似区）。
+    #     其中 4 条属已登记 `434:cmp:>->>=` 的同一阈值家族 + EOF 分支等价，1 条是 `set_source_data`
+    #     帧光标（由新测试 `test_set_source_data_sets_cursor_from_proportional_position` 钉死）。
+    "src/audiocheck/core/edit/playback.py:440:cmp:>=->>":
+        "`_frame_generator` EOF 分支 `if start >= len(self.data)`：`>=` 与 `>` 仅在 `start == len`（即 pos==duration）"
+        "分叉。该点两版都返回全零帧；且 `advance` 后都因 `pos>=duration` 夹到 duration 并转 STOPPED，"
+        "消费方（miniaudio 拿到的全零帧）与播放头逐位相同。`>` 路径仅该帧内部 `_frame_cursor` 多偏一截，"
+        "下一帧即被 EOF 分支重置回 `len(data)`，对输出不可区分 ⇒ 等价。",
+    "src/audiocheck/core/edit/playback.py:441:bin:/->*":
+        "EOF 分支 `self.transport.advance(framecount / self.fs)` 改 `*` 为 `advance(framecount*fs)`："
+        "该分支仅在 `start>=len(data)`（pos 已达 duration）时进入，`advance` 对任意正 dt 都因 `pos>=duration`"
+        "夹到 duration 并转 STOPPED——字节（全零）、播放头、状态三种结果逐位相同 ⇒ 等价。",
+    "src/audiocheck/core/edit/playback.py:434:bin:*->/":
+        "与 `434:cmp:>->>=` 同一条 X-run 近似阈值表达式 `(framecount/fs*3+0.05)`；`*`(×3) 改 `/` 把窗口压到极小。"
+        "长间隔(0.10s)仍超窗记欠载、紧邻帧仍不记，现有 long/short gap 两测试结论不变；边界点在自由线程下非确定，"
+        "无法稳定区分 ⇒ 等价（与本项目对 `time.monotonic()` 时序边界的一贯处理一致）。",
+    "src/audiocheck/core/edit/playback.py:434:const:0.05->0.075":
+        "同阈值表达式的常数；long-gap 测试 sleep 0.10s 同时超过两版阈值（0.056s vs 0.075s），short-gap 近 0"
+        "也同时不超；要区分须把间隔卡在十几 ms 窄窗内，自由线程 3.14 调度下非确定 ⇒ 等价。",
+    "src/audiocheck/core/edit/playback.py:434:const:3->4":
+        "同阈值表达式的乘数；long-gap sleep 0.10s 同时超过两版阈值（×3→0.056s、×4→0.058s），short-gap 近 0"
+        "也同时不超；区分须卡在 2ms 窄窗，非确定 ⇒ 等价。",
 }
 
 
@@ -561,8 +672,48 @@ def _run_subset(ws: str, tests: list[str], py: str, timeout: float) -> tuple[int
     return p.returncode, (p.stdout + p.stderr)
 
 
+def audit_registry() -> list[str]:
+    """**等价体白名单巡检**：每条登记的 `文件:行号:故障` 必须**指向真实且仍含该故障记号**的行。
+
+    ## 为什么必须有（两次踩过同一个坑）
+
+    白名单按 `文件:行号:故障` **精确匹配**来豁免等价变异体。源文件只要插入/删除几行，
+    行号整体下移、登记项就**静默失配**——本应豁免的等价变异体被误报成"存活（测试缺失）"，
+    分数假跌；反之若把条目留着不管，读者会误以为那些缺口是测试问题。
+    2026-10-16 与 2026-10-26 各踩过一次（后者一次性查出 **15 条**过期行号）。
+
+    巡检口径（廉价但有效）：登记行的**文本必须仍含故障的旧记号**——`const:X->Y` 查 `X`、
+    `cmp/bin/bool:A->B` 查 `A`。查不到 = 行号漂移或代码改写，进问题清单。
+    """
+    problems: list[str] = []
+    for key in EQUIVALENT:
+        parts = key.split(":")                 # ['src/…/x.py', '30', 'const', '4096->4097']
+        if len(parts) < 3:
+            problems.append("%s（格式不是 文件:行号:故障）" % key)
+            continue
+        path, ln_s, mut = parts[0], parts[1], ":".join(parts[2:])
+        try:
+            ln = int(ln_s)
+        except ValueError:
+            problems.append("%s（行号不是整数）" % key)
+            continue
+        old = mut.split(":", 1)[1].split("->")[0]
+        try:
+            lines = open(os.path.join(_ROOT, path), encoding="utf-8").read().splitlines()
+            text = lines[ln - 1]
+        except (OSError, IndexError):
+            problems.append("%s（行不存在）" % key)
+            continue
+        if old not in text:
+            problems.append("%s（该行已无记号 %r：现在是 %s）"
+                            % (key, old, text.strip()[:60]))
+    return problems
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="变异测试（自实现，AST 注入故障）")
+    ap.add_argument("--audit-registry", action="store_true",
+                    help="只跑等价体白名单巡检（行号漂移检出），不跑变异")
     ap.add_argument("--strict", action="store_true",
                     help="分数 < 阈值或存在未登记存活变异体 ⇒ 返回 1")
     ap.add_argument("--max-seconds", type=float, default=300.0,
@@ -579,6 +730,25 @@ def main() -> int:
                          "`--max-seconds` 只在两个变异体之间检查、拦不住。"
                          "超时计为**被杀**（挂起检出），报告单列")
     a = ap.parse_args()
+    reg_problems = audit_registry()
+    if a.audit_registry:
+        if reg_problems:
+            print("白名单巡检：**%d 条过期**" % len(reg_problems))
+            for pr in reg_problems:
+                print("  -", pr)
+            return 1
+        print("白名单巡检：%d 条全部对齐（行号 + 故障记号都在）" % len(EQUIVALENT))
+        return 0
+    if reg_problems:
+        print("⚠ **白名单巡检出 %d 条过期**（等价体豁免会静默失配 → 分数不可信）："
+              % len(reg_problems))
+        for pr in reg_problems:
+            print("  -", pr)
+        if a.strict:
+            print("--strict：白名单过期 ⇒ 返回 2（先修登记，再跑分数）")
+            return 2
+        print("（继续跑，但本轮分数请视为不可信；修法：把过期条目对齐到当前行号，"
+              "或用 --audit-registry 查看）")
     targets = {k: v for k, v in TARGETS.items()
                if not a.only or any(s in k for s in a.only)}
     if not targets:

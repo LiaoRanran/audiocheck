@@ -197,7 +197,7 @@ def test_selection_outside_and_profile_are_bit_exact(tmp_path):
     assert np.array_equal(a[int(1.5 * FS):], b[int(1.5 * FS):]), "选区之后被写动了"
     assert not np.array_equal(a[lead:int(1.5 * FS)], b[lead:int(1.5 * FS)]), (
         "选区内没有被改——判据失去意义")
-    assert audit["domain"] == "denoise" and audit["algorithm"] == "wiener_dd_profile"
+    assert audit["domain"] == "denoise" and audit["algorithm"] == "wiener_dd_floor_tracked"
     rec = audit["ops"][0]
     assert rec["noise_samples"] == lead
     for key in ("noise_t0", "noise_t1", "noise_samples", "noise_frames",
@@ -322,3 +322,180 @@ def test_denoise_chains_with_gain(tmp_path):
                                  DenoiseOp(LEAD, 2.0, 0.0, LEAD)]), dst)
     assert audit["chained"] is True
     assert [s["op"]["kind"] for s in audit["stages"]] == ["denoise", "gain"]
+
+
+# ------------------------------------------------- 逐帧噪声底跟踪（2026-10-27，schema v2）
+def _stepped_pack():
+    """台阶噪声床语料（与 denoise_nonstat_probe 同构）：内容三段 低→高→低。"""
+    import numpy as np
+    FS = 48000
+    clean = corpus.harmonic_tone(6.0, FS, amp=0.5, seed=3)
+    n = clean.shape[0]
+    p = float(np.sum(clean ** 2))
+
+    def rms_for(snr):
+        return float(np.sqrt(p / n / (10.0 ** (snr / 10.0))))
+
+    def w(k, rms, seed):
+        return np.random.default_rng(seed).standard_normal((k, 1)) * rms
+
+    pad = FS
+    prefix = np.concatenate([w(pad // 2, rms_for(10.0), 10), w(pad - pad // 2, rms_for(0.0), 12)])
+    body = np.concatenate([w(n // 3, rms_for(10.0), 11), w(n // 3, rms_for(0.0), 12),
+                           w(n - 2 * (n // 3), rms_for(10.0), 13)])
+    clean_full = np.concatenate([np.zeros((pad, 1)), clean])
+    return {"clean": clean_full, "noisy": clean_full + np.concatenate([prefix, body]),
+            "pure_low": (0.0, 0.5)}
+
+
+def test_floor_tracking_recovers_stepped_floor(tmp_path):
+    """★ 台阶噪声床 + 低床参考：跟踪把"留白"收回（低床段 ΔSDR +2.04 → +9.03 实测）。
+
+    钉 ≥ +6 dB：跟踪关时该段只有 +2.04（欠压制），开时 +9.03——这是本特性的存在理由。
+    """
+    from audiocheck.core.edit.metrics import sdr_db
+    pack = _stepped_pack()
+    FS = 48000
+    y = pack["noisy"]
+    nz = y[0:int(0.5 * FS)]
+    out, st = denoise.denoise(y[int(1.0 * FS):int(7.0 * FS)], nz, track_floor=True)
+    ref = pack["clean"][int(5.0 * FS):int(7.0 * FS)]
+    d = sdr_db(out[int(4.0 * FS):int(6.0 * FS)], ref) - \
+        sdr_db(y[int(5.0 * FS):int(7.0 * FS)], ref)
+    assert d > 6.0, "低床段应从 +2.04 提到 +9.03 量级，得到 %+.2f dB" % d
+    assert st["track_floor"] is True and "floor_track_db" in st
+
+
+def test_floor_tracking_stationary_cost_is_bounded():
+    """★ 稳态素材上跟踪的代价有界（实测 ≤0.66 dB）：钉 |Δ| ≤ 1.5 dB（四格最差留余量）。"""
+    import numpy as np
+
+    from audiocheck.core.edit.metrics import sdr_db
+    FS = 48000
+    for snr, kind, seed in ((10.0, "white", 41), (0.0, "white", 42), (-5.0, "white", 43),
+                            (0.0, "pink", 44)):
+        pack = corpus.add_noise(corpus.harmonic_tone(2.0, FS, amp=0.5, seed=3),
+                                snr, kind, seed=seed)
+        clean, y = pack["clean"], pack["noisy"]
+        nz = corpus.white_noise(0.5, FS,
+                                rms=float(np.sqrt(np.mean(pack["noise"] ** 2))), seed=99)
+        d0 = sdr_db(denoise.denoise(y, nz)[0], clean) - sdr_db(y, clean)
+        d1 = sdr_db(denoise.denoise(y, nz, track_floor=True)[0], clean) - sdr_db(y, clean)
+        assert abs(d1 - d0) <= 1.5, \
+            "%s @%+g：跟踪代价 |Δ|=%.2f 超界（基线 %.2f）" % (kind, snr, abs(d1 - d0), d0)
+
+
+def test_track_floor_off_is_v1_algorithm_name():
+    """track_floor=False ⇒ 口径名回到 `wiener_dd_profile`（语义变了名字必须变，双向都钉）。"""
+    import numpy as np
+    pack = corpus.add_noise(corpus.harmonic_tone(1.0, 48000, amp=0.5, seed=3), 0.0,
+                            "white", seed=45)
+    nz = corpus.white_noise(0.5, 48000,
+                            rms=float(np.sqrt(np.mean(pack["noise"] ** 2))), seed=46)
+    _, st_off = denoise.denoise(pack["noisy"], nz, track_floor=False)
+    _, st_on = denoise.denoise(pack["noisy"], nz, track_floor=True)
+    assert st_off["track_floor"] is False and "floor_track_db" not in st_off
+    assert st_on["track_floor"] is True
+
+
+# ------------------------------------------------- _floor_track 单元钉死（变异轮缺口）
+def test_floor_track_exact_values_on_synthetic():
+    """★ 合成小数组**逐值**钉死 `_floor_track`（因果语义：out[t] = clip(r[0..t-1] 的
+    λ 混合)；r = median_b(P/N)·(1/ln2)）。序列同时让**上下 clip 都绑定**：
+
+    N=1、P（单 bin，5 帧）= [0.1, 100, 0.5, 3, 3] ⇒ r = P/ln2
+    = [0.1443, 144.27, 0.7213, 4.328, 4.328]。**先发后更**（out[t] = r[0..t−1] 的混合）：
+    out0 = clip(0.1443) = **0.25**（下界在场）
+    out1 = clip(r0) = 0.25；L←0.8·0.1443+0.2·144.27 = 28.97
+    out2 = clip(28.97) = **4.0**（上界在场，TRACK_SCALE_MAX 钉死）；L←23.32
+    out3 = 4.0；out4 = 4.0
+    比值若被改成乘、ln2 校正若被改除、λ 混合若被改除——数值全部对不上 ⇒ 全杀。
+    """
+    import numpy as np
+
+    from audiocheck.core.edit.denoise import _floor_track
+    P = np.array([[[0.1], [100.0], [0.5], [3.0], [3.0]]])    # (bins=1, frames=5, ch=1)
+    N = np.array([[1.0]])                                    # (bins=1, ch=1)
+    out = _floor_track(P, N)
+    got = out[0, :, 0]
+    lv = 0.1 / np.log(2.0)
+    vals = []
+    for p in [0.1, 100.0, 0.5, 3.0, 3.0]:
+        vals.append(min(max(lv, 0.25), 4.0))      # 先发
+        lv = 0.8 * lv + 0.2 * (p / np.log(2.0))   # 后更（与实现同序）
+    assert np.allclose(got, vals, rtol=1e-12), (got, vals)
+    assert abs(got[0] - 0.25) < 1e-12 and abs(got[2] - 4.0) < 1e-12
+
+
+def test_floor_track_output_is_finite_when_noise_segment_is_silent():
+    """★ 噪声段=数字静音：N=0 ⇒ 守卫 `max(N,1e-30)` 在场 ⇒ 输出**有限**（不许 NaN 扩散）。
+
+    1e-30→0.0 的变异会让 ratio=P/0=inf、中位数=NaN、增益 NaN、输出 NaN——
+    "用户拿了一段静音当噪声段"是真实误操作，产出必须是有限值。
+    """
+    import numpy as np
+    FS = 48000
+    pack = corpus.add_noise(corpus.harmonic_tone(2.0, FS, amp=0.5, seed=3), 0.0,
+                            "white", seed=47)
+    out, st = denoise.denoise(pack["noisy"], np.zeros((FS, 1)), track_floor=True)
+    assert np.isfinite(out).all(), "静音噪声段不许产出 NaN/inf"
+    # N=0 ⇒ floor_track_db 退化为地板值（0/0 → 1e-30 → −300 dB）：有限、如实，不装有意义
+    assert st["floor_track_db"]["max"] == -300.0
+    assert np.isfinite(st["floor_track_db"]["max"])
+
+
+def test_floor_track_stats_match_recomputation():
+    """★ `floor_track_db` 必须等于 `20·log10(N_track/N)` 的实测重算（报告式钉死）。"""
+    import numpy as np
+
+    from audiocheck.core.edit import stft as _stft
+    from audiocheck.core.edit.denoise import _floor_track
+    FS = 48000
+    pack = corpus.add_noise(corpus.harmonic_tone(2.0, FS, amp=0.5, seed=3), 0.0,
+                            "white", seed=48)
+    nz = corpus.white_noise(0.5, FS, rms=float(np.sqrt(np.mean(pack["noise"] ** 2))), seed=49)
+    out, st = denoise.denoise(pack["noisy"], nz, track_floor=True)
+    S, _ = _stft.analyze(pack["noisy"], n_fft=4096, hop=1024)
+    Sn, _ = _stft.analyze(nz, n_fft=4096, hop=1024)
+    N = (np.abs(Sn) ** 2).mean(axis=1)
+    Nt = _floor_track(np.abs(S) ** 2, N)
+    db = 10.0 * np.log10(np.maximum(Nt / np.maximum(N[:, None, :], 1e-30), 1e-30))
+    assert st["floor_track_db"]["max"] == round(float(db.max()), 3)
+    assert st["floor_track_db"]["min"] == round(float(db.min()), 3)
+    assert st["floor_track_db"]["mean"] == round(float(db.mean()), 3)
+
+
+def test_floor_track_ln2_correction_without_clip_saturation():
+    """★ ln2 偏置校正在**不饱和区间**内逐值钉死（×/÷ 变异被 clip 饱和吞不掉的补丁）。
+
+    r = median·(1/ln2)（正确）vs median·ln2（变异）差 2.08 倍——取 r 全程落在
+    (0.25, 4) 内的序列，逐值分开。
+    """
+    import numpy as np
+
+    from audiocheck.core.edit.denoise import _floor_track
+    P = np.array([[[0.7], [1.4], [0.7]]])                # (1, 3, 1)
+    N = np.array([[1.0]])
+    out = _floor_track(P, N)
+    got = out[0, :, 0]
+    lv = 0.7 / np.log(2.0)                               # 1.0101
+    vals = []
+    for p in [0.7, 1.4, 0.7]:
+        vals.append(min(max(lv, 0.25), 4.0))
+        lv = 0.8 * lv + 0.2 * (p / np.log(2.0))
+    assert np.allclose(got, vals, rtol=1e-12), (got, vals)
+    assert abs(got[0] - 0.7 / np.log(2.0)) < 1e-12       # 正确方向：/ln2（1.010），不是 ×ln2（0.485）
+
+
+def test_digital_silence_inside_segment_stays_finite():
+    """★ 选区内含**数字静音**段：gamma 守卫 `max(P,1e-30)` 在场 ⇒ 输出有限（不许 NaN）。"""
+    import numpy as np
+    FS = 48000
+    pack = corpus.add_noise(corpus.harmonic_tone(2.0, FS, amp=0.5, seed=3), 0.0,
+                            "white", seed=50)
+    y = pack["noisy"].copy()
+    y[int(0.5 * FS):int(0.7 * FS)] = 0.0                 # 段内 0.2 s 数字静音
+    nz = corpus.white_noise(0.5, FS, rms=float(np.sqrt(np.mean(pack["noise"] ** 2))), seed=51)
+    out, st = denoise.denoise(y, nz, track_floor=True)
+    assert np.isfinite(out).all(), "段内静音不许产出 NaN/inf"
+    assert np.isfinite(st["energy_ratio_measured_db"] or 0.0)

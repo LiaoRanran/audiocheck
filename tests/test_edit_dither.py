@@ -96,7 +96,8 @@ def test_dither_is_deterministic(tmp_path):
     b = str(tmp_path / "b16.wav")
     render(Project(src, []), a, subtype="PCM_16", dither=True)
     render(Project(src, []), b, subtype="PCM_16", dither=True)
-    assert open(a, "rb").read() == open(b, "rb").read()
+    from test_edit_cli import _bytes
+    assert _bytes(a) == _bytes(b)      # PEAK 时间戳归一化（秒边界 flaky 口径）
 
 
 def test_dither_on_pcm24_uses_the_24bit_lsb(tmp_path):
@@ -124,7 +125,8 @@ def test_dither_in_a_chained_render_still_deterministic(tmp_path):
     audit = render(proj, a, subtype="PCM_16", dither=True)
     render(proj, b, subtype="PCM_16", dither=True)
     assert audit["chained"] is True and audit["dither"] is True
-    assert open(a, "rb").read() == open(b, "rb").read()
+    from test_edit_cli import _bytes
+    assert _bytes(a) == _bytes(b)      # PEAK 时间戳归一化（秒边界 flaky 口径）
 
 
 def test_pcm_bit_table_is_exact():

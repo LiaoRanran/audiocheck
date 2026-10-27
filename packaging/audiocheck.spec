@@ -35,6 +35,19 @@ hiddenimports = (
        "audiocheck.core.pipeline", "audiocheck.core.registry",
        "audiocheck.core.views", "audiocheck.ui", "audiocheck.ui.app",
        "audiocheck.cli", "audiocheck.config", "audiocheck.summarize",
+       # 编辑工作站（P0–P5 新主线）：内核 + CLI + 入口都显式列出
+       #（与 ANALYZERS 同理：动态导入的路径静态分析看不见）。
+       "audiocheck.core.edit", "audiocheck.core.edit.ops",
+       "audiocheck.core.edit.render", "audiocheck.core.edit.session",
+       "audiocheck.core.edit.report", "audiocheck.core.edit.corpus",
+       "audiocheck.core.edit.stft", "audiocheck.core.edit.declip",
+       "audiocheck.core.edit.declick", "audiocheck.core.edit.dehum",
+       "audiocheck.core.edit.denoise", "audiocheck.core.edit.metrics",
+       "audiocheck.core.edit.playback", "audiocheck.edit_cli",
+       "audiocheck.ui.editor", "audiocheck.ui.editor.shell",
+       "audiocheck.ui.editor.ops", "audiocheck.ui.editor.inspector",
+       "audiocheck.ui.editor.batch", "audiocheck.ui.editor.transport",
+       "audiocheck.ui.editor.editor_view", "audiocheck.ui.editor.export_dialog",
        "soundfile", "mutagen", "mutagen.flac", "matplotlib.backends.backend_agg"]
 )
 
@@ -76,7 +89,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,   # Agent G 调研：UPX 是杀软误报重灾区（ClamAV/AVG 直接报毒）——关。
     console=False,                    # GUI 程序：不弹控制台窗口
     disable_windowed_traceback=False,
     argv_emulation=False,

@@ -1,13 +1,21 @@
 # audiocheck
 
-**看内容，不看标签。**
+**看内容，不看标签。改了什么，说得清。**
 
-判断音频文件是「真 Hi-Res」还是「升频糊弄」，量出音乐特性，并把它附带的所有信息摊开。
+两个能力，一套内核：
+
+- **体检**：判断音频是「真 Hi-Res」还是「升频糊弄」，量出音乐特性，把所有信息摊开；
+- **修复**（2026-10 起）：非破坏编辑工作站——去削波 / 去咔哒 / 去嗡 / 去噪 /
+  时频与多边形选区增益，**每一次修复都产出可核对、可复算的审计记录**。
+
+> **差异化：可审计的修复（auditable repair）。** iZotope RX 点了"De-noise"你不知道它改了什么；
+> 这里每一次渲染都返回机器审计（改了什么 / 依据什么 / 实测多少）+ 人读 Markdown 报告
+> + SHA256 证据链 + 可复算的项目/修复链 JSON。
 
 [![CI](https://github.com/LiaoRanran/audiocheck/actions/workflows/ci.yml/badge.svg)](https://github.com/LiaoRanran/audiocheck/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-69%20passed-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-1383%20passed-brightgreen)](tests/)
 
 ![界面](shots/dark_1_总览.png)
 
@@ -51,12 +59,29 @@ audiocheck --only spectrum,loudness a.flac     # 只跑部分分析器（调试�
 audiocheck --config my_thresholds.json a.flac  # 自定义判定阈值
 
 audiocheck-gui                                 # 桌面版（可直接拖文件夹进窗口）
+
+# 修复（非破坏；源文件只读）
+python -m audiocheck.edit_cli 源.wav 出.wav --declick --at 0.5-2.0 --audit 审计.json
+python -m audiocheck.edit_cli 源.wav 出.wav --gain -6 --poly "0.3,1000;1.5,1000;1.5,4500;0.3,4500"
+python -m audiocheck.edit_cli 源.wav 出.wav --chain 修复链.json --report 报告.md
+python -m audiocheck.edit_cli --batch 作业清单.json   # 批量，逐项隔离
+python -m audiocheck.ui.editor                          # 编辑工作站（套索/矩形选区 + A/B）
 python -m audiocheck.summarize out.json 报告.md # 汇总成曲库特性报告
 ```
 
 Python API：
 
 ```python
+# 修复（非破坏 + 可审计）
+from audiocheck.core.edit import DeclickOp, DeclipOp, Project, render
+from audiocheck.core.edit.report import write_report
+
+audit = render(Project("in.wav", [DeclickOp(0.5, 2.0), DeclipOp(0.5, 2.0, 21000.0)]),
+               "out.wav", overwrite=True)
+print(audit["audit_digest"])          # 同一修复 ⇒ 同摘要（跨机可核对）
+write_report(audit, "report.md")      # 人读报告（每个数值标〔实测〕〔推导〕〔设定〕）
+
+# 体检
 import audiocheck
 
 r = audiocheck.analyze("song.flac")

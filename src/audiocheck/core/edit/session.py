@@ -19,6 +19,11 @@
 """
 from __future__ import annotations
 
+import glob
+import json
+import os
+import tempfile
+
 from .ops import Project, op_from_dict
 from .render import render as _render
 
@@ -30,6 +35,9 @@ class EditSession:
         self.source = source
         self._ops = list(ops or [])
         self._redo = []
+        # **启用掩码**：被禁用的操作不参与渲染（视图侧"临时关掉某步"而不删栈）。
+        # 用操作在 `_ops` 里的下标做键；顺序/增删时由调用方维护。
+        self._disabled: set[int] = set()
 
     # ------------------------------------------------------------ 状态
     @property
@@ -76,10 +84,157 @@ class EditSession:
         self._ops.append(self._redo.pop())
         return True
 
+    # ------------------------------------------------------------ 互操作栈编辑
+    def move(self, src: int, dst: int) -> bool:
+        """把第 `src` 个操作移到 `dst` 个位置（0-based；夹紧到合法区间）。
+
+        这是"重排操作顺序"——**只在不改变渲染结果的范围内才有意义**：
+        - 纯同域栈（如多个 `band_gain`）渲染是逐操作按选区叠加，**顺序无关** ⇒ 重排恒等；
+        - 跨域栈走 `render.canonical_order` 的**规范顺序**，用户给的顺序会被重排，
+          所以这里的 `move` 也不改变最终输出（只是改变了"用户意图顺序"的展示）。
+        因此 `move` 是安全的**纯展示态**操作，不会让渲染结果不可预测。
+        新操作清空 redo 栈（与 `apply` 同语义：动了栈就不可逆分叉）。
+        """
+        if not (0 <= src < len(self._ops)):
+            return False
+        dst = max(0, min(dst, len(self._ops) - 1))
+        if src == dst:
+            return False
+        op = self._ops.pop(src)
+        self._ops.insert(dst, op)
+        # 掩码下标跟随移动：把 dst 位置的旧键映射成 src 的新键
+        self._disabled = {dst if k == src else k for k in self._disabled}
+        self._redo.clear()
+        return True
+
+    def remove_at(self, idx: int) -> bool:
+        """删除第 `idx` 个操作（**不进 undo 栈**：删除是破坏性编辑，与"撤销到空栈可复算"
+        的判据冲突——撤销应回到"上一版作品"，而不是"少了一项的半截栈"）。
+        返回是否真的删了。"""
+        if not (0 <= idx < len(self._ops)):
+            return False
+        del self._ops[idx]
+        # 掩码下标收缩：删掉 idx 后，>idx 的键整体前移一位
+        self._disabled = {k - 1 if k > idx else k for k in self._disabled if k != idx}
+        self._redo.clear()
+        return True
+
+    def toggle_enabled(self, idx: int) -> bool:
+        """切换第 `idx` 个操作的"是否参与渲染"。返回切换后的状态（True=启用）。
+        这是一个**非破坏的临时开关**：不删栈、不进 undo，用于"先关掉某步看差异"。
+        """
+        if not (0 <= idx < len(self._ops)):
+            return False
+        if idx in self._disabled:
+            self._disabled.discard(idx)
+            return True
+        self._disabled.add(idx)
+        return False
+
+    @property
+    def disabled(self) -> frozenset:
+        """当前被禁用的操作下标（只读视图）。"""
+        return frozenset(self._disabled)
+
+    def live_ops(self) -> tuple:
+        """**实际参与渲染**的操作（剔除被禁用的）。撤销历史不进入渲染。"""
+        return tuple(o for i, o in enumerate(self._ops) if i not in self._disabled)
+
     # ------------------------------------------------------------ 渲染
+    #: 前缀缓存的**键**：源 + 启用栈里每个操作的 `to_dict()`（不可变 dataclass ⇒
+    #: 同参数同键）。中间文件在 tempdir，按键命名；命中即跳过该前缀的渲染。
+    #: （Agent D 调研的 Audacity 块共享思路的 JSON 版：算子不可变 ⇒ 前缀可 memo，
+    #: undo/redo 退化为缓存索引切换。上限 8 个中间文件，超限整体失效——有界。）
+    _CACHE_LIMIT = 8
+
+    def _prefix_files(self, live: list) -> dict:
+        """启用栈的**前缀中间文件**映射：`{i: path}`（i = 前缀长度，`i` 个操作后的
+        产物）。只有全部 `0..i` 键都存在时前缀 `i` 才算命中。"""
+        import hashlib
+
+        cache: dict = {}
+        # 键含 **进程 ID**：tempdir 是跨进程共享的，并行测试/双开会互相清理对方的
+        # 缓存文件（实测 5 连跑 2 次失败的竞态根因）⇒ 缓存空间按进程隔离。
+        key = hashlib.sha256(("%d|%s" % (os.getpid(), os.path.abspath(self.source)))
+                             .encode("utf-8")).hexdigest()[:16]
+        for i in range(1, len(live) + 1):
+            h = hashlib.sha256()
+            h.update(key.encode("utf-8"))
+            for op in live[:i]:
+                h.update(json.dumps(op.to_dict(), sort_keys=True).encode("utf-8"))
+            cache[i] = os.path.join(tempfile.gettempdir(),
+                                    "_ac_prefix_%s_%d_%s.wav"
+                                    % (key, i, h.hexdigest()[:16]))
+        return cache
+
     def render(self, dest: str, **kw) -> dict:
-        """渲染当前状态（**不渲染撤销历史**：撤销掉的操作不影响输出）。"""
-        return _render(self.project(), dest, **kw)
+        """渲染当前状态（**不渲染撤销历史**：撤销掉的操作不影响输出）。
+
+        若部分操作被 `toggle_enabled` 关掉，则只渲染仍启用的操作
+        （被关掉的步骤是**非破坏临时开关**，不删栈、不进 undo）。
+
+        **前缀缓存**（2026-10-27）：算子不可变 ⇒ 启用栈的每个前缀的渲染产物可复用。
+        找到最长已缓存前缀 `i`，从中间文件续渲染 `live[i:]`（每级联一段落一个
+        FLOAT 中间文件，与 `_render_chained` 同构）；应用/撤销/重做通常只动栈尾
+        ⇒ 长链的重复渲染从 O(全链) 降到 O(尾部)。缓存命中数进审计
+        （`prefix_cache_hits`）。
+        """
+
+        live = list(self.live_ops())
+        if len(live) <= 1:
+            proj = Project(self.source, live)
+            return _render(proj, dest, **kw)
+        # ⚠ 前缀缓存**只对混域（chained）栈启用**：中间文件是 FLOAT（float32），
+        # 对同域单路径栈（time/band 全 float64）会把 −144 dBFS 的舍入带进"未编辑
+        # 处"，破坏 undo/redo **逐位相同**的硬判据（实测抓到）。混域栈走
+        # `_render_chained` 本来就是 FLOAT 中间层 ⇒ 缓存不改变其精度口径。
+        from .render import _kind_of
+        kinds = {_kind_of(o) for o in live}
+        if len(kinds) == 1:
+            proj = Project(self.source, live)
+            return _render(proj, dest, **kw)
+        cache = self._prefix_files(live)
+        best = 0
+        for i in sorted(cache, reverse=True):
+            if all(os.path.exists(cache[j]) for j in range(1, i + 1)):
+                best = i
+                break
+        # 清理过期缓存文件（键变了或超限）
+        keep = set(cache.values())
+        for f in glob.glob(os.path.join(tempfile.gettempdir(), "_ac_prefix_*.wav")):
+            if f not in keep:
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
+        cur = self.source if best == 0 else cache[best]
+        audit = None
+        try:
+            for i in range(best + 1, len(live) + 1):
+                proj = Project(cur, [live[i - 1]])
+                is_last = i == len(live)
+                audit = _render(proj, dest if is_last else cache[i],
+                                subtype=None if is_last else "FLOAT",
+                                overwrite=True)
+                cur = cache[i]
+                if is_last:
+                    audit["prefix_cache_hits"] = best        # 复用的前缀段数
+                    audit["prefix_cache_used"] = best
+                    return audit
+            # 空栈/单操作兜底（不可达，len(live) >= 2）
+            proj = Project(self.source, live)
+            audit = _render(proj, dest, **kw)
+            return audit
+        finally:
+            # 只保留最近的中间文件（有界）
+            files = sorted(glob.glob(os.path.join(tempfile.gettempdir(),
+                                                  "_ac_prefix_*.wav")),
+                           key=os.path.getmtime, reverse=True)
+            for f in files[self._CACHE_LIMIT:]:
+                try:
+                    os.remove(f)
+                except OSError:
+                    pass
 
     # ------------------------------------------------------------ 记录
     def to_dict(self) -> dict:

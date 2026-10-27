@@ -99,6 +99,62 @@ class BandGainOp:
 
 
 @dataclass(frozen=True)
+class PolyGainOp:
+    """**多边形时频选区增益**（P2"矩形→套索"的内核件，2026-10-27）：对**顶点围成的
+    时频多边形内部**施加 `gain_db`。
+
+    * `points`：`[(t, f), …]` 顶点序列（**隐式闭合**：末点连回首点）。≥ 3 个顶点、
+      t/f ≥ 0、有限值。**记录即选区**——顶点表就是可审计的选区本身。
+    * 属内判据：**射线法**（ray casting）逐谱点（帧中心时刻, bin 中心频率）判定，
+      与 `stft.frame_times` / `stft.bin_freqs` 的口径逐位一致。**边界上的谱点是否属内
+      是实现定义**（半开区间在多边形上没有自然对应）——用偏离网格的坐标做选区即可避开，
+      判据 `test_rect_polygon_matches_band_gain_bitwise` 用非网格坐标钉死"矩形多边形
+      ≡ `BandGainOp` 逐位一致"。
+    * **自相交**多边形（如蝴蝶结）不拒绝：射线法按**奇偶规则**给出确定性解释
+      （两瓣属内、腰部不属内；判据 `test_self_intersecting_polygon_is_even_odd_deterministic`）。
+      顶点表在审计里可见 ⇒ 用户意图可核对。
+    * 和 `BandGainOp` 同一条 STFT/WOLA 渲染路径、同一个规范顺序相位（4）：**外扩窗宽、
+      往返残差、时频点记账全部同款**（`render._render_band`）。
+
+    `gain_db == 0.0` 视为 **no-op**（渲染时整条跳过 ⇒ 全轨逐位不变）。
+    ⚠ 时频编辑不是位精确的——外扩/往返残差与 `BandGainOp` 相同，审计同款报
+    `roundtrip_floor_dbfs`。
+    """
+
+    points: tuple
+    gain_db: float
+
+    def __post_init__(self) -> None:
+        pts = tuple(self.points)
+        if not isinstance(pts, tuple) or len(pts) < 3:
+            raise ValueError("多边形至少 3 个顶点，得到 %r" % (self.points,))
+        clean = []
+        for pt in pts:
+            try:
+                t, f = float(pt[0]), float(pt[1])
+            except (TypeError, ValueError, IndexError):
+                raise ValueError("顶点必须是 (t, f) 数对，得到 %r" % (pt,)) from None
+            if not (np_finite(t) and np_finite(f)) or t < 0.0 or f < 0.0:
+                raise ValueError("顶点坐标必须有限且 ≥ 0，得到 (%r, %r)" % (pt[0], pt[1]))
+            clean.append((t, f))
+        object.__setattr__(self, "points", tuple(clean))
+
+    @property
+    def is_noop(self) -> bool:
+        return self.gain_db == 0.0
+
+    def to_dict(self) -> dict:
+        return {"kind": "poly_gain",
+                "points": [[t, f] for t, f in self.points],
+                "gain_db": self.gain_db}
+
+    def describe(self) -> str:
+        ts = [t for t, _ in self.points]
+        return "多边形选区（%d 顶点，t %.3f–%.3f s）：%+.1f dB" % (
+            len(self.points), min(ts), max(ts), self.gain_db)
+
+
+@dataclass(frozen=True)
 class DeclipOp:
     """对时间选区 `[t0, t1)` 做**去削波**：只改饱和样本，其余逐位不变。
 
@@ -184,6 +240,11 @@ class DeclickOp:
     #: **宽度守卫**（第二级复核）：只接受宽度 ≤ `max_run` 的检出段。`None` = 不设守卫。
     #: 实测依据见 `declick.DEFAULT_MAX_RUN` 的代价表（4 = 保住 1–2 采样咔哒的最小值）。
     max_run: int | None = DEFAULT_MAX_RUN
+    #: **台阶/平台咔哒第二检测臂**（2026-10-27 落地，`declick.detect_steps`，级联）：
+    #: 长窗中值残差（L=41 + min_run 3）——两点残差修不了平台（内部残差 ≈ 0，§17/§20）。
+    #: 实测 w=3/5/8 平台 ΔSDR +22.1/+3.4/+1.8、干净素材 0 误报 ⇒ 默认**开**；
+    #: `False` 回到单臂行为（v2 逐位一致）。
+    step_repair: bool = True
 
     def __post_init__(self) -> None:
         if not (self.t1 > self.t0 >= 0.0):
@@ -200,12 +261,14 @@ class DeclickOp:
 
     def to_dict(self) -> dict:
         return {"kind": "declick", "t0": self.t0, "t1": self.t1,
-                "threshold": self.threshold, "max_run": self.max_run}
+                "threshold": self.threshold, "max_run": self.max_run,
+                "step_repair": self.step_repair}
 
     def describe(self) -> str:
-        return "去咔哒 %.3f–%.3f s：检测阈值 %.2f×MAD，宽度守卫 %s" % (
+        return "去咔哒 %.3f–%.3f s：检测阈值 %.2f×MAD，宽度守卫 %s%s" % (
             self.t0, self.t1, self.threshold,
-            "关" if self.max_run is None else "≤%d 采样" % self.max_run)
+            "关" if self.max_run is None else "≤%d 采样" % self.max_run,
+            "" if self.step_repair else "｜台阶臂 关")
 
 
 @dataclass(frozen=True)
@@ -290,6 +353,11 @@ class DenoiseOp:
     reduction_db: float = DEFAULT_REDUCTION_DB
     n_fft: int = DEFAULT_N_FFT
     hop: int | None = None
+    #: **逐帧噪声底跟踪**（2026-10-27 落地，`denoise._floor_track`）：噪声床在选区里
+    #: 台阶变化时逐帧跟随（bin 中位数比值，内容 bin 被中位数天然剔除）。实测：台阶床
+    #: 低参考总 ΔSDR +2.74 → **+9.40**；稳态代价 ≤0.66 dB（`denoise_nonstat_probe` /
+    #: `docs/editor_research.md §19`）⇒ 默认**开**；`False` 回到 v1 的固定谱行为。
+    track_floor: bool = True
 
     def __post_init__(self) -> None:
         if not (self.t1 > self.t0 >= 0.0):
@@ -312,13 +380,16 @@ class DenoiseOp:
     def to_dict(self) -> dict:
         return {"kind": "denoise", "t0": self.t0, "t1": self.t1,
                 "noise_t0": self.noise_t0, "noise_t1": self.noise_t1,
-                "reduction_db": self.reduction_db, "n_fft": self.n_fft, "hop": self.hop}
+                "reduction_db": self.reduction_db, "n_fft": self.n_fft, "hop": self.hop,
+                "track_floor": self.track_floor}
 
     def describe(self) -> str:
         return ("去噪 %.3f–%.3f s：噪声段 %.3f–%.3f s ｜ 压制上限 %.0f dB ｜ "
-                "STFT %d/%s" % (self.t0, self.t1, self.noise_t0, self.noise_t1,
-                                self.reduction_db, self.n_fft,
-                                "自动" if self.hop is None else self.hop))
+                "STFT %d/%s ｜ 底噪跟踪%s"
+                % (self.t0, self.t1, self.noise_t0, self.noise_t1,
+                   self.reduction_db, self.n_fft,
+                   "自动" if self.hop is None else self.hop,
+                   "开" if self.track_floor else "关"))
 
 
 @dataclass
@@ -358,31 +429,72 @@ class Project:
 
     @classmethod
     def from_dict(cls, d: dict) -> Project:
-        if int(d.get("version", -1)) != PROJECT_VERSION:
-            raise ValueError("不认识的项目版本 %r（只支持 %d）"
-                             % (d.get("version"), PROJECT_VERSION))
+        ver = int(d.get("version", -1))
+        if ver not in SUPPORTED_VERSIONS:
+            raise ValueError("不认识的项目版本 %r（支持：%s）"
+                             % (d.get("version"), "/".join(str(v) for v in SUPPORTED_VERSIONS)))
         src = d.get("source")
         if not isinstance(src, str) or not src:
             raise ValueError("项目记录缺 source")
         ops = d.get("ops")
         if not isinstance(ops, list):
             raise ValueError("项目记录的 ops 必须是列表")
-        return cls(src, [op_from_dict(x) for x in ops])
+        return cls(src, [op_from_dict(_migrate(x, ver)) for x in ops])
+
+
+def np_finite(v: float) -> bool:
+    """有限数判定（不引 numpy 依赖进 ops 层：math.isfinite 的别名）。"""
+    import math
+    return math.isfinite(v)
+
+
+#: 有序迁移链（Ardour 式契约，Agent D 调研）：`vN → vN+1` 的纯函数 dict→dict。
+#: 每步只**补缺失键**并写清"为什么语义不变"；老记录**永远**能开、迁移逻辑可单测。
+_MIGRATIONS: dict[int, callable] = {
+    1: lambda d: d,                                 # 1→2 由 _migrate 的 ver 语义覆盖
+}
+
+
+def _migrate(op_dict: dict, ver: int) -> dict:
+    """历史版本 → 当前 schema 的**显式迁移**（每一步都写清"补什么、为什么语义不变"）。
+
+    只补**缺失**的键，且只对 **ver ≤ 2**（历史记录）；v3 起键是**必需**的
+    （缺失 = 缺字段，按严格 schema 拒绝）——"补什么"由版本决定，不许含糊。
+    """
+    if not isinstance(op_dict, dict):
+        return op_dict
+    kind = op_dict.get("kind")
+    d = dict(op_dict)
+    if ver <= 1 and kind == "denoise" and "track_floor" not in d:
+        d["track_floor"] = False            # v1 = 固定谱（当时的全部语义）
+    if ver <= 2 and kind == "declick" and "step_repair" not in d:
+        d["step_repair"] = False            # v1/v2 = 单臂（当时的全部语义）
+    return d
 
 
 #: 项目记录的**版本号**。字段/语义一变就 +1，不许悄悄改（旧记录必须报错而不是被误解）。
-PROJECT_VERSION = 1
+#: v2（2026-10-27）：denoise 增加 `track_floor`。**v1 记录显式迁移**而非报错：
+#: v1 的 denoise 没有"底噪跟踪"概念 = 固定谱 ⇒ 迁移时补 `track_floor=False`
+#: （渲染结果与 v1 **逐位相同**——这是"不被误解"的正确含义：旧产物可复现，
+#: 新语义不会被静默套到旧记录上）。
+#: v3（2026-10-27）：declick 增加 `step_repair`（台阶第二检测臂）。v1/v2 迁移补
+#: `step_repair=False`（v1/v2 语义 = 单臂）。
+PROJECT_VERSION = 3
+#: 仍在支持读取（显式迁移）的历史版本。
+SUPPORTED_VERSIONS = (1, 2, 3)
 
 #: `kind` → (类, 该类型 `to_dict` 的**精确**键集)：解析时**多一个少一个都拒绝**。
 _OP_SCHEMA = {
     "gain": (GainOp, {"kind", "t0", "t1", "gain_db"}),
     "band_gain": (BandGainOp, {"kind", "t0", "t1", "f0", "f1", "gain_db"}),
+    "poly_gain": (PolyGainOp, {"kind", "points", "gain_db"}),
     "declip": (DeclipOp, {"kind", "t0", "t1", "ceiling", "bandwidth", "bandwidth_source",
                           "iterations"}),
-    "declick": (DeclickOp, {"kind", "t0", "t1", "threshold", "max_run"}),
+    "declick": (DeclickOp, {"kind", "t0", "t1", "threshold", "max_run",
+                            "step_repair"}),
     "dehum": (DehumOp, {"kind", "t0", "t1", "f0", "f0_source", "q", "harmonics"}),
     "denoise": (DenoiseOp, {"kind", "t0", "t1", "noise_t0", "noise_t1",
-                            "reduction_db", "n_fft", "hop"}),
+                            "reduction_db", "n_fft", "hop", "track_floor"}),
 }
 
 
@@ -405,4 +517,43 @@ def op_from_dict(d: dict):
     kw = {k: v for k, v in d.items() if k != "kind"}
     if kind == "dehum":
         kw["harmonics"] = tuple(kw["harmonics"])
+    if kind == "poly_gain":
+        kw["points"] = tuple((float(t), float(f)) for t, f in kw["points"])
     return cls(**kw)
+
+
+def save_chain(path: str, ops: list) -> None:
+    """把操作栈存成**修复链预设**（只存 ops，**不绑源**——链是"配方"，不是"作品"）。
+
+    与 `Project.to_dict` 的区别：项目记录 = 源 + 栈（复算一个具体产物）；
+    修复链 = 栈（可套到**任何**源上，例如"同一套修复"批量过整个曲库）。
+    版本纪律与项目记录相同：字段/语义一变 `PROJECT_VERSION` +1，旧文件报错而不是被误读。
+    """
+    import json
+
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump({"version": PROJECT_VERSION, "ops": [op.to_dict() for op in ops]},
+                  fh, ensure_ascii=False, indent=2)
+
+
+def load_chain(path: str) -> list:
+    """读修复链预设，还原成操作对象列表。**严格**（与 `op_from_dict` 同口径）：
+
+    * 顶层必须是 `{"version": N, "ops": [...]}`，版本不符**拒绝**（不许被误读）；
+    * 每条操作走 `op_from_dict`（未知 kind / 缺键 / 多键都拒绝）；
+    * 空链**拒绝**（"载入一条空链"九成是拿错了文件，宁可报错）。
+    """
+    import json
+
+    with open(path, encoding="utf-8") as fh:
+        d = json.load(fh)
+    if not isinstance(d, dict):
+        raise ValueError("修复链文件必须是 JSON 对象，得到 %r" % type(d).__name__)
+    ver = int(d.get("version", -1))
+    if ver not in SUPPORTED_VERSIONS:
+        raise ValueError("不认识的修复链版本 %r（支持：%s）"
+                         % (d.get("version"), "/".join(str(v) for v in SUPPORTED_VERSIONS)))
+    ops_in = d.get("ops")
+    if not isinstance(ops_in, list) or not ops_in:
+        raise ValueError("修复链的 ops 必须是非空列表")
+    return [op_from_dict(_migrate(x, ver)) for x in ops_in]

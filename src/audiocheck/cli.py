@@ -168,6 +168,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--jobs", type=int, default=0, help="并行进程数（0=自动，按 CPU 核数）")
     p.add_argument("--cache", default=None, help="结果缓存文件（跳过已算过的文件）")
     p.add_argument("--doctor", action="store_true", help="环境自检后退出")
+    p.add_argument("--edit", action="store_true",
+                   help="启动编辑工作站（REAPER 式可审计修复 GUI；需 gui 依赖）")
     p.add_argument("--version", action="version", version="audiocheck %s" % __version__)
     return p
 
@@ -204,6 +206,9 @@ def main(argv=None) -> int:
 
     if args.doctor:
         return doctor()
+
+    if args.edit:
+        return _run_editor()
 
     if args.list_analyzers:
         print("%-14s %-26s %-7s %s" % ("key", "说明", "order", "依赖"))
@@ -407,6 +412,25 @@ def _plot(r, outdir):
         plt.close()
     except Exception as e:                                         # noqa: BLE001
         print("   (出图失败: %s)" % e)
+
+
+def _run_editor() -> int:
+    """启动编辑工作站（REAPER 式可审计修复 GUI）。需 gui 依赖。"""
+    try:
+        from PySide6.QtWidgets import QApplication
+
+        from .ui import theme as T
+        from .ui.editor import EditorWindow
+    except Exception as e:  # 没装 gui 依赖
+        print("[X] 编辑工作站需要 gui 依赖：pip install \"audiocheck[gui]\"（%s）" % e,
+              file=sys.stderr)
+        return 2
+    app = QApplication.instance() or QApplication([])
+    T.init_fonts(app)
+    w = EditorWindow(T.THEMES["dark"])
+    w.resize(1280, 800)
+    w.show()
+    return app.exec()
 
 
 if __name__ == "__main__":

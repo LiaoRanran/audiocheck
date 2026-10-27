@@ -80,7 +80,7 @@ def test_only_detected_samples_change(tmp_path):
     src = _write(tmp_path / "a.wav", c["clicked"])
     dst = str(tmp_path / "b.wav")
     audit = render_declick(src, dst, 0.0, SECONDS, overwrite=True)
-    assert audit["domain"] == "declick" and audit["algorithm"] == "residual2_mad_linear"
+    assert audit["domain"] == "declick" and audit["algorithm"] == "residual2_mad2scale_step_cascade"
     a, b = _read(src), _read(dst)
     det = np.zeros(a.shape[0], dtype=bool)
     for ch in range(a.shape[1]):
@@ -332,3 +332,96 @@ def test_energy_ratio_guard_is_reported(tmp_path):
     a, b = _read(src), _read(dst)
     assert rec["energy_ratio_measured_db"] == round(float(energy_ratio_db(b, a)), 3)
     assert rec["detected_samples"] == int(round(rec["fraction"] * rec["applied_frames"]))
+
+
+# ------------------------------------------------- 助手边界（变异轮：钉死 4 个测试缺失存活）
+def test_apply_max_run_zero_and_none_pass_through():
+    """★ `max_run=0` 边界（`apply_max_run` 的守卫 `max_run <= 0`）：0 与 None 同义——**原样放行**。
+
+    `DeclickOp` 层校验 `max_run >= 1`，但助手契约是"`None` = 不设守卫"、`<=0` 同样不设；
+    把 `<=` 写成 `<` 会让 0 掉进循环、把所有检出段清空。钉死透传语义。
+    """
+    m = np.array([True, True, False, True])
+    assert np.array_equal(declick.apply_max_run(m, 0), m)
+    assert np.array_equal(declick.apply_max_run(m, None), m)
+
+
+def test_runs_and_repair_survive_trailing_true_run():
+    """★ 尾端检出段边界（`_runs`/`_repair_runs` 的 `j < n`）：检出段延伸到**最后一个采样**时
+
+    循环上界必须是**半开** `<`：写 `<=` 会索引 `mask[n]` 直接越界崩。修复语义 = 没有右端点
+    ⇒ 持左端点值（`out[i:j] = left`）。钉死"尾端缺陷也能修、且不崩"。
+    """
+    m = np.array([False, True, True])
+    assert list(declick._runs(m)) == [(1, 3)]
+    y = np.array([[0.0], [1.0], [2.0]])
+    out = declick._repair_runs(y, m)
+    assert out[0, 0] == 0.0                 # 未检出样本逐位不变
+    assert out[1, 0] == 0.0 and out[2, 0] == 0.0   # 尾端段：没有右端点 ⇒ 持左端点值
+
+
+def test_fraction_denominator_is_total_samples_in_stereo():
+    """★ `fraction` 分母（`n * ch`）：立体声素材 = 检出 / (采样×声道)，不是 / (n/ch)。
+
+    ch=1 时两式相同（历史判据全是单声道 ⇒ 没杀死）；立体声下 `n/ch` 会把改动面**翻倍**。
+    """
+    clean = _smooth(1.0)
+    pack = corpus.crackle_train(clean, 100.0, FS, amp_min=0.05, amp_max=0.5, seed=5)
+    _out, st = declick.declick(pack["crackled"], 5.0, 4)
+    n, ch = pack["crackled"].shape
+    assert st["fraction"] == pytest.approx(st["detected_samples"] / (n * ch))
+
+
+# ------------------------------------------------- 台阶/平台第二检测臂（级联，schema v3）
+def _wide_clicks(clean, positions_s, width, amp=0.9):
+    y = clean.copy()
+    idx = [int(round(p * FS)) for p in positions_s]
+    for i in idx:
+        y[i:i + width, 0] += amp
+    return y, idx
+
+
+def test_step_cascade_recovers_plateau_clicks(tmp_path):
+    """★ 台阶臂端到端（**最终形态实测校准**）：多平台（4 个并存）w=3 级联 +24.03
+    （单臂 +0.60）、w=5 +2.29（单臂 0 检出）。w=8 **检不出**是本臂已知的效力边界
+    （孤立单平台的中值残差 run 只有尾缘 1–2 宽——见 `detect_steps` docstring），
+    判据钉"不修坏"（ΔSDR ≥ 0）而非"修好"。
+    """
+    clean = corpus.harmonic_tone(SECONDS, FS, amp=0.5, seed=3)
+    for width, floor in ((3, 8.0), (5, 1.5), (8, 0.0)):
+        y, _idx = _wide_clicks(clean, [0.4, 0.9, 1.4, 1.9], width)
+        out, st = declick.declick(y, 5.0, 4)
+        d = sdr_db(out, clean) - sdr_db(y, clean)
+        assert d > floor, "w=%d 平台：级联 ΔSDR %.2f 应 > %.1f" % (width, d, floor)
+        assert st["step_repair"] is True
+        if width <= 5:
+            assert st["step_samples"] > 0 and st["step_runs"] > 0, st
+
+
+def test_step_arm_off_is_v2_behavior():
+    """★ `step_repair=False` ⇒ 单臂行为：`step_samples=0`、平台咔哒不被修（v2 语义）。"""
+    clean = corpus.harmonic_tone(SECONDS, FS, amp=0.5, seed=3)
+    y, _idx = _wide_clicks(clean, [0.4, 0.9, 1.4, 1.9], 5)
+    out, st = declick.declick(y, 5.0, 4, step_repair=False)
+    assert st["step_samples"] == 0 and st["step_runs"] == 0
+    assert st["step_repair"] is False
+    # v2 口径：w=5 平台零检出 ⇒ 输出 == 输入（逐位）
+    assert np.array_equal(out, y)
+
+
+def test_step_arm_no_misfire_on_clean_material():
+    """★ 台阶臂不误伤干净素材：谐波音/带限白噪/合法瞬态上 `step_runs == 0`
+    （探针实测 L=41+min3 的瞬态误报已被 min_run 清零——这条钉死它）。"""
+    clean = corpus.harmonic_tone(SECONDS, FS, amp=0.5, seed=3)
+    for label, mat in (("谐波", clean), ("白噪", _noisy()),
+                       ("瞬态", _transienty())):
+        _out, st = declick.declick(mat, 5.0, 4)
+        assert st["step_runs"] == 0, "%s 素材上台阶臂误报 %d 段" % (label, st["step_runs"])
+
+
+def test_detect_steps_marked_runs_have_min_width():
+    """★ `detect_steps` 的输出 run 宽度全部 ≥ `STEP_MIN_RUN`（min_run 守卫在场）。"""
+    noise = corpus.band_limited_noise(1.0, fs=FS, bandwidth=18000.0, seed=2)[:, 0]
+    m = declick.detect_steps(noise)
+    for st, en in declick._runs(m):
+        assert en - st >= declick.STEP_MIN_RUN

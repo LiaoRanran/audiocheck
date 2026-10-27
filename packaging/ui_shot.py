@@ -80,6 +80,30 @@ def main(argv=None) -> int:
     os.makedirs(args.out, exist_ok=True)
     made = []
     for name in [s.strip() for s in args.set.split(",") if s.strip()]:
+        if name == "editor":
+            # 编辑工作站：打开一段削波素材、框选区、应用去削波，抓默认（暗）三栏布局。
+            _make_editor_shot(app, T, args, made)
+            continue
+        if name == "editor_ab":
+            _make_editor_shot(app, T, args, made, ab=True)
+            continue
+        if name == "editor_sel":
+            # 选区态：框选区并拉出 t/f 测层，抓"选区 + 读数"那一帧。
+            _make_editor_shot(app, T, args, made, measure=True)
+            continue
+        if name == "editor_light":
+            # 暗/亮切换：同一工作站换浅色主题。
+            _make_editor_shot(app, T, args, made, light=True)
+            continue
+        if name == "editor_lasso":
+            # 套索态：自由多边形选区的叠加与工具互斥（P2"矩形→套索"的视觉证据）。
+            _make_editor_shot(app, T, args, made, lasso=True)
+            continue
+        if name == "editor_stack":
+            # 多算子栈：连续应用 3 个算子，让 Inspector 的**可交互栈**与底部批处理
+            # 坞都填满，验证"栈可重排/移除/开关"这一轮的 UI。
+            _make_editor_shot(app, T, args, made, multi=True)
+            continue
         if name == "dark":
             win.apply_theme(T.DARK)
         elif name == "light":
@@ -115,6 +139,82 @@ def _load(W):
     """把 theme 也取出来（少写一行 import，且保证与 window 同一份）。"""
     from audiocheck.ui import theme as T
     return W, T
+
+
+def _make_editor_shot(app, T, args, made, ab: bool = False,
+                     measure: bool = False, light: bool = False,
+                     multi: bool = False, lasso: bool = False) -> None:
+    """离屏出编辑工作站截图：开削波素材→框选区→应用算子，抓三栏布局。
+
+    ab     : 同时切到 A/B 选源视图。
+    measure: 额外拉出 t/f 测层浮标（验证选区读数）。
+    light  : 用浅色主题（验证暗/亮切换）。
+    multi  : 连续应用多个算子，并把一个作业塞进底部批处理坞，验证可交互栈这一轮 UI。
+    """
+    import os
+    import tempfile
+
+    import numpy as np
+    import soundfile as sf
+
+    from audiocheck.ui.editor import EditorWindow
+
+    theme = T.THEMES["light"] if light else T.THEMES["dark"]
+    win = EditorWindow(theme)
+    win.resize(*(int(v) for v in args.size.split("x")))
+    win.show()
+    perf_probe.pump(app, 0.4)
+
+    # 合成一段削波音频（答案已知），不依赖外部素材
+    fs = 44100
+    rng = np.random.default_rng(7)
+    x = np.clip(rng.standard_normal(int(fs * 4)) * 6.0, -1.0, 1.0).astype(np.float32)
+    path = os.path.join(tempfile.gettempdir(), "_shot_clip.wav")
+    sf.write(path, np.column_stack([x, x]), fs, subtype="PCM_16")
+    win.open_file(path)
+    win.view._sel = (0.5, 2.0, 100.0, 4000.0)
+    win.view.selectionChanged.emit(0.5, 2.0, 100.0, 4000.0)
+    win.ops.kind.setCurrentIndex(win.ops.kind.findData("declip"))
+    win.ops._apply()
+    perf_probe.pump(app, 0.5)
+    if ab:
+        win.inspector_panel.btn_ab.setChecked(True)
+        win.inspector_panel.abToggled.emit(True)
+        perf_probe.pump(app, 0.3)
+    if measure:
+        # 拉出测层：与真实拖动一致，调用内部绘制（不依赖鼠标事件）。
+        win.view._draw_measure()
+        perf_probe.pump(app, 0.2)
+    if multi:
+        # 再堆两个算子（增益 / 降噗声），让 Inspector 的可交互栈出现 3 项；
+        # 同时塞一个作业进底部批处理坞，验证本轮新增的两块 UI 都画得出来。
+        win.ops.kind.setCurrentIndex(win.ops.kind.findData("gain"))
+        win.ops.gain_db.setValue(-3.0)
+        win.ops._apply()
+        win.ops.kind.setCurrentIndex(win.ops.kind.findData("declick"))
+        win.ops._apply()
+        perf_probe.pump(app, 0.4)
+        if hasattr(win, "batch_panel"):
+            win.batch_panel.add_job({"source": path, "dest": path + ".out.wav",
+                                     "ops": win.ops._session.ops[-1].to_dict()})
+            perf_probe.pump(app, 0.2)
+
+    if lasso:
+        # 套索态：开套索工具 + 一段进行中的多边形轨迹叠加（P2 套索的视觉证据）。
+        win.editor.raise_()                      # 编辑坞与检视坞 tab 化 ⇒ 先抬编辑坞
+        win.view.set_lasso_tool(True)
+        win.view._lasso_pts = [(0.4, 1200.0), (0.7, 1100.0), (1.0, 1500.0),
+                               (1.2, 2600.0), (1.0, 3900.0), (0.6, 4100.0),
+                               (0.42, 3000.0)]
+        win.view._draw_lasso()
+        perf_probe.pump(app, 0.3)
+    name = "editor_lasso" if lasso else ("editor_ab" if ab else ("editor_sel" if measure else ("editor_light" if light else ("editor_stack" if multi else "editor"))))
+    out = os.path.join(args.out, "%s.png" % name)
+    win.grab().save(out)
+    made.append(out)
+    print("已出图 %s（%d KB）" % (out, os.path.getsize(out) // 1024))
+    win.deleteLater()
+    perf_probe.pump(app, 0.2)
 
 
 if __name__ == "__main__":
