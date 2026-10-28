@@ -71,6 +71,7 @@ class OperatorPanel(QFrame):
         row.setSpacing(T.Space.sm)
         row.addWidget(QLabel("算子"))
         self.kind = QComboBox()
+        self.kind.setAccessibleName("算子类型")
         for k, lbl in (("band_gain", "时频增益"), ("poly_gain", "多边形增益"),
                        ("declip", "去削波"), ("declick", "去咔哒"), ("dehum", "去嗡"),
                        ("denoise", "去噪")):

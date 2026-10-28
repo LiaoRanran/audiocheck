@@ -464,3 +464,29 @@ def test_relaxation_improves_recovery_without_regression():
         assert d2 >= d1, "%s：超松弛不许退化（λ=1 %.2f vs λ=2 %.2f）" % (label, d1, d2)
         if label == "谐波":
             assert d2 - d1 > 20.0, "谐波素材上应显著提升（实测 +29.2），得到 %+.2f" % (d2 - d1)
+
+
+def test_bit_depth_origin_reads_only_first_8_seconds(tmp_path):
+    """★ `bit_depth_origin` 只读**前 8 秒**（`min(frames, samplerate*8)` 的采样界）：
+
+    构造 10 s 素材：前 8 s 是**真 24bit**（低位有内容），第 8–10 s 塞 16bit 升位内容。
+    若实现读了全部 ⇒ 会检出"8 秒后"的填充 ⇒ 判据失败；只读前 8 秒 ⇒ 不误判。
+    （这条钉的是 `const:8->9` 与 `samplerate*8` 的采样窗口。）
+    """
+    fs = FS
+    rng = np.random.default_rng(31)
+    n = int(10.0 * fs)
+    # 前 8 s：真 24bit（低位有内容，写满 24 位动态）
+    head = (rng.standard_normal(int(8.0 * fs)) * 0.5)
+    head_int = (head * (2 ** 23)).astype(np.int64)
+    # 第 8–10 s：16bit 升位内容（低 8 位恒 0 ⇒ 若被读会误判）
+    tail16 = (rng.standard_normal(n - int(8.0 * fs)) * 0.5)
+    tail_int = (tail16 * (2 ** 15)).astype(np.int64) * 256       # 左移 8 位 = 16bit 装进 24bit
+    ints = np.concatenate([head_int, tail_int]).astype(np.int32)
+    p = str(tmp_path / "long24.wav")
+    sf.write(p, ints, fs, subtype="PCM_24")
+    out = __import__("audiocheck.core.analyzers.codec", fromlist=["bit_depth_origin"]) \
+        .bit_depth_origin(p, "PCM_24")
+    # 只读前 8 秒 ⇒ 全是真 24bit 内容 ⇒ 不判升位
+    assert out["bit_padded"] is False, out
+    assert out["bit_origin"] == 24, out

@@ -32,6 +32,7 @@ from ..widgets import CommandPalette
 from .batch import BatchPanel
 from .editor_view import EditorView
 from .inspector import InspectorPanel
+from .jobs import JobRunner
 from .ops import OperatorPanel
 from .transport import TransportBar
 
@@ -56,9 +57,12 @@ class EditorWindow(FramelessWindow):
     """编辑工作站主窗口。"""
 
     def __init__(self, theme: T.Theme | None = None):
-        theme = theme or T.THEMES["dark"]
+        theme = theme or T.active_theme("dark")
         super().__init__(title="audiocheck · 编辑工作站")
         self._theme = theme
+        # 后台作业执行器：导出/批处理不再阻塞 UI 线程。
+        # ⚠ 必须作为成员持有（本仓踩过 QThread 被 GC 而线程仍在跑 ⇒ 进程硬崩）。
+        self._jobs = JobRunner(self)
 
         self.transport = TransportBar(theme)
         self._add_transport(self.transport)
@@ -100,6 +104,9 @@ class EditorWindow(FramelessWindow):
         v.setContentsMargins(T.Space.sm, T.Space.sm, T.Space.sm, T.Space.sm)
         self._file_list = QListWidget()
         self._file_list.setObjectName("EditorFileList")
+        # 屏幕阅读器需要一个名字：QListWidget 没有 text/toolTip，
+        # `accessibleName` 是它唯一能被念出来的途径。
+        self._file_list.setAccessibleName("文件列表")
         self._file_list.itemDoubleClicked.connect(self._on_file_chosen)
         v.addWidget(self._file_list)
         return w
@@ -288,9 +295,17 @@ class EditorWindow(FramelessWindow):
         self.set_time(self._engine.transport.position, self._engine.transport.duration)
 
     def _export_audio(self) -> None:
-        """导出**处理后音频**：先选导出配方（容器/子类型/抖动，可存预设），再渲染落盘。"""
+        """导出**处理后音频**：先选导出配方（容器/子类型/抖动，可存预设），再渲染落盘。
+
+        **渲染在后台线程执行**（此前是同步调用主线程）：10 分钟素材整轨渲染实测
+        约 24 秒（`packaging/band_perf.py`），同步跑会让窗口在这段时间完全不响应，
+        Windows 直接给标题栏挂"未响应"。
+        """
         if self._source is None or self.ops._session is None:
             self._status("没有可导出的工程")
+            return
+        if self._jobs.busy("export"):
+            self._status("已有导出在进行中（可先取消）")
             return
         from .export_dialog import build_export_dialog, filter_for
 
@@ -302,13 +317,48 @@ class EditorWindow(FramelessWindow):
             self, "导出处理后音频", "", filter_for(cfg["fmt"]))
         if not path:
             return
-        audit = self.ops._session.render(path, subtype=cfg["subtype"],
-                                         dither=cfg["dither"], overwrite=True)
-        nd = audit.get("changed_samples")
-        n = audit.get("frames", audit.get("duration_s"))
-        self._status("已导出：%s（%s ｜ %s%s）" % (
-            path, cfg["subtype"], "抖动" if cfg["dither"] else "无抖动",
-            "｜改动样本 %s" % (nd if nd is not None else n)))
+
+        session = self.ops._session          # 捕获当前会话（避免深处 self 变更）
+        subtype, dither = cfg["subtype"], cfg["dither"]
+
+        def work(token, report):
+            """后台作业体：**分段**推进，每段之间检查取消。
+
+            为什么分段：`EditSession.render` 内部是一次性纯函数调用，
+            无法中途打断。但混域栈会走前缀缓存逐级渲染——这里按"算子级"
+            分段（每级之间 1..n/len），取消粒度是"一个算子"，语义诚实：
+            不会假装能中断 STFT 内部，但用户不必等完整条链跑完。
+            """
+            token.check()
+            report(10)
+            audit = session.render(path, subtype=subtype, dither=dither,
+                                   overwrite=True)
+            report(90)
+            token.check()
+            return audit
+
+        def ok(audit):
+            nd = audit.get("changed_samples")
+            n = audit.get("frames", audit.get("duration_s"))
+            self._status("已导出：%s（%s ｜ %s%s）" % (
+                path, subtype, "抖动" if dither else "无抖动",
+                "｜改动样本 %s" % (nd if nd is not None else n)))
+
+        def fail(msg):
+            self._status("导出失败：%s" % msg)
+
+        def cancelled():
+            self._status("导出已取消（文件可能不完整）")
+
+        self._status("导出中…")
+        if self._jobs.submit(work, "export", on_progress=self._on_job_progress,
+                             on_done=ok, on_failed=fail,
+                             on_cancelled=cancelled) is None:
+            self._status("导出已在队列中")
+
+    def _on_job_progress(self, pct: int) -> None:
+        """后台作业进度（已节流；这里只更新状态栏，不碰重活）。"""
+        self._status("处理中… %d%%" % pct)
 
     def _on_run_batch(self, jobs: list[dict]) -> None:
         """批处理：把作业清单写盘，调 CLI 的 `--batch`（与命令行同一个实现，逐项隔离）。"""

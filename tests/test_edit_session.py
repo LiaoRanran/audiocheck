@@ -55,6 +55,20 @@ def _sha(path: str) -> str:
 
 
 # ---------------------------------------------------------------- 栈语义
+def _cache_glob():
+    """前缀缓存文件的 glob 模式——**必须跟随实现**的缓存目录。
+
+    `EditSession._cache_dir()` 可用 `AUDIOCHECK_PREFIX_CACHE_DIR` 覆盖（并行
+    渲染/并行测试时各工作区一个目录）。测试若硬写 `tempfile.gettempdir()`，
+    在变异工作区里就会扫到**别的工作区/历史残留**的文件，把"有界"判据
+    误判成失败（实测：8 路并发下 `assert 9 <= 8`，实际本会话只写了 2 个）。
+    """
+    import os
+    import tempfile
+    d = os.environ.get("AUDIOCHECK_PREFIX_CACHE_DIR") or tempfile.gettempdir()
+    return os.path.join(d, "_ac_prefix_*.wav")
+
+
 def test_apply_undo_redo_preserve_the_stack_exactly():
     """压栈/弹栈/压回的是**同一个对象**（dataclass 相等），深度账目同步。"""
     s = EditSession("src.wav")
@@ -323,12 +337,10 @@ def test_prefix_files_keys_are_content_addressed(tmp_path):
 def test_prefix_cache_files_are_bounded(tmp_path):
     """★ 缓存文件**有界**（_CACHE_LIMIT=8）：渲染后 tempdir 里的前缀文件 ≤ 上限。"""
     import glob
-    import os
-    import tempfile as _tf
     src = _src(tmp_path, np.zeros((FS, 1)))
     sess = EditSession(src, [GainOp(0.0, 1.0, -2.0), DehumOp(0.0, 1.0, 50.0)])
     sess.render(str(tmp_path / "o.wav"), overwrite=True)
-    files = glob.glob(os.path.join(_tf.gettempdir(), "_ac_prefix_*.wav"))
+    files = glob.glob(_cache_glob())
     assert len(files) <= EditSession._CACHE_LIMIT
 
 
@@ -381,8 +393,6 @@ def test_remove_at_keeps_disabled_mask_consistent(tmp_path):
 def test_prefix_cache_limit_is_enforced(tmp_path):
     """★ 缓存上限（_CACHE_LIMIT=8）：把 limit 压到 1，旧缓存文件被清理。"""
     import glob
-    import os
-    import tempfile as _tf
     src = _src(tmp_path, np.zeros((FS, 1)))
     sess = EditSession(src, [GainOp(0.0, 1.0, -2.0), DehumOp(0.0, 1.0, 50.0)])
     old_limit = EditSession._CACHE_LIMIT
@@ -390,7 +400,7 @@ def test_prefix_cache_limit_is_enforced(tmp_path):
         EditSession._CACHE_LIMIT = 1
         sess.render(str(tmp_path / "o.wav"), overwrite=True)
         # 渲染后清理循环在 finally 里跑：tempdir 的 _ac_prefix_*.wav ≤ limit
-        files = glob.glob(os.path.join(_tf.gettempdir(), "_ac_prefix_*.wav"))
+        files = glob.glob(_cache_glob())
         assert len(files) <= 1
     finally:
         EditSession._CACHE_LIMIT = old_limit
@@ -435,3 +445,172 @@ def test_poly_vertex_edit_is_recomputable(tmp_path):
     a3 = s.render(str(tmp_path / "o3.wav"), overwrite=True)
     assert a3["ops"][-1]["points"] == [[0.0, 100.0], [1.0, 100.0], [1.0, 2000.0], [0.0, 2000.0]]
     assert a3["audit_digest"] != a2["audit_digest"]
+
+
+# ------------------------------------------------- 变异轮收口（7 个存活的针对性钉死）
+def test_move_boundary_semantics(tmp_path):
+    """★ `move` 边界三连：负 src 拒绝（`0 <= src` 的下界）、src==dst 拒绝（`==` 早退）、
+    合法移动真的换位。"""
+    src = _src(tmp_path, np.zeros((FS, 1)))
+    s = EditSession(src, [GainOp(0.0, 0.5, -1.0), GainOp(0.5, 1.0, -2.0),
+                          GainOp(1.0, 1.5, -3.0)])
+    assert s.move(-1, 0) is False, "负 src 必须 False"
+    assert s.move(3, 0) is False, "越界 src 必须 False"
+    assert s.move(0, 0) is False, "src == dst 必须 False（`==` 早退）"
+    assert s.move(2, 0) is True
+    assert [o.gain_db for o in s.ops] == [-3.0, -1.0, -2.0], "移动后顺序必须正确"
+
+
+def test_remove_at_shifts_disabled_mask_down(tmp_path):
+    """★ `remove_at` 的掩码收缩算术（`k > idx → k-1`）：删 idx 后，右侧禁用键前移、
+    idx 本身消失、左侧不动——三段行为都钉。"""
+    src = _src(tmp_path, np.zeros((FS, 1)))
+    s = EditSession(src, [GainOp(0.0, 0.5, -1.0), GainOp(0.5, 1.0, -2.0),
+                          GainOp(1.0, 1.5, -3.0), GainOp(1.5, 2.0, -4.0)])
+    s.toggle_enabled(0)                       # 禁用 0（idx 左侧，不动）
+    s.toggle_enabled(2)                       # 禁用 2（idx 右侧，应前移到 1）
+    s.toggle_enabled(3)                       # 禁用 3（应前移到 2）
+    assert s.disabled == {0, 2, 3}
+    assert s.remove_at(1) is True             # 删 idx=1
+    assert s.disabled == {0, 1, 2}, "右侧键前移、左侧不动"
+
+
+def test_prefix_hash_key_length_is_16(tmp_path):
+    """★ 前缀键截断**恰好 16 个十六进制字符**（`hexdigest()[:16]`）：文件名含它。"""
+    import re
+    src = _src(tmp_path, np.zeros((FS, 1)))
+    s = EditSession(src, [GainOp(0.0, 1.0, -2.0), DehumOp(0.0, 1.0, 50.0)])
+    c = s._prefix_files(list(s.live_ops()))
+    for i, path in c.items():
+        m = re.search(r"_ac_prefix_[0-9a-f]{16}_(\d+)_([0-9a-f]{16})\.wav$", path)
+        assert m, "文件名必须含 16 位源键 + 前缀长 + 16 位内容键：%s" % path
+        assert int(m.group(1)) == i, "文件名里的前缀长必须与键一致"
+
+
+def test_cache_limit_nine_would_break_boundary(tmp_path):
+    """★ 缓存上限=8 的**行为**钉法：造 9 个前缀文件（手工），渲染后必须只剩 ≤8。"""
+    import glob
+    import os
+    src = _src(tmp_path, np.zeros((FS, 1)))
+    # 手工塞 9 个假的旧前缀文件（模拟"超限"状态）
+    stale = []
+    for i in range(9):
+        f = os.path.join(os.path.dirname(_cache_glob()), "_ac_prefix_deadbeef_%d_%s.wav"
+                         % (i, "ab" * 8))
+        open(f, "w").close()
+        stale.append(f)
+    s = EditSession(src, [GainOp(0.0, 1.0, -2.0), DehumOp(0.0, 1.0, 50.0)])
+    s.render(str(tmp_path / "o.wav"), overwrite=True)
+    left = glob.glob(_cache_glob())
+    assert len(left) <= 8, "渲染后缓存文件必须 ≤ _CACHE_LIMIT（8），得到 %d" % len(left)
+    for f in stale:
+        if os.path.exists(f):
+            os.remove(f)
+
+
+def test_single_op_renders_direct_even_with_two_ops_disabled(tmp_path):
+    """★ `len(live) <= 1` 直渲界：两个算子但**一个被禁用** ⇒ live==1 ⇒ 仍走直渲
+    （`<=` vs `<` 的边界：恰好 1 个 live 必须直渲）。"""
+    src = _src(tmp_path, np.zeros((FS, 1)))
+    s = EditSession(src, [GainOp(0.0, 1.0, -2.0), DehumOp(0.0, 1.0, 50.0)])
+    s.toggle_enabled(1)                       # 禁用第二个 ⇒ live == 1
+    d = str(tmp_path / "o.wav")
+    a = s.render(d, overwrite=True)
+    assert "prefix_cache_hits" not in a, "live==1 必须直渲（不经缓存）"
+    assert os.path.exists(d)
+
+
+def test_move_dst_clamp_is_strict_upper_bound(tmp_path):
+    """★ `dst` 夹紧上界是 `len-1`（严格）：3 元素栈上 `move(2, 3)` 必须 False
+    （`-1` → `+1` 变异会让它"成功移动到越界位置"）。"""
+    src = _src(tmp_path, np.zeros((FS, 1)))
+    s = EditSession(src, [GainOp(0.0, 0.5, -1.0), GainOp(0.5, 1.0, -2.0),
+                          GainOp(1.0, 1.5, -3.0)])
+    assert s.move(2, 3) is False, "dst 越界（=len）必须 False"
+
+
+def test_move_same_position_returns_false(tmp_path):
+    """★ `src == dst` 早退（`==`）：同位移动必须 False（不是 True + 无操作）。"""
+    src = _src(tmp_path, np.zeros((FS, 1)))
+    s = EditSession(src, [GainOp(0.0, 0.5, -1.0), GainOp(0.5, 1.0, -2.0)])
+    assert s.move(0, 0) is False
+    assert s.move(1, 1) is False
+
+
+def test_remove_at_disabled_mask_shift_exact(tmp_path):
+    """★ `remove_at` 掩码收缩**精确语义**：`k > idx → k-1`、idx 删除、`k < idx` 不动。
+
+    变异 `> → >=` 会让"idx 本身被禁用"时错误地把 idx-1 也标记。构造：
+    禁用 {1, 2}，删 idx=1 ⇒ 正确结果 {0→0 不动, 2→1} = {1}；变异会把 2 变 1 后
+    又与 idx 冲突。用四算子+双禁用钉精确映射。
+    """
+    src = _src(tmp_path, np.zeros((FS, 1)))
+    s = EditSession(src, [GainOp(0.0, 0.25, -1.0), GainOp(0.25, 0.5, -2.0),
+                          GainOp(0.5, 0.75, -3.0), GainOp(0.75, 1.0, -4.0)])
+    s.toggle_enabled(1)                       # 禁用 idx=1
+    s.toggle_enabled(3)                       # 禁用 idx=3
+    assert s.disabled == {1, 3}
+    assert s.remove_at(1) is True             # 删 idx=1
+    # 期望：1 被删；3 → 2（前移）；0 不动
+    assert s.disabled == {2}, "右侧键必须前移一位，左侧不动（得到 %s）" % s.disabled
+    # **边界补强**：被删的 idx 本身**未被禁用**时，右侧禁用键仍要前移（`>` 严格性）
+    s2 = EditSession(src, [GainOp(0.0, 0.25, -1.0), GainOp(0.25, 0.5, -2.0),
+                           GainOp(0.5, 0.75, -3.0)])
+    s2.toggle_enabled(2)                      # 只禁用 idx=2
+    assert s2.remove_at(0) is True            # 删 idx=0
+    assert s2.disabled == {1}, "删 0 后 2 → 1（得到 %s）" % s2.disabled
+
+
+def test_single_live_op_renders_direct_even_when_cache_exists(tmp_path):
+    """★ `len(live) <= 1` 直渲界（`<=` 语义）：live==1 必须**不经缓存路径**。
+
+    变异 `<` 会让 live==1 也走缓存 ⇒ 同域 time 栈被 FLOAT 中间层引入 float32 量化
+    （破坏"未编辑处逐位不变"）。判据：live==1 的渲染审计**无 prefix 字段**。
+
+    ⚠ 两算子必须**不重叠**（时间上分离）：若重叠，`render()` 分派会让同域重叠
+    走 `_render_chained`（v1.1.1 的语义），prefix 字段永远缺席 ⇒ 判据失去区分力。
+    """
+    src = _src(tmp_path, np.zeros((FS, 1)))
+    s = EditSession(src, [GainOp(0.0, 1.0, -2.0), DehumOp(2.0, 3.0, 50.0)])
+    s.toggle_enabled(1)                       # live == 1（不重叠 ⇒ 单趟路径可达）
+    d = str(tmp_path / "o.wav")
+    a = s.render(d, overwrite=True)
+    assert "prefix_cache_hits" not in a and "prefix_cache_used" not in a
+    assert os.path.exists(d)
+
+
+# ------------------------------------------------- 变异收口（对齐当前源码的 4 个存活）
+def test_move_disabled_follows_moved_op(tmp_path):
+    """★ `move` 的掩码跟随（`{dst if k == src else k}`）：移动**被禁用**的算子 ⇒
+    禁用标记跟着走到新位置（`==→!=` 变异会让跟随反转）。
+
+    3 元素栈、禁用 idx=1，move(1, 0) ⇒ 禁用应从 1 → 0（跟随算子）。
+    """
+    src = _src(tmp_path, np.zeros((FS, 1)))
+    s = EditSession(src, [GainOp(0.0, 0.5, -1.0), GainOp(0.5, 1.0, -2.0),
+                          GainOp(1.0, 1.5, -3.0)])
+    s.toggle_enabled(1)
+    assert s.disabled == {1}
+    assert s.move(1, 0) is True
+    assert s.disabled == {0}, "禁用标记必须跟随算子到新位置（得到 %s）" % s.disabled
+
+
+def test_cache_limit_keeps_exactly_eight(tmp_path):
+    """★ 缓存上限 8 的**清理语义**：10 个混域算子的栈渲染会产生 10 个前缀
+    中间文件，`finally` 只保留最近修改的 `_CACHE_LIMIT` 个 ⇒ 渲染结束后
+    tempdir 里 `_ac_prefix_*.wav` **恰好 8 个**（`8→9` 变异会留 9 个）。
+
+    混域（Gain/Dehum 交替）才能走前缀缓存路径——同域栈不产生中间文件。
+    """
+    import glob
+    ops = []
+    for i in range(10):
+        if i % 2 == 0:
+            ops.append(GainOp(i * 0.1, i * 0.1 + 0.12, -1.0))
+        else:
+            ops.append(DehumOp(i * 0.1, i * 0.1 + 0.12, 50.0 + i))
+    src = _src(tmp_path, np.zeros((FS, 1)))
+    s = EditSession(src, ops)
+    s.render(str(tmp_path / "o.wav"), overwrite=True)
+    files = glob.glob(_cache_glob())
+    assert len(files) == 8, "缓存上限应清理到恰好 8 个（得到 %d）" % len(files)

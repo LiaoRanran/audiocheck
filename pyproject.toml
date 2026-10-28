@@ -43,7 +43,10 @@ Changelog = "https://github.com/LiaoRanran/audiocheck/blob/main/CHANGELOG.md"
 
 [project.scripts]
 audiocheck = "audiocheck.cli:main"
-audiocheck-edit = "audiocheck.edit_cli:main"
+# ⚠ 不能叫 `audiocheck-edit`——那个名字被下面的 gui-scripts 占着。pip 对
+# 同名 console_script 与 gui_script 的落盘顺序不确定（实测 gui 覆盖 cli），
+# 结果是**命令行版编辑入口静默消失**、只剩一个会开窗口的 exe。
+audiocheck-edit-cli = "audiocheck.edit_cli:main"
 
 [project.gui-scripts]
 audiocheck-gui = "audiocheck.ui.app:main"

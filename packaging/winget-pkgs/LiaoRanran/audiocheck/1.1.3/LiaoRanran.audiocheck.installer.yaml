@@ -1,0 +1,14 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+PackageIdentifier: LiaoRanran.audiocheck
+PackageVersion: 1.1.3
+InstallerType: zip
+NestedInstallerType: portable
+NestedInstallerFiles:
+  - RelativeFilePath: audiocheck\audiocheck.exe
+    PortableCommandAlias: audiocheck
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/LiaoRanran/audiocheck/releases/download/v1.1.3/audiocheck-1.1.3-win64.zip
+    InstallerSha256: 423bc211920e27ad35d7291dabea6d3ef5fff6c4022620ee318e4dbffd6ae996
+ManifestType: installer
+ManifestVersion: 1.6.0

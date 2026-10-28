@@ -44,6 +44,8 @@ hiddenimports = (
        "audiocheck.core.edit.declick", "audiocheck.core.edit.dehum",
        "audiocheck.core.edit.denoise", "audiocheck.core.edit.metrics",
        "audiocheck.core.edit.playback", "audiocheck.edit_cli",
+       # 2026-10-28：崩溃可观测性与后台作业执行器（新增模块，静态分析看不到）
+       "audiocheck.diagnostics", "audiocheck.ui.editor.jobs",
        "audiocheck.ui.editor", "audiocheck.ui.editor.shell",
        "audiocheck.ui.editor.ops", "audiocheck.ui.editor.inspector",
        "audiocheck.ui.editor.batch", "audiocheck.ui.editor.transport",
@@ -74,6 +76,32 @@ a = Analysis(
         "PySide6.QtWebEngineWidgets", "PySide6.QtWebChannel",
         "PySide6.QtDataVisualization", "PySide6.QtCharts",
         "IPython", "jupyter", "notebook", "pytest", "tkinter",
+        # --- 2026-10-28 实测审计：这四家被间接拖进来但**源码零引用** ---
+        # `grep -rn "import pandas|PIL|lxml|cryptography" src/` 无结果，
+        # 而 dist 里占了 ~40 MB（pandas 13 + PIL 11 + cryptography 9.5 + lxml 6.7）。
+        # 来源是 matplotlib/scipy 的可选依赖探测。全部砍掉，下面的冒烟测试兜底。
+        # ⚠ **`PIL` 不能排**：matplotlib 的 `FigureCanvasQTAgg` 在 import 期
+        # 就 `from PIL import Image`（实测：排掉后 `--edit` 直接
+        # `ModuleNotFoundError: No module named 'PIL'`，GUI 起不来）。
+        # `pandas`/`lxml`/`cryptography` 实测可排（源码零引用且无加载期探测）。
+        "pandas", "lxml", "cryptography",
+        "defusedxml", "webencodings", "bs4", "soupsieve",
+        # 测试/调试/开发工具链（运行时绝不需要）
+        "_pytest", "pluggy", "iniconfig", "hypothesis",
+        # ⚠ **不能列 `distutils`**：setuptools 的 hook 会自己排除它，
+        # 我们再加一条会让 PyInstaller 抛
+        # `ValueError: Target module "distutils" already imported as
+        #  ExcludedModule('distutils',)`，**整个构建失败**（实测踩过）。
+        # `lib2to3` 同理（也在 setuptools hook 的排除表里）。
+        "setuptools", "pkg_resources",
+        # ⚠ **numpy 的任何子模块都不能排**（f2py / distutils / testing 全部踩过）：
+        # scipy 的 `_external.array_api_compat` 在**模块加载时**就用
+        # `clone_module` 遍历 numpy 的顶层属性（`__getattr__` 会去 import
+        # 这些子模块）⇒ 砍掉任何一个，EXE 一启动就
+        # `ModuleNotFoundError: No module named 'numpy.xxx'`。
+        # 实测三次：f2py（spec 顶部注释早记过）、distutils、testing。
+        # **教训：numpy 子树整体不动**，体积靠别处省。
+        "scipy.datasets",
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
@@ -102,6 +130,11 @@ exe = EXE(
 
 coll = COLLECT(
     exe, a.binaries, a.zipfiles, a.datas,
-    strip=False, upx=True, upx_exclude=[],
+    strip=False,
+    # ⚠ **必须 False**：EXE 段已经写了 upx=False（UPX 是杀软误报重灾区），
+    # 但这里原先是 True ⇒ 收进目录的 DLL（numpy/scipy/Qt）**照样被压**，
+    # 误报动机一点没消。两处口径必须一致。
+    upx=False,
+    upx_exclude=[],
     name="audiocheck",
 )

@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass, field, fields
 
 from PySide6.QtCore import QPointF, QRectF, Qt
@@ -559,6 +560,112 @@ def theme_for_width(base: Theme, width: int) -> Theme:
     from . import typescale
     return replace(base, type=typescale.scaled_type(base.type, width))
 THEMES = {"dark": DARK, "light": LIGHT}
+
+
+def high_contrast_active(app=None) -> bool:
+    """系统是否处于**高对比度**模式。
+
+    为什么必须单独判：Qt 的 Windows 平台插件在检测到高对比度时会把
+    `QStyleHints::colorScheme()` 返回 **`Qt::ColorScheme::Unknown`**，并改用
+    `GetSysColor(COLOR_WINDOW/COLOR_WINDOWTEXT/...)` 重算调色板
+    （qtbase `qwindowstheme.cpp` 的 `effectiveColorScheme()`）。
+    因此"`Unknown`"的正确语义是**跟随系统调色板**，而不是"未知，用默认深色"——
+    把两者混为一谈就会在用户开了高对比度时仍然画自定义深色皮肤，
+    对低视力用户等于**功能失效**（Microsoft 高对比度指南明确要求
+    "Do not hard-code colors in HighContrast"）。
+
+    实现：优先看 `colorScheme() is Unknown`（跨平台信号），再用 Windows 注册表
+    `HKCU\\...\\Themes\\HighContrast` 的 `Flags` 位做二次确认——Qt 在某些版本/
+    主题下也可能返回 Light/Dark 却实际开着高对比度。
+    """
+    try:
+        from PySide6.QtCore import Qt
+        from PySide6.QtWidgets import QApplication
+        a = app or QApplication.instance()
+        if a is not None:
+            hints = a.styleHints()
+            if hints is not None and hasattr(hints, "colorScheme"):
+                if hints.colorScheme() == Qt.ColorScheme.Unknown:
+                    return True
+    except Exception:                                          # noqa: BLE001
+        pass
+    if sys.platform == "win32":
+        try:
+            import winreg
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Themes\HighContrast")
+            flags, _ = winreg.QueryValueEx(key, "Flags")
+            winreg.CloseKey(key)
+            # Flags 的第 0 位 = 高对比度开启（0x1）；0 = 关闭
+            return bool(int(flags) & 0x1)
+        except OSError:
+            return False
+    return False
+
+
+def system_palette_theme(app=None) -> Theme:
+    """用**系统调色板**构造主题（高对比度模式下的正确外观）。
+
+    只从 `QPalette` 取颜色，不引入任何自有色号——这正是 Microsoft 要求的
+    "use SystemColor" 做法。字体/间距/圆角仍沿用 DARK 的度量，因为那些不是
+    颜色语义（高对比度不改变排版）。
+    """
+    from dataclasses import replace
+
+    from PySide6.QtGui import QPalette
+    from PySide6.QtWidgets import QApplication
+
+    a = app or QApplication.instance()
+    if a is None:
+        return DARK
+    # ⚠ 必须容忍 **QCoreApplication**（非 GUI 应用，没有 palette()）：
+    # `QApplication.instance()` 返回任何 QCoreApplication 子类实例——包括
+    # 测试里为跑事件循环而建的 QCoreApplication。直接 `a.palette()` 会
+    # `AttributeError: 'QCoreApplication' object has no attribute 'palette'`
+    # （实测：`test_editor_jobs.py` 建的 QCoreApplication 泄漏到后续测试，
+    # 让高对比度判据整片失败）。这不是测试问题，是实现的健壮性缺口。
+    palette_fn = getattr(a, "palette", None)
+    if palette_fn is None:
+        return DARK
+    qp = palette_fn()
+
+    def hx(role) -> str:
+        c = qp.color(role)
+        return "#%02x%02x%02x" % (c.red(), c.green(), c.blue())
+
+    p = replace(
+        DARK_P,
+        name="hc",
+        bg=hx(QPalette.ColorRole.Window),
+        surface=hx(QPalette.ColorRole.Base),
+        surface_hi=hx(QPalette.ColorRole.AlternateBase),
+        surface_raised=hx(QPalette.ColorRole.Window),
+        border=hx(QPalette.ColorRole.Mid),
+        border_hi=hx(QPalette.ColorRole.Dark),
+        border_focus=hx(QPalette.ColorRole.Highlight),
+        text=hx(QPalette.ColorRole.WindowText),
+        text_dim=hx(QPalette.ColorRole.Text),
+        text_faint=hx(QPalette.ColorRole.WindowText),
+        text_disabled=hx(QPalette.ColorRole.Mid),
+        primary=hx(QPalette.ColorRole.Highlight),
+        primary_hi=hx(QPalette.ColorRole.Highlight),
+        primary_text=hx(QPalette.ColorRole.HighlightedText),
+        primary_soft=hx(QPalette.ColorRole.AlternateBase),
+    )
+    return replace(DARK, name="hc", p=p)
+
+
+def active_theme(name: str = "dark", app=None) -> Theme:
+    """按**当前系统状态**给出应使用的主题（高对比度优先）。
+
+    调用点应使用本函数而不是直接查 `THEMES[name]`——高对比度是用户的无障碍
+    设置，不能因为"我们默认深色"就覆盖掉。
+    """
+    if high_contrast_active(app):
+        return system_palette_theme(app)
+    return THEMES.get(name) or DARK
+
 
 LEVEL_CN = {"ok": "合格", "warn": "有疑", "bad": "不达标"}
 LEVEL_COLOR_KEY = {"ok": "ok", "warn": "warn", "bad": "bad"}

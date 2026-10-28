@@ -429,3 +429,39 @@ def test_detect_steps_marked_runs_have_min_width():
     m = declick.detect_steps(noise)
     for st, en in declick._runs(m):
         assert en - st >= declick.STEP_MIN_RUN
+
+
+def test_step_window_length_21_beats_41_and_81():
+    """★ **窗长守门**：`STEP_L` 必须保持 21，加长会**掉检出**（实测，不是猜）。
+
+    背景：一轮外部调研建议把窗长提到 41（"L=21 时宽度 8 全灭、41 是甜点"）。
+    `packaging/step_L_sweep.py` 按同一口径实测，结论**相反**：
+
+    | 宽度 | L=21 | L=41 | L=81 |
+    |---|---|---|---|
+    | 3 | +27.70 dB（TPR 1.0）| 0.00（零检出）| 0.00（零检出）|
+    | 5 | +2.29 dB（TPR 1.0）| 0.00 | 0.00 |
+    | 8 | 0.00 | 0.00 | 0.00 |
+
+    机制：窗变长 ⇒ 窗内内容变多 ⇒ `median(|res|)/0.6745` 从 0.1516 涨到
+    0.1779/0.1927（**MAD 尺子被稀释 17–27%**）⇒ 5σ 阈值追不上平台幅度。
+    误报账三档 L 全 0，所以不是"用误报换检出"。
+
+    这条判据直接钉住"21 优于 41/81"这个实测事实：若有人按调研报告改成 41，
+    它会立刻红。
+    """
+    assert declick.STEP_L == 21, (
+        "STEP_L 被改成 %d——加长窗实测会掉检出（见 docstring 表格）"
+        % declick.STEP_L)
+    clean = corpus.harmonic_tone(SECONDS, FS, amp=0.5, seed=3)
+    if clean.ndim == 1:
+        clean = clean[:, None]
+
+    def _detected(width, L):
+        y, _ = _wide_clicks(clean, [0.30], width)
+        return int(declick.detect_steps(y, L=L).sum())
+
+    # 宽度 3：21 必须检出，41/81 必须为零（实测事实）
+    assert _detected(3, 21) > 0, "L=21 应检出 w=3 平台"
+    assert _detected(3, 41) == 0, "L=41 实测零检出（MAD 尺子被稀释）"
+    assert _detected(3, 81) == 0, "L=81 实测零检出"

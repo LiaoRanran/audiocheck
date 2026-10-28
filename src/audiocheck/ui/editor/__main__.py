@@ -11,7 +11,7 @@ from .shell import EditorWindow
 def main() -> int:
     app = QApplication.instance() or QApplication([])
     T.init_fonts(app)
-    w = EditorWindow(T.THEMES["dark"])
+    w = EditorWindow(T.active_theme("dark"))
     w.resize(1280, 800)
     w.show()
     return app.exec()

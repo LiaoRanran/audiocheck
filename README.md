@@ -61,6 +61,8 @@ audiocheck --config my_thresholds.json a.flac  # 自定义判定阈值
 audiocheck-gui                                 # 桌面版（可直接拖文件夹进窗口）
 
 # 修复（非破坏；源文件只读）
+# pip 安装后有短命令 `audiocheck-edit-cli`；`python -m audiocheck.edit_cli` 完全等价
+# （发布包 zip 里只有 audiocheck.exe：无参数开界面，带参数走 CLI，两者同一个 exe）
 python -m audiocheck.edit_cli 源.wav 出.wav --declick --at 0.5-2.0 --audit 审计.json
 python -m audiocheck.edit_cli 源.wav 出.wav --gain -6 --poly "0.3,1000;1.5,1000;1.5,4500;0.3,4500"
 python -m audiocheck.edit_cli 源.wav 出.wav --chain 修复链.json --report 报告.md

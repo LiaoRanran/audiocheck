@@ -72,6 +72,7 @@ class InspectorPanel(QFrame):
         v.addWidget(QLabel("操作栈（可复算，可交互）"))
         self.stack_view = QListWidget()
         self.stack_view.setObjectName("InspectorStack")
+        self.stack_view.setAccessibleName("操作栈")
         self.stack_view.setSelectionMode(QListWidget.SingleSelection)
         # 选中 poly_gain 条目 ⇒ 审计区显示**顶点明细**（"记录即选区"的可读性落地）
         self.stack_view.itemSelectionChanged.connect(self._show_poly_points)

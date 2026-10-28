@@ -195,3 +195,49 @@ class PolarityAnalyzer(Analyzer):
 - 缓滚降用巴特沃斯，专门验证"不被误判为截止"。
 
 `tests/conftest.py` 是唯一的素材来源，改算法先看它。
+
+## 运行时设施（2026-10-28 新增，改动这些前必读）
+
+三套设施解决"用户说程序崩了/卡住了，开发者手里只有这一句话"的问题。
+它们各自有**踩过的坑**（都来自官方文档 + 本仓实测），别按直觉简化。
+
+### `diagnostics.py` —— 崩溃可观测性（本地优先、不上传）
+
+`install()` 装四样东西：轮转日志、`faulthandler`、`sys.excepthook`、
+`threading.excepthook`、`sys.unraisablehook`。
+
+三个坑：
+
+| 坑 | 后果 | 正确做法 |
+|---|---|---|
+| `--windowed` 下 `sys.stderr is None`（PyInstaller 官方原文） | 无条件 `StreamHandler(sys.stderr)` ⇒ 每次 log 抛 `AttributeError` | 只在 `sys.stderr is not None` 时加 |
+| `faulthandler` 的文件被关闭后 fd 复用 | traceback 写进**另一个**文件（官方原话） | 句柄存模块级全局 `_crash_fh`，永不 close |
+| `sys.excepthook` **不覆盖线程** | 一半的崩溃静默消失 | 同时装 `threading.excepthook` + `sys.unraisablehook` |
+
+`export_diagnostics()` 打 zip：日志 + `env.txt` + `diagnostic.json` + `manifest.sha256`。
+**隐私红线**：不联网、不含音频、绝对路径按 `~` 缩写。
+
+### `ui/editor/jobs.py` —— 可取消的后台作业
+
+导出/批处理此前**同步跑在 UI 线程**：10 min 素材整轨约 24 s，窗口全程不响应。
+现在走 `JobRunner.submit(fn, key, on_progress=..., on_done=...)`。
+
+四个必须钉住的性质（`tests/test_editor_jobs.py` 逐条判）：
+
+1. **真的在别的线程**（比 thread id，不是看有没有 QThread 对象）；
+2. **取消真的停下**（协作式检查点，不是让令牌变摆设）；
+3. **进度节流**（1000 次 report → 最多几个信号）；
+4. **异常不吞**（`failed` 信号 + 完整栈进日志）。
+
+⚠ **`JobRunner` 必须作为窗口成员持有**：本仓踩过"QThread 被 GC 而线程仍在跑
+⇒ 进程硬崩"（`window.py` 的注释记着）。
+
+### `theme.active_theme()` —— 高对比度
+
+Qt 的 Windows 插件在系统开高对比度时把 `colorScheme()` 返回
+**`Qt::ColorScheme::Unknown`**（qtbase `qwindowstheme.cpp`）。本仓主题是硬编码
+调色板，所以"Unknown 当作默认深色"＝ **低视力用户的无障碍功能失效**
+（Microsoft 指南："Do not hard-code colors in HighContrast"）。
+
+`active_theme(name)` 优先返回 `system_palette_theme()`（从 `QPalette` 取色），
+所有 `THEMES[name]` 的直接查找都要换成它。

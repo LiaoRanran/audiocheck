@@ -283,3 +283,34 @@ def test_ray_cast_dense_grid_perturbed_vertices():
     for ti, t in enumerate(ts):
         for fi, f in enumerate(fs_):
             assert bool(mask[fi, ti]) == _raycast_reference((t, f), poly), (t, f)
+
+
+def test_ray_cast_grid_with_horizontal_edges_and_perturbation():
+    """★ 射线法变异补丁：网格**必须含水平边穿越**（`y1==y2` 跳过分支在场）+ 顶点微扰。
+
+    此前的微扰网格是 50 顶点凸近似（无水平边），钉不住"水平边跳过"与 `x_at`
+    插值符号这两个变异（374/371 在测度零处滑过）。本判据用**轴对齐矩形 +
+    微扰一半顶点**构造：水平边真实存在，且微扰让探针点不落在边上。
+    """
+    from audiocheck.core.edit.render import _point_in_poly
+    rng = np.random.default_rng(23)
+    # 矩形：两条水平边（y=1000 与 y=4500），顶点各带 ±1e-6 微扰（除两个保持精确，测边界稳健性）
+    poly = [(0.3, 1000.0), (1.5, 1000.0 + rng.uniform(-1e-6, 1e-6)),
+            (1.5, 4500.0), (0.3, 4500.0 + rng.uniform(-1e-6, 1e-6))]
+    ts = np.linspace(0.2, 1.6, 30)
+    fs_ = np.linspace(900.0, 4600.0, 30)
+    mask = _point_in_poly(ts[None, :], fs_[:, None], poly)
+    n_in = int(mask.sum())
+    assert 0 < n_in < mask.size, "矩形应有内有点（sanity）"
+    for ti, t in enumerate(ts):
+        for fi, f in enumerate(fs_):
+            assert bool(mask[fi, ti]) == _raycast_reference((t, f), poly), (t, f)
+    # 凹形 + 水平边（U 形，顶点全微扰）
+    poly2 = [(0.3 + rng.uniform(-1e-6, 1e-6), 1000.0),
+             (1.5, 1000.0 + rng.uniform(-1e-6, 1e-6)),
+             (1.5, 4500.0), (1.0 + rng.uniform(-1e-6, 1e-6), 4500.0),
+             (1.0, 2750.0 + rng.uniform(-1e-6, 1e-6)), (0.3, 2750.0)]
+    mask2 = _point_in_poly(ts[None, :], fs_[:, None], poly2)
+    for ti, t in enumerate(ts):
+        for fi, f in enumerate(fs_):
+            assert bool(mask2[fi, ti]) == _raycast_reference((t, f), poly2), (t, f)

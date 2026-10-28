@@ -100,6 +100,10 @@ TARGETS: dict[str, list[str]] = {
                                           "tests/test_edit_denoise.py",
                                           # 2026-10-26：导出抖动（TPDF / LSB / 审计字段）。
                                           "tests/test_edit_dither.py",
+                                          # 2026-10-28：满上限变异留下的存活点补测
+                                          # （WAV chunk 走查的常量 / 填充 / 截断，
+                                          # 同域重叠的相邻边界，多边形顶点环）。
+                                          "tests/test_edit_render_gaps.py",
                                           "tests/test_edit_poly.py"],
     "src/audiocheck/core/edit/ops.py": ["tests/test_edit_render.py",
                                         "tests/test_edit_stft.py",
@@ -184,6 +188,21 @@ MIN_SCORE = 0.90
 #: 变异体被判成"存活"、分数从 0.946 掉到 0.760）。**改动被这些源码后必须重跑本探针
 #: 并核对行号**——否则分数是假的（低不是"测试差"，是"白名单过期"）。
 EQUIVALENT: dict[str, str] = {
+    # --- 2026-10-28：render.py 满上限核查出的真等价 ---
+    "src/audiocheck/core/edit/render.py:213:cmp:>->>=":
+        "`if same_domain_single and len(ops) > 1 and _spans_overlap(ops)` 的 "
+        "`len(ops) > 1` → `>=`：唯一新增的分支是 len(ops)==1，此时 "
+        "`_spans_overlap` 的扫描循环只有一项（`end` 从 -inf 起、`lo < -inf` 恒假）"
+        "⇒ 必返回 False ⇒ 不进 `_render_chained`，与改前走同一条单趟渲染路径。",
+    # --- 2026-10-28：session.py 变异收口核查出的两条真等价 ---
+    "src/audiocheck/core/edit/session.py:134:cmp:>->>=":
+        "`remove_at` 的掩码收缩 `{k-1 if k>idx else k for k in ... if k != idx}`："
+        "`>`→`>=` 的唯一差异点 k==idx 已被同一推导式的 `if k != idx` 过滤掉 "
+        "⇒ 遍历集合与取值完全相同（filter 在前，表达式根本看不到 k==idx）。",
+    "src/audiocheck/core/edit/session.py:245:cmp:<=-><":
+        "`render` 的 `if len(live) <= 1` 直渲短路 → `<`：单算子栈会落到下方 "
+        "`len(kinds) == 1` 的同域直渲分支——同样是 `Project(self.source, live)` + "
+        "`_render(proj, dest, **kw)`，殊途同归 ⇒ 输出与审计逐位相同。",
     "src/audiocheck/core/dsp.py:30:const:4096->4097":
         "TP_OVERLAP 是真峰值分段的重叠采样数，±1 只挪动分段边界；取最大值的中段不变。",
     # --- 2026-10-17 夜间包：判定层纳入后新增的等价体（每条都经核查）---
@@ -658,6 +677,13 @@ def _run_subset(ws: str, tests: list[str], py: str, timeout: float) -> tuple[int
     # `test_cutoff_accuracy` 仍全绿——量具又坏了，不是测试好）。
     # `ws` 放前面是为了让工作区的 `sitecustomize.py` 生效（摘掉 editable finder）。
     env["PYTHONPATH"] = os.path.join(ws, "src") + os.pathsep + ws
+    # ⚠ **每个工作区一个前缀缓存目录**：`EditSession` 的前缀缓存文件按"内容寻址"
+    # 落在 tempdir，多路并发时会互相删对方正在读的中间产物 ⇒ 同一个变异体跑出
+    # 不稳定结果（实测 8 路并发同一变异体：killed×7 / survived×1）。把缓存目录
+    # 按工作区分开，隔离交给文件系统，不需要锁。
+    cache_dir = os.path.join(ws, "_prefix_cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    env["AUDIOCHECK_PREFIX_CACHE_DIR"] = cache_dir
     try:
         p = subprocess.run([py, "-m", "pytest", "-x", "-q", "-p", "no:cacheprovider", *tests],
                            cwd=ws, env=env, capture_output=True, text=True, timeout=timeout)
@@ -710,6 +736,47 @@ def audit_registry() -> list[str]:
     return problems
 
 
+def _run_one(rel: str, src: str, idx: int, tests: list[str], py: str,
+             timeout: float) -> tuple[str, str]:
+    """跑**单个**变异体，返回 `(verdict, sig)`。
+
+    `verdict ∈ {"killed","survived","equiv","invalid","hang"}`。
+
+    这是并行的最小单元：它自己建工作区、自己改文件、自己跑 pytest，返回后
+    **不依赖任何共享状态**。串行与 `--jobs N` 并行走同一份逻辑 ⇒ 判定口径不变
+    （这正是"量具先自证"的要求：并行不能改变结论）。
+
+    必须为每个变异体独立建工作区：同一进程里改同一份文件再并发读会产生
+    撕裂（一个 worker 写变异体、另一个读到半截），且 `pytest` 的 `.pyc`
+    缓存可能跨体污染——`PYTHONDONTWRITEBYTECODE=1` 只挡写，不挡已有缓存。
+    """
+    ws = _build_workspace()
+    try:
+        tree = ast.parse(src)
+        cand = _candidates(tree)[idx]
+        mutated = _apply(tree, cand)
+        try:
+            new_src = ast.unparse(mutated)
+            compile(new_src, rel, "exec")
+        except Exception:                                    # noqa: BLE001
+            return "invalid", ""
+        sig = cand.sig(rel)
+        if new_src == src:                                    # 量具异常
+            return "invalid", sig
+        with open(os.path.join(ws, rel), "w", encoding="utf-8") as f:
+            f.write(new_src)
+        rc, _out = _run_subset(ws, tests, py, timeout)
+        if rc == 0:
+            return ("equiv" if sig in EQUIVALENT else "survived"), sig
+        if rc == 1:
+            return "killed", sig
+        if rc == 3:
+            return "hang", sig
+        return "invalid", sig
+    finally:
+        shutil.rmtree(ws, ignore_errors=True)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="变异测试（自实现，AST 注入故障）")
     ap.add_argument("--audit-registry", action="store_true",
@@ -729,6 +796,11 @@ def main() -> int:
                          "病态变异体（让实现非终止）会把整轮探针挂死，"
                          "`--max-seconds` 只在两个变异体之间检查、拦不住。"
                          "超时计为**被杀**（挂起检出），报告单列")
+    ap.add_argument("--jobs", type=int, default=1,
+                    help="并行度（默认 1=串行）。每个 worker 起**自己的**工作区副本，"
+                         "互不干扰。变异体彼此独立（各自 `pytest -x` 子进程）⇒ 并行"
+                         "不改变判定口径。⚠ 32 核机器上 8-12 是甜点：再高会被"
+                         "磁盘 IO 与 CPU 争抢拖慢，且峰值内存 ~每 worker 1 个 Qt 栈")
     a = ap.parse_args()
     reg_problems = audit_registry()
     if a.audit_registry:
@@ -787,59 +859,79 @@ def main() -> int:
               % (rel, len(cands),
                  "，**被 --max-mutants=%d 截断**，候选共 %d 个" % (a.max_mutants, len(all_cands))
                  if capped else ""), flush=True)
-        target_path = os.path.join(ws, rel)
-        for i in range(len(cands)):
-            if time.time() - t0 > a.max_seconds:
-                timed_out = True
-                print("  …… 达到时长上限，停止（结果部分）", flush=True)
-                break
-            total += 1
-            # ⚠ **必须在同一棵树上取候选再变异**：`_candidates` 用 `id(node)` 标识目标，
-            # 而 `ast.parse` 每次都给新对象 ⇒ 若"先 parse 收候选、再 parse 变异"，
-            # id 永不匹配 ⇒ **变异静默不生效**，全部假"存活"（实测踩过：16/16 存活、
-            # 分数 0，量具坏了而不是测试好）。故这里按**索引**在新鲜树上重取候选。
-            tree = ast.parse(src)
-            cand = _candidates(tree)[i]
-            mutated = _apply(tree, cand)
-            try:
-                new_src = ast.unparse(mutated)
-                compile(new_src, rel, "exec")          # 无效变异体（语法/编译不过）不计分
-            except Exception:                          # noqa: BLE001
-                invalid += 1
-                continue
-            if new_src == src:                         # 变异没改动源码 ⇒ 量具异常
-                invalid += 1
-                print("  [无效] 变异未改变源码（量具异常）", flush=True)
-                continue
-            with open(target_path, "w", encoding="utf-8") as f:
-                f.write(new_src)
-            # 逐体打印进度并 flush：一轮可能跑十几分钟，没有进度就**看不出量具是否挂了**
-            # （这正是"无超时"那次事故里最难受的地方）。
-            print("  [%d/%d] %s …" % (i + 1, len(cands), cand.sig(rel)), flush=True)
-            rc, _out = _run_subset(ws, tests, py, a.mutant_timeout)
-            sig = cand.sig(rel)
-            if rc == 0:
-                if sig in EQUIVALENT:
+        jobs = max(1, int(a.jobs))
+        if jobs == 1:
+            for i in range(len(cands)):
+                if time.time() - t0 > a.max_seconds:
+                    timed_out = True
+                    print("  …… 达到时长上限，停止（结果部分）", flush=True)
+                    break
+                total += 1
+                sig = cands[i].sig(rel)
+                print("  [%d/%d] %s …" % (i + 1, len(cands), sig), flush=True)
+                verdict, _sig = _run_one(rel, src, i, tests, py, a.mutant_timeout)
+                if verdict == "killed":
+                    killed += 1
+                    print("        → 杀死", flush=True)
+                elif verdict == "hang":
+                    killed += 1
+                    hangs += 1
+                    print("        → **超时=被杀**（变异体使实现非终止，挂起检出）", flush=True)
+                elif verdict == "equiv":
                     equiv += 1
                     print("        → 等价：%s" % EQUIVALENT[sig], flush=True)
-                else:
+                elif verdict == "survived":
                     survived.append(sig)
                     print("        → **存活** ← 测试缺失", flush=True)
-            elif rc == 1:
+                else:
+                    invalid += 1
+                    print("        → 无效（编译失败 / 变异未改动源码）", flush=True)
+            continue
+
+        # ---------------- 并行：每个 worker 自带工作区 ----------------
+        # ⚠ 结果必须**按索引收拢**（不是按完成顺序）：`survived` 列表的顺序是
+        # 报告的一部分，乱序会让人对不上源码行号。
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        n = len(cands)
+        print("  并行 %d 路（%d 个体；每体独立工作区）" % (jobs, n), flush=True)
+        results: dict[int, tuple[str, str]] = {}
+        with ThreadPoolExecutor(max_workers=jobs) as ex:
+            futs = {ex.submit(_run_one, rel, src, i, tests, py,
+                              a.mutant_timeout): i for i in range(n)}
+            done = 0
+            for fut in as_completed(futs):
+                i = futs[fut]
+                try:
+                    results[i] = fut.result()
+                except Exception as e:                       # noqa: BLE001
+                    results[i] = ("invalid", "worker 异常：%s" % e)
+                done += 1
+                total += 1
+                verdict, sig = results[i]
+                mark = {"killed": "杀死", "hang": "超时=被杀", "equiv": "等价",
+                        "survived": "**存活** ← 测试缺失",
+                        "invalid": "无效"}[verdict]
+                print("  [%d/%d] %s … → %s"
+                      % (done, n, cands[i].sig(rel), mark), flush=True)
+                if time.time() - t0 > a.max_seconds:
+                    timed_out = True
+        # 按索引收拢
+        for i in range(n):
+            verdict, sig = results.get(i, ("invalid", ""))
+            if verdict == "killed":
                 killed += 1
-                print("        → 杀死", flush=True)
-            elif rc == 3:
+            elif verdict == "hang":
                 killed += 1
                 hangs += 1
-                print("        → **超时=被杀**（变异体使实现非终止，挂起检出）", flush=True)
+            elif verdict == "equiv":
+                equiv += 1
+            elif verdict == "survived":
+                survived.append(sig)
             else:
                 invalid += 1
-                print("        → 无效（pytest rc=%d，可能无法导入）" % rc, flush=True)
-        # 还原
-        with open(target_path, "w", encoding="utf-8") as f:
-            f.write(src)
         if timed_out:
-            break
+            print("  …… 达到时长上限（并行批次已完成的部分照常计入）", flush=True)
+        continue
 
     scored = killed + len(survived)  # 只把"有效且非等价"的算进分母
     score = (killed / scored) if scored else 0.0

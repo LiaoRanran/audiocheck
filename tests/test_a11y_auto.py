@@ -78,3 +78,57 @@ def test_editor_focus_chain_covers_all_focusables(audio):
     assert len(visited) >= max(1, len(visible_focus) // 2), \
         "焦点链覆盖 %d / 可聚焦 %d" % (len(visited), len(visible_focus))
     w.deleteLater()
+
+
+def test_focusable_controls_have_accessible_name(audio):
+    """★ **可访问名称**：每个可聚焦控件都必须能被屏幕阅读器念出名字。
+
+    ## 这条判据为什么必须存在
+
+    `QAccessible` 的命名优先级是：`accessibleName()` → **窗口标题** →
+    `QLabel.setBuddy` 推导出的文本。因此"没设 accessibleName"的控件并非一定
+    无声——但**只有靠 buddy 才偶然有名字**的控件，一旦 UI 结构改动就会静默
+    失去名字，而屏幕阅读器用户看到的是"按钮、按钮、按钮"。
+
+    ⚠ 另一个陷阱：`QAccessible::isActive()` 是**惰性**的——没有 AT 客户端连接时
+    返回 false，`updateAccessibility()` 全被忽略。所以"动画/事件驱动的可访问性
+    通知"在无 AT 的测试环境里必然不触发。**名称是静态属性**，不受此影响，
+    因此可以在无 AT 环境下断言——这也是本条选"名称"而不是"通知"的原因。
+
+    判据：可聚焦且可见的 QAbstractButton / QLineEdit / QComboBox 等
+    "会被念出名字"的控件，`accessibleName()` 与 `text()` 不能同时为空。
+    """
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import (
+        QAbstractButton,
+        QAbstractItemView,
+        QApplication,
+        QComboBox,
+        QLineEdit,
+        QWidget,
+    )
+
+    _app = QApplication.instance() or QApplication([])
+    from audiocheck.ui import theme as T
+    from audiocheck.ui.editor.shell import EditorWindow
+
+    w = EditorWindow(T.THEMES["dark"])
+    w.show()
+    named_types = (QAbstractButton, QLineEdit, QComboBox, QAbstractItemView)
+    bad = []
+    for c in w.findChildren(QWidget):
+        if not isinstance(c, named_types):
+            continue
+        if not (c.isVisibleTo(w) and c.isEnabled()):
+            continue
+        if not (c.focusPolicy() & Qt.FocusPolicy.TabFocus):
+            continue
+        name = c.accessibleName() or ""
+        text = (c.text() if hasattr(c, "text") else "") or ""
+        tip = c.toolTip() or ""
+        if not (name.strip() or text.strip() or tip.strip()):
+            bad.append("%s(%r)" % (type(c).__name__, c.objectName()))
+    assert not bad, (
+        "以下可聚焦控件既无 accessibleName 也无 text/toolTip，"
+        "屏幕阅读器念不出名字：\n  " + "\n  ".join(bad[:12]))
+    w.deleteLater()

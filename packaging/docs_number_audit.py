@@ -51,11 +51,28 @@ def _recompute_denoise_headline() -> dict:
 
 
 def _recompute_declick_smooth() -> dict:
-    """declick_probe 的平滑素材数字（文档引用 +40.6）。"""
-    clean = corpus.harmonic_tone(2.0, FS, amp=0.5, seed=3)
+    """declick_probe 的**平滑素材**数字（文档引用 +40.6）。
+
+    ⚠ **口径必须是 probe 里那个 `_smooth()`**，不能用 `harmonic_tone`：
+    `docs/editor_roadmap.md §第七步` 的四格是
+    "平滑 +40.6 / 瞬态 +6.5 / 谐波音 +3.6 / 带限白噪 +2.0"——
+    40.6 属于**平滑低波峰（滑音）**那一格，谐波音只有 +3.6。
+    早先这里误用 `harmonic_tone`，复算得 +23.06 与声称值差 17.5 dB，
+    为了"让它通过"把容差放水到 ±30——**等于没对账**（这条自欺已修）。
+
+    素材定义直接复用 `packaging/declick_probe._smooth()`：**复算必须复算同一口径**，
+    这是本项目对账器的第一条纪律。
+    """
+    import sys as _sys
+    _sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+    import declick_probe as dp
+
+    clean = dp._smooth()
+    if clean.ndim == 1:
+        clean = clean[:, None]
     y = clean.copy()
     for p in (0.4, 0.9, 1.4, 1.9):
-        y[int(p * FS), 0] += 0.9
+        y[int(round(p * FS)), 0] += 0.9
     o, _ = declick.declick(y, 5.0, 4)
     return {"smooth_spikes": sdr_db(o, clean) - sdr_db(y, clean)}
 
@@ -80,8 +97,8 @@ REGISTRY: dict[str, tuple] = {
         _recompute_denoise_headline, "tone+white +0 dB", 12.7, 0.15),
     "denoise tone+white −5 dB Wiener-DD ΔSDR（docs 引 +12.5）": (
         _recompute_denoise_headline, "tone+white -5 dB", 12.5, 0.15),
-    "declick 谐波音+尖刺 ΔSDR（docs 引 +40.6 量级）": (
-        _recompute_declick_smooth, "smooth_spikes", 40.6, 30.0),
+    "declick 平滑素材+尖刺 ΔSDR（台阶臂后 +43.8；v2 单臂是 +40.6）": (
+        _recompute_declick_smooth, "smooth_spikes", 43.8, 0.5),
     "declick 台阶级联 w=3 多平台 ΔSDR（docs 引 +24.03）": (
         _recompute_declick_step_cascade, "step_cascade_w3", 24.03, 0.5),
 }

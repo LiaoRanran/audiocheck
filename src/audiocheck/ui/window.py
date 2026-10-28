@@ -426,6 +426,7 @@ class MainWindow(FramelessWindow):
         h.addWidget(lab)
 
         self.cb_view_fft = QComboBox()
+        self.cb_view_fft.setAccessibleName("频谱窗长")
         for n in views.VIEW_NPERSEG_CHOICES:
             # Δf 按 44.1k 报；真实值随文件采样率变，图上有披露（charts.py 的
             # "Δf ≈" 标注从数据直算），所以这里只给量级、不冒充精确值。
@@ -436,6 +437,7 @@ class MainWindow(FramelessWindow):
         h.addWidget(self.cb_view_fft)
 
         self.cb_view_db = QComboBox()
+        self.cb_view_db.setAccessibleName("纵轴动态范围")
         for d in DB_RANGE_CHOICES:
             self.cb_view_db.addItem("窗 %.0f dB" % d, d)
         self.cb_view_db.setCurrentIndex(
@@ -1573,7 +1575,7 @@ class MainWindow(FramelessWindow):
             # 于是浅色配色被画在深色背景上。
             # 实测症状：深色底上画出 #141a26 的数值，几乎不可见——
             # 指标卡的数字是仪表盘的重点，结果它最不显眼。
-            self.apply_theme(T.THEMES[n])
+            self.apply_theme(T.active_theme(n))
         # 种子色主题：记住上一次用过的种子，否则"换了个配色"关掉程序就没了。
         seed = s.value("seed")
         if seed:
@@ -1614,6 +1616,13 @@ class MainWindow(FramelessWindow):
 
 def main(argv=None):
     import sys
+
+    # 崩溃可观测性必须在**任何 Qt 对象之前**装好：Qt 初始化本身就可能崩
+    # （插件缺失、显卡驱动问题），那时没有钩子就什么也留不下。
+    # ⚠ windowed 构建里 `sys.stderr` 是 None（PyInstaller 官方明说）
+    # ⇒ `diagnostics.install()` 内部会跳过 StreamHandler。
+    from .. import diagnostics
+    diagnostics.install()
 
     from PySide6.QtWidgets import QApplication
     app = QApplication(sys.argv)

@@ -1046,11 +1046,25 @@ def _wav_content_sha256(path: str) -> str:
         if len(blob) < 12 or blob[:4] not in (b"RIFF", b"RIFX", b"RF64"):
             return hashlib.sha256(blob).hexdigest()
         h = hashlib.sha256()
-        h.update(blob[:12])                      # RIFF 头（头 12 字节里没有时间戳）
+        # ⚠ **只哈希魔数 + 格式标识（8 字节），不能哈希 `blob[:12]`**：
+        # 第 4–8 字节是 **RIFF 总大小字段**，它随容器里**任何** chunk 的长度变化
+        # （多一个 LIST/INFO/fact/PEAK 都会变）。把它算进"内容哈希"意味着
+        # **同一份音频内容、只因容器多带元数据就被判成不同内容**——
+        # 直接破坏"跨机核对同一份修复"这个核心承诺。
+        # 实测（`tests/test_edit_render_gaps.py`）：同样 fmt+data，中间插一个
+        # 16 字节 PEAK ⇒ 总大小 46→70 ⇒ 旧实现两个哈希不同。
+        h.update(blob[:4])                       # "RIFF" / "RIFX" / "RF64"
+        h.update(blob[8:12])                     # "WAVE"
+        # `RIFX` 是**大端** RIFF（罕见但合法：广播/老 Mac 素材）；
+        # `RIFF` / `RF64` 是小端。chunk 的 size 字段必须按对应字节序读——
+        # 早先无条件 `"little"` ⇒ RIFX 容器的 size 会被读成天文数字、
+        # `min(..., len(blob))` 把整个文件当一个大 chunk ⇒ **哈希失去区分力**
+        # （不同内容可能撞成同一个值）。RIFX 的实际字节就是大端。
+        order = "big" if blob[:4] == b"RIFX" else "little"
         pos = 12
         while pos + 8 <= len(blob):
             cid = blob[pos:pos + 4]
-            size = int.from_bytes(blob[pos + 4:pos + 8], "little")
+            size = int.from_bytes(blob[pos + 4:pos + 8], order)
             body_end = min(pos + 8 + size, len(blob))
             if cid not in _VOLATILE_WAV_CHUNKS:
                 h.update(blob[pos:body_end])

@@ -92,6 +92,7 @@ class TransportBar(QFrame):
         # 修复算子下拉
         self.op_combo = QComboBox()
         self.op_combo.setObjectName("OpCombo")
+        self.op_combo.setAccessibleName("修复算子")
         for kind, label in (
             ("declip", "去削波"),
             ("declick", "去咔哒"),
@@ -108,6 +109,7 @@ class TransportBar(QFrame):
         # 设备选择
         self.dev_combo = QComboBox()
         self.dev_combo.setObjectName("DeviceCombo")
+        self.dev_combo.setAccessibleName("播放设备")
         self.dev_combo.setMinimumWidth(200)
         self.dev_combo.currentIndexChanged.connect(
             lambda _i: self.deviceChanged.emit(self.dev_combo.currentText())

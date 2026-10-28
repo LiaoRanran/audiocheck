@@ -163,22 +163,67 @@ class EditSession:
     #: undo/redo 退化为缓存索引切换。上限 8 个中间文件，超限整体失效——有界。）
     _CACHE_LIMIT = 8
 
+    #: **正在被某个渲染持有**的前缀文件（进程内引用计数）。清理时必须跳过它们：
+    #: 并发渲染（UI 后台线程 / 批量作业 / 并行测试）会读到同一批内容寻址的文件，
+    #: 删掉对方正在读的文件 ⇒ `LibsndfileError: ... System error`。
+    #: 用进程内字典而非文件锁：本项目所有渲染都在同一进程内（多进程各有一份
+    #: 字典，且 mtime 截断本就跨进程近似），加文件锁反而会引入新的死锁面。
+    _IN_USE: dict[str, int] = {}
+
+    @classmethod
+    def _acquire(cls, files) -> None:
+        for f in files:
+            cls._IN_USE[f] = cls._IN_USE.get(f, 0) + 1
+
+    @classmethod
+    def _release(cls, files) -> None:
+        for f in files:
+            n = cls._IN_USE.get(f, 0) - 1
+            if n > 0:
+                cls._IN_USE[f] = n
+            else:
+                cls._IN_USE.pop(f, None)
+
+    def _cache_dir(self) -> str:
+        """前缀缓存的**目录**。
+
+        默认 `tempfile.gettempdir()`；可用环境变量 `AUDIOCHECK_PREFIX_CACHE_DIR`
+        覆盖——**并行渲染/并行测试时必须各自指定**：多个进程（或同一进程里跑
+        不同代码版本的工作区）共享一个 tempdir 时，"内容寻址 + 全局 mtime 截断"
+        会让它们互相删对方的中间产物。实测：8 路并发跑同一个变异体得到
+        `killed×7 / survived×1` 的不稳定结果——**量具被自己的缓存竞态污染**了。
+        每人一个目录之后，隔离是文件系统级别的，不需要任何锁。
+        """
+        return os.environ.get("AUDIOCHECK_PREFIX_CACHE_DIR") or tempfile.gettempdir()
+
+    def _prefix_key(self) -> str:
+        """本会话的前缀缓存**命名空间**（16 位十六进制）。
+
+        ⚠ **必须只由源路径决定，不能掺会话 token**：前缀缓存的价值在于
+        "同一源 + 同一前缀栈 ⇒ 同一文件"，跨会话/跨实例都要能命中
+        （重新打开同一个文件不该从零重算）。`test_prefix_files_keys_are_content_addressed`
+        就是钉这一点的判据：两个 `EditSession` 实例、同源同栈 ⇒ 键必须相同。
+
+        并发隔离靠 `_cache_dir()`（目录级）+ `_IN_USE`（进程内引用计数）。
+        """
+        import hashlib
+
+        return hashlib.sha256(os.path.abspath(self.source).encode("utf-8")
+                              ).hexdigest()[:16]
+
     def _prefix_files(self, live: list) -> dict:
         """启用栈的**前缀中间文件**映射：`{i: path}`（i = 前缀长度，`i` 个操作后的
         产物）。只有全部 `0..i` 键都存在时前缀 `i` 才算命中。"""
         import hashlib
 
         cache: dict = {}
-        # 键含 **进程 ID**：tempdir 是跨进程共享的，并行测试/双开会互相清理对方的
-        # 缓存文件（实测 5 连跑 2 次失败的竞态根因）⇒ 缓存空间按进程隔离。
-        key = hashlib.sha256(("%d|%s" % (os.getpid(), os.path.abspath(self.source)))
-                             .encode("utf-8")).hexdigest()[:16]
+        key = self._prefix_key()
         for i in range(1, len(live) + 1):
             h = hashlib.sha256()
             h.update(key.encode("utf-8"))
             for op in live[:i]:
                 h.update(json.dumps(op.to_dict(), sort_keys=True).encode("utf-8"))
-            cache[i] = os.path.join(tempfile.gettempdir(),
+            cache[i] = os.path.join(self._cache_dir(),
                                     "_ac_prefix_%s_%d_%s.wav"
                                     % (key, i, h.hexdigest()[:16]))
         return cache
@@ -215,16 +260,22 @@ class EditSession:
             if all(os.path.exists(cache[j]) for j in range(1, i + 1)):
                 best = i
                 break
-        # 清理过期缓存文件（键变了或超限）
-        keep = set(cache.values())
-        for f in glob.glob(os.path.join(tempfile.gettempdir(), "_ac_prefix_*.wav")):
-            if f not in keep:
-                try:
-                    os.remove(f)
-                except OSError:
-                    pass
+        # ⚠ **不在这里删任何文件**。前缀文件名是**内容寻址**的（同源同栈 ⇒ 同路径），
+        # 所以「本会话不再需要的文件」可能正是**另一个正在并发渲染的会话**要读的
+        # 中间产物——删了它，对方随后 `_render` 读到就拿到
+        # `LibsndfileError: ... System error`（实测：并发两路渲染互相删对方前缀 ⇒
+        # 等价变异体被误判成"杀死"，量具被竞态污染）。
+        #
+        # 空间有界靠 `finally` 里的**按 mtime 截断**（保留最近 _CACHE_LIMIT 个），
+        # 且只在**渲染结束之后**执行——那时本会话已不再读取这批文件。并发场景下
+        # 最坏是多个会话争夺同一批内容相同的文件，谁的都还是同一份数据（内容寻址
+        # 保证同路径 = 同内容），因此截断只影响"下次要不要重算"，不影响正确性。
         cur = self.source if best == 0 else cache[best]
         audit = None
+        # 登记本会话接下来可能读写的全部前缀文件（含复用的 best 前缀）：
+        # 清理逻辑必须跳过 `_IN_USE` 里的文件，否则并发渲染互相删对方的中间产物。
+        held = list(cache.values())
+        self._acquire(held)
         try:
             for i in range(best + 1, len(live) + 1):
                 proj = Project(cur, [live[i - 1]])
@@ -237,16 +288,31 @@ class EditSession:
                     audit["prefix_cache_hits"] = best        # 复用的前缀段数
                     audit["prefix_cache_used"] = best
                     return audit
-            # 空栈/单操作兜底（不可达，len(live) >= 2）
+            # 空栈/单操作兜底（不可达，len(live) >= 2）——但**口径一致**：
+            # 走了缓存路径就必须报 prefix 状态（变异实验抓到：兜底缺字段 ⇒ 判据漏杀）
             proj = Project(self.source, live)
             audit = _render(proj, dest, **kw)
+            audit["prefix_cache_hits"] = best
+            audit["prefix_cache_used"] = best
             return audit
         finally:
-            # 只保留最近的中间文件（有界）
-            files = sorted(glob.glob(os.path.join(tempfile.gettempdir(),
+            self._release(held)
+            # **有界**：只保留最近的中间文件（按 mtime 截断到 _CACHE_LIMIT）。
+            #
+            # ⚠ 并发安全靠两件事（实测出来的，别简化）：
+            # 1. **跳过 `_IN_USE`**：别的会话可能正在它的 for 循环里读某个前缀文件；
+            #    删掉正在被读的文件会让它拿到 `LibsndfileError: ... System error`。
+            #    （实测症状：两个等价变异体单独跑都通过、并发跑就"失败"——
+            #    量具被自己的竞态污染。）
+            # 2. **不按会话命名空间隔离**：文件名是内容寻址的（同源同栈同路径），
+            #    多会话共享同一批文件是**特性**（跨实例复用），不是冲突。
+            in_use = self._IN_USE
+            files = sorted(glob.glob(os.path.join(self._cache_dir(),
                                                   "_ac_prefix_*.wav")),
                            key=os.path.getmtime, reverse=True)
             for f in files[self._CACHE_LIMIT:]:
+                if f in in_use:
+                    continue
                 try:
                     os.remove(f)
                 except OSError:
