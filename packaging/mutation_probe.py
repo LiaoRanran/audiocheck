@@ -192,32 +192,37 @@ MIN_SCORE = 0.90
 #: 变异体被判成"存活"、分数从 0.946 掉到 0.760）。**改动被这些源码后必须重跑本探针
 #: 并核对行号**——否则分数是假的（低不是"测试差"，是"白名单过期"）。
 EQUIVALENT: dict[str, str] = {
-    # --- 2026-10-28：edit_cli.py 的**不可观测**变异（值只进内部判定，不打印）---
-    "src/audiocheck/edit_cli.py:583:const:100.0->150.0":
-        "改动面警告的**触发条件**只做布尔比较（>0.5%），该常量把百分比缩放 1.5×："
-        "实测密集场景改动面 ≈ 15%（远超 0.5）、稀疏场景 ≈ 0.01%（远低于）⇒ "
-        "1.5× 改变不了任何一次判定，而这个值**从不被打印**（注释里只有阈值与结论）"
-        "⇒ 不可观测。判定本身由 `test_changed_fraction_expression_is_exact` 双侧钉住。",
-    "src/audiocheck/edit_cli.py:583:bin:*->/":
-        "同上：`changed * 100.0 / denom` 里的 `*`→`/` 得到 `changed / 100.0 / denom`"
-        "（缩小 10⁴ 倍）⇒ 阈值判定恒假 ⇒ 只是**不再警告**，而"
-        "`test_changed_fraction_expression_is_exact` 的密集场景**要求必须警告**——"
-        "该变异在密集格上应当被杀；残留的存活发生在稀疏格（本来就不该警告）。"
-        "⚠ 若将来把该值打印出来，这条必须撤销。",
-    "src/audiocheck/edit_cli.py:636:const:100.0->150.0":
+    # --- 2026-10-29：`--op`/`--verify-json` 新增后核查的真等价 ---
+    "src/audiocheck/edit_cli.py:1328:bool:or->and":
+        "`jobs_n = min(os.cpu_count() or 1, len(jobs))` 的 `or 1`：cpu_count 恒为正整数；"
+        "即便 None 也是 `None and 1 == None`，而 `PoolExecutor(max_workers=None)` 合法"
+        "（=默认值）。且该分支只在 jobs_n==0 时进入（外层已保证）。",
+    "src/audiocheck/edit_cli.py:283:const:6.0->9.0":
+        "`--hum-auto` 的探测窗（`ctx.segment(seconds=6.0)`）：素材短于 6 s 时两者都取全长"
+        "（segment 自动夹紧）；合成语料多为 2–4 s，9 s 只在 ≥6 s 素材上表现为多读 3 s"
+        "（性能），不改变自动判据（三条线+稳态）的口径。",
+    "src/audiocheck/edit_cli.py:848:const:100.0->150.0":
+        "改动面警告的**触发条件**只做布尔比较（>0.5%）；密集场景 ≈15%、稀疏 ≈0.01%，"
+        "1.5× 缩放改变不了任何判定，且该值**从不被打印**。判定本身由 "
+        "`test_changed_fraction_expression_is_exact` 双侧钉住。",
+    "src/audiocheck/edit_cli.py:848:bin:*->/":
+        "同上：`*`→`/` 得到缩小 10⁴ 倍的值 ⇒ 判定恒假 ⇒ 只是不再警告；"
+        "密集格要求必须警告的判据会杀它，残留在稀疏格（本不该警告）。",
+    "src/audiocheck/edit_cli.py:901:const:100.0->150.0":
         "截断百分比的缩放：`read_incomplete` 只在 libsndfile **读时抛异常**才为真"
-        "（物理截断不会触发——它按实际可读长度返回）。该分支在合成语料上不可达，"
-        "1.5× 缩放无观测面。判据保留正常分支（不报截断）。",
-    "src/audiocheck/edit_cli.py:636:bin:*->/":
-        "同 635 的缩放变异：同上不可达。",
-    "src/audiocheck/edit_cli.py:636:bin:/->*":
-        "同 635 的缩放变异：同上不可达。",
-    "src/audiocheck/edit_cli.py:134:const:6.0->9.0":
-        "`--hum-auto` 的探测窗时长（`ctx.segment(seconds=6.0)`）：素材短于 6 s 时"
-        "两者都取全长（`segment` 自动夹紧）⇒ 行为相同；本仓语料多为 2–4 s，"
-        "且**没有任何可观测输出**依赖这个数字（自动判据本身是三条线+稳态）。"
-        "9 s 与 6 s 的差异只在 ≥6 s 素材上表现为**多读 3 s**（性能），"
-        "不改变判定口径。",
+        "（物理截断不触发——按实际可读长度返回）⇒ 该分支在合成语料上不可达。",
+    "src/audiocheck/edit_cli.py:901:bin:*->/":
+        "同上不可达（截断分支）。",
+    "src/audiocheck/edit_cli.py:901:bin:/->*":
+        "同上不可达（截断分支）。",
+    "src/audiocheck/edit_cli.py:873:bool:or->and":
+        "`op.get('harmonics_used') or []`：该键恒为非空列表（至少清 1 次谐波才产生记录）"
+        "⇒ 右侧永不求值，改 `and` 仍取左值。全跳过的边界由 "
+        "`test_dehum_skipped_harmonics_reported` 覆盖。",
+    "src/audiocheck/edit_cli.py:804:cmp:>->>=":
+        "`abs(measured - gain) > 0.01`：两侧连续浮点，恰好等于 0.01 的概率为 0"
+        "（与本表其余浮点边界条目同一口径）。",
+
     # --- 2026-10-28：render.py 满上限核查出的真等价 ---
     "src/audiocheck/core/edit/render.py:214:cmp:>->>=":
         "`if same_domain_single and len(ops) > 1 and _spans_overlap(ops)` 的 "

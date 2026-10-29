@@ -49,6 +49,56 @@ Gerkmann–Hendriks 软 SPP、一致性交叉淡化（+0.00）、稀疏/ADMM 去
 
 ---
 
+## [1.1.6] — 2026-10-29
+
+> **主题：复合算子的命令入口 + 机器可读核对报告。**
+> 1572 项测试绿。把 roadmap 上挂账最久的一条（"CLI 仍只接受一个算子"）做掉。
+
+### 新增（**复合算子 `--op`** —— 此前只能写项目/链 JSON）
+
+一条命令跑多道修复，`--op` 可重复、**出现顺序就是操作栈顺序**：
+
+```bash
+audiocheck-edit-cli in.wav out.wav     --op "declick@0-2:threshold=5"     --op "declip@0-2:ceiling=0.34,bandwidth=21000"     --op "dehum@0-2:f0=50,q=8"
+```
+
+- 支持全部七个算子：`gain` / `band_gain` / `poly_gain` / `declip` / `declick` /
+  `dehum` / `denoise`（各自必填参数在解析期校验）。
+- **解析规则的关键细节**：`harmonics=1,2,3` 的逗号是**取值**不是参数分隔符
+  （取值吃到下一个 `标识符=` 之前）——否则谐波列表会被切成三个伪参数。
+- **参数错误一律在渲染前报出**（退出码 2），不会留下半成品产物。
+- 与单算子开关 / `--at`/`--band`/`--poly` / `--chain`/`--project` **全部互斥**
+  （混用会让"按哪个跑"变成猜测）。
+- `--op` + `--save-project` 产出的记录能被 `--project` 复算（判据比对产物内容）。
+
+> ⚠ 渲染顺序**不是**参数顺序：多算子走链式渲染并按 `render.PHASE` 规范排序
+> （脉冲类先、稳态嗡最后），被重排时审计记 `reordered_from`。这是既有行为
+> （与 `--project`/`--chain` 一致），`--op` 不改变它。
+
+### 新增（**`--verify-json` 机器可读核对报告**）
+
+`--verify-audit` 默认输出人读文本；新增 `--verify-json OUT` 另存结构化报告：
+
+```json
+{"ok": false, "n_total": 3, "n_bad": 1,
+ "records": [{"path": "...", "ok": true,
+              "audit_digest": {"claimed": "...", "recomputed": "...", "match": true},
+              "kernel_digest": {"recorded": "...", "local": "...",
+                                "same_implementation": true},
+              "source_sha256": "...", "tool_version": "1.1.6"}]}
+```
+
+CI 可以直接读 `ok` / `n_bad` / 逐条的 `match` 与 `same_implementation`，
+不必从文本里 grep 中文。读不了的文件也进报告（`ok:false` + `reason`），不整体崩。
+
+### 文档
+
+- `docs/scripting.md` 新增「复合算子」节（语法表 + 七个算子的必填/可选参数 +
+  逗号歧义说明 + 顺序语义）。
+- README 补 `--op` 与 `--verify-json` 示例。
+
+---
+
 ## [1.1.5] — 2026-10-28
 
 > **主题：核对审计的 CLI 入口 + `audit_digest` 三处口径缺陷 + 文档全面对齐。**

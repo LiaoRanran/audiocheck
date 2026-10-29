@@ -55,6 +55,38 @@ write_report(audit, "clean.report.md")
 
 完整流程（含劣化素材合成）见 `examples/restore_pipeline.py`。
 
+## 复合算子（`--op`）
+
+一条命令跑多道修复（此前只能写项目记录 / 修复链 JSON）：
+
+```bash
+audiocheck-edit-cli in.wav out.wav     --op "declick@0-2:threshold=5"     --op "declip@0-2:ceiling=0.34,bandwidth=21000"     --op "dehum@0-2:f0=50,q=8"
+```
+
+**语法**：`kind@t0-t1:key=value,key=value`，`--op` 可重复，
+**出现顺序就是操作栈顺序**。`@t0-t1` 也可写成 `at=t0-t1`。
+
+| kind | 必填 | 可选 |
+|---|---|---|
+| `gain` | `at`、`gain=dB` | — |
+| `band_gain` | `at`、`band=f0-f1`、`gain=dB` | `n_fft`/`hop`（命令行给） |
+| `poly_gain` | `points=t,f;t,f;...`（≥3 对） | `gain=dB`（默认 −6） |
+| `declip` | `at`、`bandwidth=Hz` | `ceiling`、`iterations` |
+| `declick` | `at` | `threshold`、`max_run`（0=关） |
+| `dehum` | `at`、`f0=Hz` | `q`、`harmonics=1,2,3` |
+| `denoise` | `at`、`noise=t0-t1` | `reduction_db`、`no_floor_track=1` |
+
+⚠ **`harmonics=1,2,3` 的逗号是取值**，不是参数分隔符（解析规则：取值吃到下一个
+`标识符=` 之前）。所以 `f0=50,harmonics=1,2,3,q=8` 能正确切成三项。
+
+⚠ **渲染顺序不是参数顺序**：多算子走链式渲染，按 `render.PHASE` 规范排序
+（脉冲类先、稳态嗡最后）；被重排时审计记 `reordered_from`。
+这是既有行为（与 `--project`/`--chain` 一致），`--op` 不改变它。
+
+⚠ `--op` 与单算子开关（`--gain`/`--declip`/…）、`--at`/`--band`/`--poly`、
+`--chain`/`--project` **全部互斥**（混用会让"按哪个跑"变成猜测）。
+参数错误一律在**渲染之前**报出（退出码 2），不会留下半成品产物。
+
 ## 批处理
 
 清单 JSON（每项一个小工程，互相隔离）：

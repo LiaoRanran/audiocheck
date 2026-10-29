@@ -101,11 +101,15 @@ audiocheck-edit-cli --doctor                   # 环境自检
 audiocheck-edit-cli 源.wav 出.wav --declick --at 0.5-2.0 --audit 审计.json
 audiocheck-edit-cli 源.wav 出.wav --gain -6 --poly "0.3,1000;1.5,1000;1.5,4500;0.3,4500"
 audiocheck-edit-cli 源.wav 出.wav --chain 修复链.json --report 报告.md
+# ★ 复合算子：一条命令跑多道修复（--op 可重复，顺序即栈顺序）
+audiocheck-edit-cli in.wav out.wav --op "declick@0-2:threshold=5" --op "declip@0-2:ceiling=0.34,bandwidth=21000" --op "dehum@0-2:f0=50,q=8"
+
 audiocheck-edit-cli --batch 作业清单.json --jobs 8   # 批量，逐项隔离 + 并行
 
 # ★ 核对审计（跨机核对同一份修复）
 audiocheck-edit-cli --verify-audit 对方给的审计.json
 audiocheck-edit-cli --verify-audit a.json --verify-audit b.json   # 可给多次
+audiocheck-edit-cli --verify-audit 审计目录/ --verify-json 报告.json  # CI 消费的机器可读报告
 #   退出码 0 = 全部一致；1 = 有不一致（可直接进 CI）
 
 python -m audiocheck.ui.editor                 # 编辑工作站（套索/矩形选区 + A/B）

@@ -2081,3 +2081,464 @@ def test_batch_uses_thread_pool_when_frozen(tmp_path, capsys, monkeypatch):
     assert "worker 崩溃" not in out
     assert "3 项成功" in out
     assert "线程池" in out, "frozen 下应明示用线程池：\n%s" % out[:400]
+
+
+# ---------------------------------------- 机器可读核对报告（--verify-json）
+def test_verify_json_report_structure(tmp_path, capsys):
+    """★ `--verify-json` 产出 CI 可直接消费的报告（不必解析人读文本）。
+
+    结构必须是 `{ok, n_total, n_bad, records:[{path, ok, audit_digest{...},
+    kernel_digest{...}, source_sha256, tool_version}]}`——脚本据此判定
+    "哪一份坏了、坏在哪个摘要上"，而不是从文本里 grep 中文。
+    """
+    src = _write(tmp_path / "s.wav", _tone())
+    aud = str(tmp_path / "a.json")
+    assert main([src, str(tmp_path / "o.wav"), "--gain", "-3",
+                 "--at", "0-0.5", "--audit", aud]) == 0
+    capsys.readouterr()
+    rep = tmp_path / "report.json"
+    assert main(["--verify-audit", aud, "--verify-json", str(rep)]) == 0
+    capsys.readouterr()
+    d = json.loads(rep.read_text(encoding="utf-8"))
+    assert d["ok"] is True and d["n_total"] == 1 and d["n_bad"] == 0
+    r = d["records"][0]
+    assert r["ok"] is True and os.path.basename(r["path"]) == "a.json"
+    assert r["audit_digest"]["match"] is True
+    assert r["audit_digest"]["claimed"] == r["audit_digest"]["recomputed"]
+    assert r["kernel_digest"]["same_implementation"] is True
+    assert len(r["source_sha256"]) == 64
+    assert r["tool_version"]
+
+
+def test_verify_json_reports_failure_detail(tmp_path, capsys):
+    """★ 不一致时报告要能定位：哪份、claimed/recomputed 各是什么。"""
+    src = _write(tmp_path / "s.wav", _tone())
+    aud = str(tmp_path / "a.json")
+    assert main([src, str(tmp_path / "o.wav"), "--gain", "-3",
+                 "--at", "0-0.5", "--audit", aud]) == 0
+    capsys.readouterr()
+    rec = json.loads(open(aud, encoding="utf-8").read())
+    rec["frames"] = 1
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+
+    rep = tmp_path / "r.json"
+    assert main(["--verify-audit", str(bad), "--verify-json", str(rep)]) == 1
+    capsys.readouterr()
+    d = json.loads(rep.read_text(encoding="utf-8"))
+    assert d["ok"] is False and d["n_bad"] == 1
+    r = d["records"][0]
+    assert r["ok"] is False
+    assert r["audit_digest"]["match"] is False
+    assert r["audit_digest"]["claimed"] != r["audit_digest"]["recomputed"]
+
+
+def test_verify_json_reports_unreadable_file(tmp_path, capsys):
+    """★ 读不了的文件也要进报告（`ok:false` + `reason`），不能整体崩。"""
+    rep = tmp_path / "r.json"
+    rc = main(["--verify-audit", str(tmp_path / "nope.json"),
+               "--verify-json", str(rep)])
+    assert rc == 1
+    capsys.readouterr()
+    d = json.loads(rep.read_text(encoding="utf-8"))
+    assert d["ok"] is False
+    assert d["records"][0]["ok"] is False
+    assert "reason" in d["records"][0]
+
+
+def test_verify_json_mixed_batch(tmp_path, capsys):
+    """★ 混合（好 + 坏）时 `n_bad` 与逐条 `ok` 都要对。"""
+    src = _write(tmp_path / "s.wav", _tone())
+    adir = tmp_path / "aud"
+    adir.mkdir()
+    for i in range(2):
+        assert main([src, str(tmp_path / ("o%d.wav" % i)), "--gain", "-3",
+                     "--at", "0-0.5", "--audit", str(adir / ("g%d.json" % i))]) == 0
+    capsys.readouterr()
+    rec = json.loads((adir / "g0.json").read_text(encoding="utf-8"))
+    rec["frames"] = 1
+    (adir / "b.json").write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+
+    rep = tmp_path / "r.json"
+    assert main(["--verify-audit", str(adir), "--verify-json", str(rep)]) == 1
+    capsys.readouterr()
+    d = json.loads(rep.read_text(encoding="utf-8"))
+    assert d["n_total"] == 3 and d["n_bad"] == 1
+    assert sum(1 for r in d["records"] if not r["ok"]) == 1
+
+
+# ==================================== 复合算子 `--op`（此前只能靠 JSON）
+def test_op_composite_three_operators(tmp_path, capsys):
+    """★ `--op` 可重复 ⇒ 复合修复一条命令跑完（此前只能写项目/链 JSON）。
+
+    判据同时钉住：栈长 3、走**链式渲染**、每项都有阶段记录、
+    且规范排序生效（declick 先、dehum 最后）。
+    """
+    t = np.arange(2 * FS) / FS
+    x = 0.4 * np.sin(2 * np.pi * 440 * t) + 0.15 * np.sin(2 * np.pi * 50 * t)
+    x = np.clip(x, -0.35, 0.35)
+    for p in (0.3, 0.9, 1.5):
+        x[int(p * FS)] += 0.6
+    src = _write(tmp_path / "in.wav", np.column_stack([x, x]))
+    aud = str(tmp_path / "a.json")
+    rc = main([src, str(tmp_path / "out.wav"),
+               "--op", "declick@0-2:threshold=5",
+               "--op", "declip@0-2:ceiling=0.34,bandwidth=21000",
+               "--op", "dehum@0-2:f0=50,q=8",
+               "--audit", aud])
+    assert rc == 0, capsys.readouterr().out[-800:]
+    rec = json.loads(open(aud, encoding="utf-8").read())
+    assert rec["chained"] is True
+    assert len(rec["ops"]) == 3
+    assert len(rec["stages"]) == 3
+    assert [o["kind"] for o in rec["ops"]] == ["declick", "declip", "dehum"]
+
+
+def test_op_single_is_allowed(tmp_path, capsys):
+    """★ 一项 `--op` 也合法（走单趟路径，不强制链式）。"""
+    src = _write(tmp_path / "s.wav", _tone())
+    assert main([src, str(tmp_path / "o.wav"), "--op", "gain@0-0.5:gain=-3"]) == 0
+    out = capsys.readouterr().out
+    assert "操作栈 1 项" in out
+
+
+def test_op_rejects_single_op_flags(tmp_path, capsys):
+    """★ `--op` 与单算子开关互斥（混用会让"按哪个跑"变成猜测）。"""
+    src = _write(tmp_path / "s.wav", _tone())
+    cases = [["--gain", "-3"], ["--declick"], ["--declip", "--ceiling", "0.5"],
+             ["--dehum", "--hum-f0", "50"]]
+    for extra in cases:
+        rc = main([src, str(tmp_path / "o.wav"), "--op", "gain@0-1:gain=-3"] + extra)
+        assert rc == 2, "%r 应与 --op 互斥（rc=%d）" % (extra[0], rc)
+        assert "互斥" in capsys.readouterr().out
+
+
+def test_op_rejects_at_band_poly(tmp_path, capsys):
+    """★ `--op` 与 `--at`/`--band`/`--poly` 互斥（选区写在规格里）。"""
+    src = _write(tmp_path / "s.wav", _tone())
+    for extra in (["--at", "0-1"], ["--band", "1000-4000"],
+                  ["--poly", "0,100;1,100;1,400"]):
+        rc = main([src, str(tmp_path / "o.wav"), "--op", "gain@0-1:gain=-3"] + extra)
+        assert rc == 2, extra
+        capsys.readouterr()
+
+
+def test_op_rejects_chain_and_project(tmp_path, capsys):
+    """★ `--op` 与 `--chain`/`--project` 互斥（都是"给一整个操作栈"）。"""
+    src = _write(tmp_path / "s.wav", _tone())
+    ch = tmp_path / "c.json"
+    ch.write_text(json.dumps({"ops": []}), encoding="utf-8")
+    assert main([src, str(tmp_path / "o.wav"), "--op", "gain@0-1:gain=-3",
+                 "--chain", str(ch)]) == 2
+    assert "互斥" in capsys.readouterr().out
+
+
+def test_op_unknown_kind_is_rejected(tmp_path, capsys):
+    """★ 不认识的算子名必须在**解析期**报错（不是跑到一半）。"""
+    src = _write(tmp_path / "s.wav", _tone())
+    rc = main([src, str(tmp_path / "o.wav"), "--op", "nonsense@0-1:x=1"])
+    assert rc == 2
+    assert "不认识的算子" in capsys.readouterr().out
+
+
+def test_op_missing_required_param_is_rejected(tmp_path, capsys):
+    """★ 缺必填参数要在解析期报（每项都验，不是只验第一项）。"""
+    src = _write(tmp_path / "s.wav", _tone())
+    cases = [
+        ("declip@0-1:ceiling=0.5", "bandwidth"),       # declip 缺 bandwidth
+        ("dehum@0-1:q=8", "f0"),                       # dehum 缺 f0
+        ("denoise@0-1:reduction_db=10", "noise"),      # denoise 缺 noise
+        ("declip:ceiling=0.5,bandwidth=20000", "时间选区"),
+    ]
+    for spec, needle in cases:
+        rc = main([src, str(tmp_path / "o.wav"), "--op", spec])
+        assert rc == 2, "%s 应被拒绝" % spec
+        out = capsys.readouterr().out
+        assert needle in out, "%s 的错误信息应提到 %s：%s" % (spec, needle, out[:300])
+
+
+def test_op_harmonics_comma_not_split_as_separator(tmp_path, capsys):
+    """★ **`harmonics=1,2,3` 的逗号是取值**，不能被当成参数分隔符。
+
+    这是 `--op` 语法最容易踩的坑：逗号既是 KV 分隔符又是谐波列表分隔符。
+    解析规则是"取值吃到下一个 `标识符=` 之前"。
+    """
+    t = np.arange(2 * FS) / FS
+    x = 0.3 * np.sin(2 * np.pi * 440 * t) + 0.15 * np.sin(2 * np.pi * 50 * t)
+    src = _write(tmp_path / "h.wav", np.column_stack([x, x]))
+    aud = str(tmp_path / "a.json")
+    rc = main([src, str(tmp_path / "o.wav"),
+               "--op", "dehum@0-1.8:f0=50,harmonics=1,2,3,q=8",
+               "--audit", aud])
+    assert rc == 0, capsys.readouterr().out[-500:]
+    op = json.loads(open(aud, encoding="utf-8").read())["ops"][0]
+    assert op["harmonics"] == [1, 2, 3], "谐波列表错了（逗号被当分隔符）：%r" % (op["harmonics"],)
+    assert op["q"] == 8.0
+
+
+def test_op_poly_gain_with_points(tmp_path, capsys):
+    """★ `poly_gain` 用 `points=t,f;t,f;...` 表达多边形选区。"""
+    src = _write(tmp_path / "s.wav", _two_tone())
+    aud = str(tmp_path / "a.json")
+    rc = main([src, str(tmp_path / "o.wav"),
+               "--op", "poly_gain:points=0.3,1000;1.5,1000;1.5,6000;0.3,6000,gain=-6",
+               "--audit", aud])
+    assert rc == 0, capsys.readouterr().out[-500:]
+    op = json.loads(open(aud, encoding="utf-8").read())["ops"][0]
+    assert op["kind"] == "poly_gain"
+    assert len(op["points"]) == 4
+
+
+def test_op_band_gain(tmp_path, capsys):
+    """★ `band_gain` 走时频路径（`band=f0-f1` + `gain`）。"""
+    src = _write(tmp_path / "b.wav", _two_tone())
+    aud = str(tmp_path / "a.json")
+    rc = main([src, str(tmp_path / "o.wav"),
+               "--op", "band_gain@0-1:band=3000-9000,gain=-6", "--audit", aud])
+    assert rc == 0, capsys.readouterr().out[-500:]
+    assert json.loads(open(aud, encoding="utf-8").read())["domain"] == "band"
+
+
+def test_op_save_project_roundtrip(tmp_path, capsys):
+    """★ `--op` + `--save-project` ⇒ 存下的记录能被 `--project` 复算（同产物内容）。"""
+    from audiocheck.core.edit.render import _sha256_file
+
+    src = _write(tmp_path / "s.wav", _tone())
+    p1, p2 = str(tmp_path / "o1.wav"), str(tmp_path / "o2.wav")
+    proj = str(tmp_path / "p.json")
+    assert main([src, p1, "--op", "gain@0-0.5:gain=-3",
+                 "--op", "declick@0-1", "--save-project", proj]) == 0
+    capsys.readouterr()
+    assert main([src, p2, "--project", proj]) == 0
+    capsys.readouterr()
+    assert (_sha256_file(p1, content_only=True)
+            == _sha256_file(p2, content_only=True)), "复算产物应与直接跑的**内容**一致"
+
+
+def test_op_rejected_operator_does_not_write_output(tmp_path, capsys):
+    """★ 解析期失败**不该**留下产物（用户会误以为跑成功了）。"""
+    src = _write(tmp_path / "s.wav", _tone())
+    out = tmp_path / "o.wav"
+    assert main([src, str(out), "--op", "bogus@0-1:x=1"]) == 2
+    capsys.readouterr()
+    assert not out.exists()
+
+
+# ==================== `--op` 的边界：at 缺失 / max_run=0 / poly 默认增益
+def test_op_at_via_key_value_form(tmp_path, capsys):
+    """★ `at=t0-t1` 写在键值里也要能跑（`@` 与 `at=` 两条路径都通）。
+
+    变异 `t0 is None or t1 is None` → `and` 时，只有**两边都 None** 才报错，
+    "只缺一项"会漏过 ⇒ 后面构造算子时崩在别处（错误信息不可读）。
+    """
+    src = _write(tmp_path / "s.wav", _tone())
+    assert main([src, str(tmp_path / "o.wav"),
+                 "--op", "gain:at=0-0.5,gain=-3"]) == 0
+    capsys.readouterr()
+    # 两种写法产物内容必须一致
+    from audiocheck.core.edit.render import _sha256_file
+    a = str(tmp_path / "o.wav")
+    assert main([src, str(tmp_path / "o2.wav"),
+                 "--op", "gain@0-0.5:gain=-3"]) == 0
+    capsys.readouterr()
+    assert (_sha256_file(a, content_only=True)
+            == _sha256_file(str(tmp_path / "o2.wav"), content_only=True))
+
+
+def test_op_max_run_zero_means_disabled(tmp_path, capsys):
+    """★ `max_run=0` ⇒ 宽度守卫**关闭**（`None`），不是"最大宽度 0"。
+
+    变异 `mr == 0` → `!=` 会把 0 当普通宽度传下去 ⇒ 守卫变成"只修 0 宽"，
+    即**什么都不修**（静默失效）。
+    """
+    clean = _tone()
+    x = clean.copy()
+    for p in (0.3, 0.7):
+        x[int(p * FS)] += 0.7
+    src = _write(tmp_path / "d.wav", x)
+    aud = str(tmp_path / "a.json")
+    assert main([src, str(tmp_path / "o.wav"), "--op", "declick@0-1:max_run=0",
+                 "--audit", aud]) == 0
+    capsys.readouterr()
+    op = json.loads(open(aud, encoding="utf-8").read())["ops"][0]
+    assert op["max_run"] is None, "max_run=0 应表示关闭守卫（得到 %r）" % (op["max_run"],)
+
+
+def test_op_poly_gain_default_gain(tmp_path, capsys):
+    """★ `poly_gain` 不给 `gain` 时默认 **−6 dB**（不是 0，也不是崩）。"""
+    src = _write(tmp_path / "s.wav", _two_tone())
+    aud = str(tmp_path / "a.json")
+    rc = main([src, str(tmp_path / "o.wav"),
+               "--op", "poly_gain:points=0.3,1000;1.5,1000;1.5,6000;0.3,6000",
+               "--audit", aud])
+    assert rc == 0, capsys.readouterr().out[-400:]
+    op = json.loads(open(aud, encoding="utf-8").read())["ops"][0]
+    assert op["gain_db"] == -6.0
+
+
+def test_op_count_guard_uses_sum(tmp_path, capsys):
+    """★ `--op` 跟单算子开关的计数校验用**加法**（`+`→`-` 会漏判）。
+
+    `n_single` 是五项相加；变异成减法后给两种算子可能得 0 ⇒ 误放行 ⇒
+    `--op` 与单算子同时生效，"按哪个跑"变成实现细节。
+    """
+    src = _write(tmp_path / "s.wav", _tone())
+    # 给偶数组（2 个、4 个）——加法下非零、减法下可能为 0
+    combos = [
+        ["--declip", "--declick", "--ceiling", "0.5"],
+        ["--declip", "--declick", "--dehum", "--hum-f0", "50", "--ceiling", "0.5"],
+    ]
+    for extra in combos:
+        rc = main([src, str(tmp_path / "o.wav"), "--op", "gain@0-1:gain=-3"] + extra)
+        assert rc == 2, "%r 应与 --op 互斥（rc=%d）" % (extra, rc)
+        assert "互斥" in capsys.readouterr().out
+
+
+def test_op_dest_exists_exits_5(tmp_path, capsys):
+    """★ `--op` 路径的退出码分工与其它路径一致：目标已存在 ⇒ **5**。"""
+    src = _write(tmp_path / "s.wav", _tone())
+    dst = _write(tmp_path / "o.wav", _tone())
+    assert main([src, dst, "--op", "gain@0-1:gain=-3"]) == 5
+    assert "--overwrite" in capsys.readouterr().out
+    assert main([src, dst, "--op", "gain@0-1:gain=-3", "--overwrite"]) == 0
+
+
+def test_op_unreadable_source_exits_4(tmp_path, capsys):
+    """★ `--op` 路径：源读不了 ⇒ **4**（与参数错 2 分开）。"""
+    rc = main([str(tmp_path / "nope.wav"), str(tmp_path / "o.wav"),
+               "--op", "gain@0-1:gain=-3"])
+    assert rc == 4
+    assert "源读不了" in capsys.readouterr().out
+
+
+def test_op_rejected_value_exits_2(tmp_path, capsys):
+    """★ `--op` 路径：渲染层拒绝（如非法选区）⇒ **2**。"""
+    src = _write(tmp_path / "s.wav", _tone())
+    rc = main([src, str(tmp_path / "o.wav"), "--op", "poly_gain:points=-1,100;1,100;1,400"])
+    assert rc in (2, 4)
+    out = capsys.readouterr().out
+    assert "拒绝" in out or "参数错误" in out or "源读不了" in out
+
+
+# ==================== 最后的计数守卫：`+`→`-` 的**平衡组合**
+def test_op_single_count_balanced_combinations(tmp_path, capsys):
+    """★ `--op` 路径的 `n_single` 用加法：给 **2/4 个**算子时减法会得 0。
+
+    这是 `+`→`-` 唯一可观测的地方（1/3/5 个时两者都非零）。
+    `--op` 路径（462 行）与 `--chain` 路径（623 行）各有一份，**必须分别覆盖**。
+    """
+    src = _write(tmp_path / "s.wav", _tone())
+    # --op 路径：2 个与 4 个
+    for extra in (["--declip", "--declick", "--ceiling", "0.5"],
+                  ["--declip", "--declick", "--dehum", "--denoise",
+                   "--hum-f0", "50", "--noise-at", "0-0.3", "--ceiling", "0.5"]):
+        rc = main([src, str(tmp_path / "o.wav"), "--op", "gain@0-1:gain=-3"] + extra)
+        assert rc == 2, "%d 个算子应与 --op 互斥（rc=%d）" % (
+            len([x for x in extra if x in ("--declip", "--declick", "--dehum", "--denoise")]), rc)
+        capsys.readouterr()
+
+
+def test_chain_count_balanced_combinations(tmp_path, capsys):
+    """★ `--chain` 路径的同样守卫（623 行）：2 个与 4 个算子都要被拒。"""
+    src = _write(tmp_path / "s.wav", _tone())
+    ch = tmp_path / "c.json"
+    ch.write_text(json.dumps({"version": 3, "ops": [
+        {"kind": "gain", "t0": 0.0, "t1": 0.5, "gain_db": -3.0}]}),
+        encoding="utf-8")
+    for extra in (["--declip", "--declick", "--ceiling", "0.5"],
+                  ["--declip", "--declick", "--dehum", "--denoise",
+                   "--hum-f0", "50", "--noise-at", "0-0.3", "--ceiling", "0.5"]):
+        rc = main([src, str(tmp_path / "o.wav"), "--chain", str(ch)] + extra)
+        assert rc == 2, "与 --chain 互斥应拒绝（rc=%d）" % rc
+        assert "不能与算子" in capsys.readouterr().out
+
+
+def test_op_denoise_with_no_floor_track(tmp_path, capsys):
+    """★ `--op` 的 `no_floor_track=1` 必须真的关掉底噪跟踪。
+
+    变异 `kind == "denoise"` → `!=` 会让该分支永不进入 ⇒ 算子根本没被构造
+    （或走错分支），而 `--op` 的解析**不该**静默放过。
+    """
+    rng = np.random.default_rng(5)
+    t = np.arange(2 * FS) / FS
+    tone = 0.35 * np.sin(2 * np.pi * 440 * t)
+    noise = 0.05 * rng.standard_normal(2 * FS)
+    src = _write(tmp_path / "n.wav", np.column_stack([tone + noise] * 2))
+    aud = str(tmp_path / "a.json")
+    rc = main([src, str(tmp_path / "o.wav"),
+               "--op", "denoise@0.5-1.8:noise=0-0.4,no_floor_track=1",
+               "--audit", aud])
+    assert rc == 0, capsys.readouterr().out[-500:]
+    op = json.loads(open(aud, encoding="utf-8").read())["ops"][0]
+    assert op["track_floor"] is False, "no_floor_track=1 应关掉跟踪"
+
+
+def test_op_at_partial_missing_is_rejected(tmp_path, capsys):
+    """★ `at` 只写一半（`gain:at=0`）必须报错，不能漏过。
+
+    变异 `t0 is None or t1 is None` → `and` 后，"只缺一项"不再报错
+    ⇒ 后面构造算子时崩在不可读的地方。
+    """
+    src = _write(tmp_path / "s.wav", _tone())
+    rc = main([src, str(tmp_path / "o.wav"), "--op", "gain:at=0,gain=-3"])
+    assert rc == 2
+    out = capsys.readouterr().out
+    assert "参数错误" in out
+
+
+def test_op_count_covers_every_plus_position(tmp_path, capsys):
+    """★ `n_single` 的**每一个** `+` 号都要能被杀掉（逐个位置验证）。
+
+    `(1 if gain) + (1 if declip) + (1 if declick) + (1 if dehum) + (1 if denoise)`
+    有 4 个 `+`。把其中任一换成 `-`，只有在"该位置的减号让总和翻成 0"的组合上
+    才能观测到。逐个位置挑一个能区分的组合：
+
+    | 变异位置 | 可区分组合 |
+    |---|---|
+    | 第 1 个 | gain + declip（减法得 0） |
+    | 第 2 个 | gain + declick（减法得 0） |
+    | 第 3 个 | gain + dehum（减法得 0） |
+    | 第 4 个 | gain + denoise（减法得 0） |
+
+    注意 `denoise` 需要 `--noise-at`、`dehum` 需要 `--hum-f0`/`--hum-auto`
+    （参数校验会让"给了但没配齐"变成别的错误码），所以每条都要配齐。
+    """
+    src = _write(tmp_path / "s.wav", _tone())
+    combos = {
+        "第1个(gain+declip)": ["--gain", "-3", "--declip", "--ceiling", "0.5"],
+        "第2个(gain+declick)": ["--gain", "-3", "--declick"],
+        "第3个(gain+dehum)": ["--gain", "-3", "--dehum", "--hum-f0", "50"],
+        "第4个(gain+denoise)": ["--gain", "-3", "--denoise", "--noise-at", "0-0.3"],
+    }
+    bad = []
+    for label, extra in combos.items():
+        rc = main([src, str(tmp_path / "o.wav"), "--op", "gain@0-1:gain=-3"] + extra)
+        if rc != 2:
+            bad.append("%s → rc=%d（应与 --op 互斥）" % (label, rc))
+        else:
+            out = capsys.readouterr().out
+            if "互斥" not in out:
+                bad.append("%s → 错误信息不是互斥：%s" % (label, out[:150]))
+        capsys.readouterr()
+    assert not bad, "\n  ".join(bad)
+
+
+def test_chain_count_covers_every_plus_position(tmp_path, capsys):
+    """★ `--chain` 路径的 `n_modes` 同样逐位置覆盖（另一份独立的加法链）。"""
+    src = _write(tmp_path / "s.wav", _tone())
+    ch = tmp_path / "c.json"
+    ch.write_text(json.dumps({"version": 3, "ops": [
+        {"kind": "gain", "t0": 0.0, "t1": 0.5, "gain_db": -3.0}]}), encoding="utf-8")
+    combos = {
+        "第1个": ["--gain", "-3", "--declip", "--ceiling", "0.5"],
+        "第2个": ["--gain", "-3", "--declick"],
+        "第3个": ["--gain", "-3", "--dehum", "--hum-f0", "50"],
+        "第4个": ["--gain", "-3", "--denoise", "--noise-at", "0-0.3"],
+    }
+    bad = []
+    for label, extra in combos.items():
+        rc = main([src, str(tmp_path / "o.wav"), "--chain", str(ch)] + extra)
+        if rc != 2:
+            bad.append("%s → rc=%d" % (label, rc))
+        capsys.readouterr()
+    assert not bad, "\n  ".join(bad)

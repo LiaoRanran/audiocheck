@@ -102,6 +102,155 @@ def _bw_src_cn(src: str | None) -> str:
             "auto_nyquist": "自动＝奈奎斯特（量不到带限 ⇒ 不作约束）"}.get(src, "%s" % src)
 
 
+#: `--op` 规格里允许的算子名 → (最小必填参数, 说明)。
+#: ⚠ 与 `build_parser` 的单算子开关**一一对应**：加新算子时两处都要改
+#: （`docs/extending_edit.md` 的触点清单里有这一条）。
+_OP_SPECS = {
+    "gain": ("at", "增益（`gain=dB`）"),
+    "band_gain": ("at,band", "时频增益（`gain=dB`）"),
+    "poly_gain": ("points", "多边形增益（`points=t,f;t,f;...`，`gain=dB`）"),
+    "declip": ("at", "去削波（可选 `ceiling`/`bandwidth`/`iterations`）"),
+    "declick": ("at", "去咔哒（可选 `threshold`/`max_run`）"),
+    "dehum": ("at,f0", "去嗡（可选 `q`/`harmonics=1,2,3`）"),
+    "denoise": ("at,noise", "去噪（`noise=t0-t1`，可选 `reduction_db`/`no_floor_track`）"),
+}
+
+
+def _parse_op_specs(specs) -> str:
+    """解析可重复的 `--op` 规格串，返回**规范化的描述**（供 `--save-project` 与报告）。
+
+    语法（一条 `--op` = 一个算子，**出现顺序就是操作栈顺序**）：
+
+        --op "kind@t0-t1:key=value,key=value"
+        --op "declip@0-1:ceiling=0.5,bandwidth=21000"
+        --op "declick@0-1:threshold=4"
+        --op "dehum@0-1:f0=50,q=8,harmonics=1,2,3"
+        --op "denoise@0-2:noise=0-0.3,reduction_db=15"
+        --op "gain@0-1:gain=-3"
+        --op "band_gain@0-1:band=1000-4000,gain=-6"
+        --op "poly_gain:points=0.3,1000;1.5,1000;1.5,4500,gain=-6"
+
+    ⚠ `harmonics=1,2,3` 里的逗号会与参数分隔符冲突 ⇒ 该键的取值**吃到下一个
+    `键=` 之前**（见 `_split_kv`）。
+    """
+    ops = []
+    for spec in specs:
+        head, _, rest = spec.partition(":")
+        kind, _, span = head.partition("@")
+        kind = kind.strip()
+        if kind not in _OP_SPECS:
+            raise ValueError("不认识的算子 %r；可用：%s"
+                             % (kind, "／".join(sorted(_OP_SPECS))))
+        kv = _split_kv(rest) if rest else {}
+        # 位置参数：时间选区从 `@t0-t1` 取，或从 `kv["at"]` 取
+        t0 = t1 = None
+        if span:
+            rng = _parse_range(span)
+            t0, t1 = rng
+        elif "at" in kv:
+            t0, t1 = _parse_range(kv.pop("at"))
+        need = _OP_SPECS[kind][0].split(",")
+        if "at" in need and (t0 is None or t1 is None):
+            raise ValueError("`%s` 需要时间选区：写成 `%s@t0-t1` 或 `%s:at=t0-t1`"
+                             % (kind, kind, kind))
+        if "band" in need and "band" not in kv:
+            raise ValueError("`%s` 需要 `band=f0-f1`" % kind)
+        if "f0" in need and "f0" not in kv and "auto_f0" not in kv:
+            raise ValueError("`%s` 需要 `f0=Hz`（或 `auto_f0=1`）" % kind)
+        if "noise" in need and "noise" not in kv:
+            raise ValueError("`%s` 需要 `noise=t0-t1`（只有噪声的一小段，用来学谱）" % kind)
+        if "points" in need and "points" not in kv:
+            raise ValueError("`%s` 需要 `points=t,f;t,f;...`（≥3 对顶点）" % kind)
+        ops.append(_build_one_op(kind, t0, t1, kv, source_hint=None))
+    return ops
+
+
+def _split_kv(rest: str) -> dict:
+    """把 `key=value,key=value` 切成 dict。
+
+    ⚠ **`harmonics=1,2,3` 的逗号是取值的一部分**，不是分隔符：规则是
+    "取值一直吃到下一个 `、` 或 `,` 之后紧跟 `标识符=` 的位置"。
+    这样 `harmonics=1,2,3` 与 `harmonics=1,2,q=8` 都能正确切开。
+    """
+    import re
+
+    out = {}
+    for m in re.finditer(r"(\w+)=((?:(?!,?\w+=).)*)", rest):
+        out[m.group(1)] = m.group(2).strip().rstrip(",")
+    return out
+
+
+def _build_one_op(kind: str, t0, t1, kv: dict, source_hint=None):
+    """按 `kind` 与键值字典构造算子对象（`--op` 与单算子开关**共用**这一份）。
+
+    `source_hint` 非空时，`declip` 的自动带宽与 `dehum` 的 `auto_f0` 会去读它。
+    """
+    kv = dict(kv)
+    if kind == "gain":
+        if "gain" not in kv:
+            raise ValueError("`gain` 需要 `gain=dB`")
+        return GainOp(t0, t1, float(kv["gain"]))
+    if kind == "band_gain":
+        if "gain" not in kv:
+            raise ValueError("`band_gain` 需要 `gain=dB`")
+        f0, f1 = _parse_freq(kv["band"])
+        return BandGainOp(t0, t1, f0, f1, float(kv["gain"]))
+    if kind == "poly_gain":
+        pts = _parse_poly(kv["points"])
+        return PolyGainOp(points=pts, gain_db=float(kv.get("gain", -6.0)))
+    if kind == "declip":
+        bw = float(kv["bandwidth"]) if "bandwidth" in kv else None
+        src = "given"
+        if bw is None:
+            if source_hint is None:
+                raise ValueError("`declip` 省略 `bandwidth` 时需要在单算子模式下运行"
+                                 "（`--op` 里请显式给 `bandwidth=`）")
+            bw, src = _auto_bandwidth(source_hint)
+        dkw = {}
+        if "iterations" in kv:
+            dkw["iterations"] = int(kv["iterations"])
+        return DeclipOp(t0, t1, bw,
+                        float(kv["ceiling"]) if "ceiling" in kv else None,
+                        bandwidth_source=src, **dkw)
+    if kind == "declick":
+        dkw = {}
+        if "threshold" in kv:
+            dkw["threshold"] = float(kv["threshold"])
+        if "max_run" in kv:
+            mr = int(kv["max_run"])
+            dkw["max_run"] = None if mr == 0 else mr
+        return DeclickOp(t0, t1, **dkw)
+    if kind == "dehum":
+        dkw = {}
+        if "q" in kv:
+            dkw["q"] = float(kv["q"])
+        if "harmonics" in kv:
+            try:
+                dkw["harmonics"] = tuple(
+                    int(x) for x in kv["harmonics"].split(",") if x.strip())
+            except ValueError:
+                raise ValueError("`harmonics` 要写成逗号分隔整数，例如 `1,2,3`"
+                                 "（得到 %r）" % kv["harmonics"]) from None
+        if "auto_f0" in kv:
+            if source_hint is None:
+                raise ValueError("`auto_f0=1` 只在单算子模式下可用"
+                                 "（`--op` 里请显式给 `f0=`）")
+            f0v, _ev = _auto_hum_f0(source_hint)
+            dkw["f0_source"] = "auto"
+        else:
+            f0v = float(kv["f0"])
+        return DehumOp(t0, t1, f0v, **dkw)
+    if kind == "denoise":
+        n0, n1 = _parse_range(kv["noise"])
+        dkw = {}
+        if "reduction_db" in kv:
+            dkw["reduction_db"] = float(kv["reduction_db"])
+        if "no_floor_track" in kv:
+            dkw["track_floor"] = False
+        return DenoiseOp(t0, t1, n0, n1, **dkw)
+    raise ValueError("不认识的算子 %r" % kind)
+
+
 def _auto_bandwidth(source: str) -> tuple[float, str]:
     """`--bandwidth` 省略时的**自动读数**，返回 `(B, 来源标签)`。
 
@@ -227,6 +376,16 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--chain", default=None,
                     help="套用**修复链预设**（只含操作栈、不绑源的 JSON，`save_chain` 产出）："
                          "把同一套修复配方套到本命令给的源上；与算子 flag/--at/--project 互斥")
+    ap.add_argument("--op", action="append", default=None, metavar="SPEC",
+                    help="**复合算子**（可给多次，出现顺序就是操作栈顺序）："
+                         "`kind@t0-t1:key=value,...`，例如 "
+                         "`--op \"declick@0-1:threshold=4\" "
+                         "--op \"declip@0-1:ceiling=0.5,bandwidth=21000\"`。"
+                         "可用算子：gain / band_gain / poly_gain / declip / declick / "
+                         "dehum / denoise（各算子必填参数见 `--op` 说明或 "
+                         "docs/scripting.md）。与单算子开关／`--project`／`--chain` 互斥。"
+                         "⚠ 多算子走**链式渲染**（每步一个 FLOAT 中间层），"
+                         "单算子路径仍是全 float64。")
     ap.add_argument("--verify-audit", action="append", default=None, metavar="JSON",
                     help="**核对审计记录**（可给多次）：重算 `audit_digest` 并比对，"
                          "输出 PASS/FAIL。这是「跨机核对同一份修复」的 CLI 入口——"
@@ -234,6 +393,13 @@ def build_parser() -> argparse.ArgumentParser:
                          "同一份输入、同一份实现（三个 digest 分别对应）。"
                          "退出码 0=全 PASS，1=有 FAIL。不渲染任何音频。"
                          "参数可给**目录**（递归找 *.json），便于整批核对。")
+    ap.add_argument("--verify-json", default=None, metavar="OUT",
+                    help="把 `--verify-audit` 的结果另存为**机器可读 JSON**"
+                         "（CI 直接消费，不必解析人读文本）。"
+                         "结构：`{ok, n_total, n_bad, records:[{path, ok, "
+                         "audit_digest{claimed,recomputed,match}, "
+                         "kernel_digest{recorded,local,same_implementation}, "
+                         "source_sha256, tool_version}]}`")
     ap.add_argument("--jobs", type=int, default=0,
                     help="批处理的并行进程数（0=自动按 CPU 核数，1=串行）。"
                          "每项作业互相隔离（各自独立进程），失败不影响其余")
@@ -264,6 +430,103 @@ def _save_report(a, audit: dict) -> int:
         print("审计报告写不出去：%s" % e)
         return 2
     print("报告  %s" % a.report)
+    return 0
+
+
+def _main_ops(a) -> int:
+    """`--op`：**复合算子**（可重复；出现顺序就是操作栈顺序）。
+
+    ## 为什么单独一个入口
+
+    单算子开关（`--declip` / `--declick` / …）是"一次修一件事"的交互式入口，
+    用 `n_modes != 1` 强制互斥。复合修复此前只能写项目记录 JSON 或修复链文件
+    （`--project` / `--chain`）——对"临时试一套配方"太绕。
+    `--op` 把这件事压成一条命令：
+
+        audiocheck-edit-cli in.wav out.wav \
+            --op "declick@0-1:threshold=4" \
+            --op "declip@0-1:ceiling=0.5,bandwidth=21000" \
+            --op "dehum@1-2:f0=50,q=8"
+
+    ## 语义必须是"栈顺序"，不是"参数顺序"
+
+    与 `--project` 一样走 `Project(source, ops)`：`ops` 里的顺序就是用户给的
+    顺序，但**渲染时按 `render.PHASE` 做规范排序**（脉冲类先、稳态嗡最后），
+    被重排时审计记 `reordered_from`。这是既有行为，`--op` 不改变它。
+
+    ## 校验（与单算子开关互斥，且每项都必须在解析期失败）
+
+    参数错误一律**在渲染之前**报出来（退出码 2）——不能跑一半才发现第三项写错。
+    """
+    # 与其它入口互斥：混用会让"到底按哪个跑"变成猜测
+    n_single = ((1 if a.gain is not None else 0) + (1 if a.declip else 0)
+                + (1 if a.declick else 0) + (1 if a.dehum else 0)
+                + (1 if a.denoise else 0))
+    if n_single or a.at is not None or a.poly is not None or a.band is not None:
+        print("参数错误：`--op` 与单算子开关（`--gain`/`--declip`/`--declick`/"
+              "`--dehum`/`--denoise`）及 `--at`/`--band`/`--poly` 互斥"
+              "（复合规格里已经写了每项的选区）")
+        return 2
+    if a.chain is not None or a.project is not None:
+        print("参数错误：`--op` 与 `--chain`/`--project` 互斥（都是「给一整个操作栈」）")
+        return 2
+
+    try:
+        ops = _parse_op_specs(a.op)
+    except (ValueError, TypeError) as e:
+        print("参数错误：%s" % e)
+        return 2
+
+    kw = {}
+    if a.n_fft is not None:
+        kw["n_fft"] = a.n_fft
+    if a.hop is not None:
+        kw["hop"] = a.hop
+
+    try:
+        proj = Project(a.source, list(ops))
+        audit = render(proj, a.dest, subtype=a.subtype, overwrite=a.overwrite,
+                       dither=a.dither, **kw)
+    except FileExistsError as e:
+        print("目标已存在：%s（要覆盖请加 --overwrite）" % e)
+        return 5
+    except ValueError as e:
+        print("拒绝：%s" % e)
+        return 2
+    except Exception as e:                       # noqa: BLE001 —— 源读不了的各种形态
+        print("**源读不了**：%s" % e)
+        return 4
+
+    print("源    %s" % audit["source"])
+    print("目标  %s" % audit["dest"])
+    print("格式  %d Hz ｜ %d 声道 ｜ %s" % (audit["samplerate"], audit["channels"],
+                                            audit["subtype"]))
+    print("操作栈 %d 项（`--op` 顺序；渲染按 `render.PHASE` 规范排序）" % len(ops))
+    _print_dither(audit)
+    print("长度  %d 帧（%.3f s）" % (audit["frames"], audit["duration_s"]))
+    _warn_if_noop(audit)
+    if audit.get("stages"):
+        _print_chain(audit)
+
+    if a.audit:
+        try:
+            with open(a.audit, "w", encoding="utf-8") as f:
+                json.dump(_with_timestamp(audit), f, ensure_ascii=False, indent=2)
+        except OSError as e:
+            print("审计记录写不出去：%s" % e)
+            return 2
+        print("审计  %s" % a.audit)
+    rc = _save_report(a, audit)
+    if rc:
+        return rc
+    if a.save_project:
+        try:
+            with open(a.save_project, "w", encoding="utf-8") as f:
+                json.dump(proj.to_dict(), f, ensure_ascii=False, indent=2)
+        except OSError as e:
+            print("项目记录写不出去：%s" % e)
+            return 2
+        print("项目  %s" % a.save_project)
     return 0
 
 
@@ -354,6 +617,8 @@ def main(argv=None) -> int:
         return _main_batch(a)
     if a.project is not None:
         return _main_project(a)
+    if a.op:
+        return _main_ops(a)
     if a.chain is not None:
         n_modes = ((1 if a.gain is not None else 0) + (1 if a.declip else 0)
                    + (1 if a.declick else 0) + (1 if a.dehum else 0)
@@ -788,20 +1053,24 @@ def _verify_one_audit(path: str) -> tuple[bool, str]:
 
     from .core.edit.render import audit_digest, kernel_self_digest
 
+    def _fail(reason: str) -> tuple:
+        return False, reason, {"path": path, "ok": False, "reason": reason,
+                               "checks": {}}
+
     try:
         with open(path, encoding="utf-8") as f:
             rec = json.load(f)
     except OSError as e:
-        return False, "读不了 %s：%s" % (path, e)
+        return _fail("读不了 %s：%s" % (path, e))
     except json.JSONDecodeError as e:
-        return False, "%s 不是合法 JSON：%s" % (path, e)
+        return _fail("%s 不是合法 JSON：%s" % (path, e))
 
     if not isinstance(rec, dict):
-        return False, "%s 顶层不是对象（审计记录应是 dict）" % path
+        return _fail("%s 顶层不是对象（审计记录应是 dict）" % path)
     claimed = rec.get("audit_digest")
     if not claimed:
-        return False, ("%s 里没有 `audit_digest` 字段——"
-                       "这是 v1.1.0 之前或手改过的记录，无法核对" % path)
+        return _fail("%s 里没有 `audit_digest` 字段——"
+                     "这是 v1.1.0 之前或手改过的记录，无法核对" % path)
 
     # 重算：与 `audit_digest()` 完全同口径（它自己剔除那四个字段）
     recomputed = audit_digest(rec)
@@ -844,7 +1113,19 @@ def _verify_one_audit(path: str) -> tuple[bool, str]:
     if ss:
         lines.append("    输入内容 sha256 %s…" % ss[:16])
 
-    return ok, "\n".join(lines)
+    info = {
+        "path": path,
+        "ok": ok,
+        "audit_digest": {"claimed": claimed, "recomputed": recomputed,
+                         "match": ok},
+        "kernel_digest": ({"recorded": kd_rec, "local": kd_now,
+                           "same_implementation": kd_rec == kd_now}
+                          if kd_rec else None),
+        "source_sha256": ss,
+        "tool_version": rec.get("tool_version"),
+        "n_digest_fields": len(keys) if not ok else None,
+    }
+    return ok, "\n".join(lines), info
 
 
 def _main_verify(a) -> int:
@@ -852,6 +1133,18 @@ def _main_verify(a) -> int:
 
     参数可以是 **JSON 文件**，也可以是**目录**（递归找 `*.json`）——
     后者是批处理的自然搭配：一轮批处理产出几十份审计，逐份敲路径不现实。
+
+    `--verify-json OUT` 把结果写成**机器可读**报告（CI 直接消费，不必解析文本）：
+
+        {"ok": false, "n_total": 3, "n_bad": 1,
+         "records": [{"path": "...", "ok": true,
+                      "audit_digest": {"claimed": "...", "recomputed": "...",
+                                       "match": true},
+                      "kernel_digest": {"recorded": "...", "local": "...",
+                                        "same_implementation": true},
+                      "source_sha256": "...", "tool_version": "1.1.5"}, ...]}
+
+    ⚠ 文本输出仍是默认（人读）；JSON 是**附加**出口，不替换它。
     """
     targets: list = []
     for arg in a.verify_audit:
@@ -872,18 +1165,32 @@ def _main_verify(a) -> int:
 
     ok_all = True
     n_bad = 0
+    infos: list = []
     for i, path in enumerate(targets):
         if i:
             print()
-        ok, msg = _verify_one_audit(path)
+        ok, msg, info = _verify_one_audit(path)
         print(msg)
         ok_all = ok_all and ok
+        infos.append(info)
         if not ok:
             n_bad += 1
     print()
     print("核对结果：%s（%d 份%s）"
           % ("全部一致" if ok_all else "**有不一致 %d 份**" % n_bad, len(targets),
              "，来自目录递归" if any(os.path.isdir(x) for x in a.verify_audit) else ""))
+
+    out = getattr(a, "verify_json", None)
+    if out:
+        report = {"ok": ok_all, "n_total": len(targets), "n_bad": n_bad,
+                  "records": infos}
+        try:
+            with open(out, "w", encoding="utf-8") as f:
+                json.dump(report, f, ensure_ascii=False, indent=2)
+            print("机器可读报告  %s" % out)
+        except OSError as e:
+            print("机器可读报告写不出去：%s" % e)
+            return 2
     return 0 if ok_all else 1
 
 
