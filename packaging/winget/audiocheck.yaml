@@ -16,8 +16,8 @@ PackageUrl: https://github.com/LiaoRanran/audiocheck
 InstallerType: zip
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/LiaoRanran/audiocheck/releases/download/v1.1.4/audiocheck-1.1.4-win64.zip
-    InstallerSha256: 8cb56237e21be22fc91b5b421562c2a07ed72ccbb115ab6735ed767119acacb6
+    InstallerUrl: https://github.com/LiaoRanran/audiocheck/releases/download/v1.1.5/audiocheck-1.1.5-win64.zip
+    InstallerSha256: a45c96881d73ec6f6dfa4437e11d437d157f0387c678e92e7e9b12df1c039102
     NestedInstallerType: portable
     NestedInstallerFiles:
       - RelativeFilePath: audiocheck\audiocheck.exe
