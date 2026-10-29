@@ -35,6 +35,7 @@ import json
 import os
 import sys
 
+from . import __version__
 from .cli import _setup_console
 from .core.edit import (
     BandGainOp,
@@ -226,6 +227,21 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--chain", default=None,
                     help="套用**修复链预设**（只含操作栈、不绑源的 JSON，`save_chain` 产出）："
                          "把同一套修复配方套到本命令给的源上；与算子 flag/--at/--project 互斥")
+    ap.add_argument("--verify-audit", action="append", default=None, metavar="JSON",
+                    help="**核对审计记录**（可给多次）：重算 `audit_digest` 并比对，"
+                         "输出 PASS/FAIL。这是「跨机核对同一份修复」的 CLI 入口——"
+                         "拿到对方给的审计 JSON，一条命令就能验它是不是同一份修复、"
+                         "同一份输入、同一份实现（三个 digest 分别对应）。"
+                         "退出码 0=全 PASS，1=有 FAIL。不渲染任何音频。"
+                         "参数可给**目录**（递归找 *.json），便于整批核对。")
+    ap.add_argument("--jobs", type=int, default=0,
+                    help="批处理的并行进程数（0=自动按 CPU 核数，1=串行）。"
+                         "每项作业互相隔离（各自独立进程），失败不影响其余")
+    ap.add_argument("--version", action="version",
+                    version="audiocheck %s" % __version__,
+                    help="打印版本并退出")
+    ap.add_argument("--doctor", action="store_true",
+                    help="环境自检（依赖/编解码器/后端）后退出")
     return ap
 
 
@@ -293,6 +309,13 @@ def _main_chain(a) -> int:
                                             audit["subtype"]))
     print("链    %s（%d 个操作）" % (a.chain, len(ops)))
     print("长度  %d 帧（%.3f s）" % (audit["frames"], audit["duration_s"]))
+    _warn_if_noop(audit)
+    # ⚠ **`--chain` 路径此前不打印阶段明细**：`_print_chain` 只在 `--project`
+    # 分支被调用，于是用修复链预设跑的用户看不到"每个阶段做了什么、覆盖多少帧"——
+    # 而那正是链式渲染最需要交代的东西（多个算子按规范顺序串行）。
+    # 审计 JSON 里有 `stages`，报告却不说，等于把可审计性留在了机器格式里。
+    if audit.get("stages"):
+        _print_chain(audit)
     if a.audit:
         try:
             with open(a.audit, "w", encoding="utf-8") as f:
@@ -318,6 +341,12 @@ def _main_chain(a) -> int:
 def main(argv=None) -> int:
     _setup_console()
     a = build_parser().parse_args(argv)
+    if a.doctor:
+        # 复用主 CLI 的 doctor（同一套依赖/编解码器检查，不重复实现）
+        from .cli import doctor
+        return doctor()
+    if a.verify_audit:
+        return _main_verify(a)
     if a.batch_help:
         _print_batch_help()
         return 0
@@ -490,6 +519,7 @@ def main(argv=None) -> int:
                                             audit["subtype"]))
     _print_dither(audit)
     print("长度  %d 帧（%.3f s）" % (audit["frames"], audit["duration_s"]))
+    _warn_if_noop(audit)
     if audit["domain"] == "band":
         for op in audit["ops"]:
             m = op.get("attenuation_measured_db")
@@ -641,6 +671,36 @@ def _print_dither(audit: dict) -> None:
               % audit["dither_lsb"])
 
 
+def _warn_if_noop(audit: dict) -> None:
+    """★ **no-op 守卫**：选区完全落在文件之外时显式喊出来。
+
+    渲染层把越界区间夹紧到空集（`applied_frames == 0`）——这本身是正确行为
+    （不该越界改文件）；但 CLI 此前仍**静默成功**（退出码 0、报告一片正常）
+    ⇒ 用户以为修了，实际一个样本都没动。
+
+    实测：2 秒文件给 `--at 5.0-9.0` ⇒ `applied_frames=0`、`rc=0`、报告全绿。
+    这是"看起来做了、其实没做"的最坏形态，比报错更难发现（报错至少会被看到）。
+
+    只对**有选区的算子**判（gain/declip/declick/dehum/denoise/poly 都有
+    `applied_frames`；纯格式转换的空栈没有，不警告）。
+    """
+    ops = audit.get("ops") or []
+    if not ops:
+        return                                    # 空栈 = 纯转格式，不是 no-op
+    # 只看"应该有作用"的算子（gain_db == 0 是用户显式要求不变，见 GainOp 语义）
+    actionable = [o for o in ops
+                  if not (o.get("kind") == "gain" and o.get("gain_db") == 0)]
+    if not actionable:
+        return
+    total = sum(int(o.get("applied_frames") or 0) for o in actionable)
+    if total > 0:
+        return
+    dur = audit.get("duration_s")
+    print("⚠ **选区没有命中任何样本（no-op）**：目标文件与源逐位相同。"
+          "检查 `--at`/`--band`/`--poly` 是否落在素材范围内"
+          "（本文件时长 %s s）" % ("?" if dur is None else "%.3f" % dur))
+
+
 def _flag_conflicts(a) -> list[str]:
     """`--project` 模式下**不许**出现的逐操作参数（返回人可读的名字）。"""
     names = []
@@ -701,6 +761,176 @@ def _migrate_and_parse(op_dict, ver: int):
     return op_from_dict(_migrate(op_dict, ver))
 
 
+def _verify_one_audit(path: str) -> tuple[bool, str]:
+    """核对**一份**审计 JSON：重算 `audit_digest` 并与记录比对。
+
+    返回 `(ok, 人类可读说明)`。
+
+    ## 为什么这是核心能力的最后一公里
+
+    审计记录里早就有 `audit_digest`（剔除路径/时刻/产物哈希后的确定性摘要）、
+    `kernel_digest`（实现自证）与 `evidence_levels`（每个数字的可信度）。
+    但**此前没有任何 CLI 能核对它们**——用户拿到对方给的审计 JSON，只能自己
+    写 Python 脚本重算。而"跨机核对同一份修复"正是这个项目区别于普通音频工具
+    的承诺，承诺却要用户自己实现，等于没有。
+
+    ## 三个 digest 分别证明什么（口径必须分清）
+
+    * `audit_digest`：**同一份修复**（同输入内容 + 同操作栈 + 同产物特征）。
+      它剔除了 `timestamp_utc`/`dest`/`dest_sha256`/`source`——这些随落盘漂移。
+    * `kernel_digest`：**同一份实现**（渲染模块文件自身的哈希）。摘要相同但
+      kernel 不同 ⇒ 两个不同版本的代码给出了相同结果（可能是巧合，也可能是
+      有人在别处改了内核）。
+    * `source_sha256`：**同一份输入内容**（跳过 PEAK 的 WAV 内容哈希）。
+
+    所以核对要分三层报，而不是笼统给一个"通过"。
+    """
+
+    from .core.edit.render import audit_digest, kernel_self_digest
+
+    try:
+        with open(path, encoding="utf-8") as f:
+            rec = json.load(f)
+    except OSError as e:
+        return False, "读不了 %s：%s" % (path, e)
+    except json.JSONDecodeError as e:
+        return False, "%s 不是合法 JSON：%s" % (path, e)
+
+    if not isinstance(rec, dict):
+        return False, "%s 顶层不是对象（审计记录应是 dict）" % path
+    claimed = rec.get("audit_digest")
+    if not claimed:
+        return False, ("%s 里没有 `audit_digest` 字段——"
+                       "这是 v1.1.0 之前或手改过的记录，无法核对" % path)
+
+    # 重算：与 `audit_digest()` 完全同口径（它自己剔除那四个字段）
+    recomputed = audit_digest(rec)
+    ok = recomputed == claimed
+
+    lines = []
+    lines.append("%s  audit_digest %s"
+                 % ("✓" if ok else "✗", "一致" if ok else "**不一致**"))
+    lines.append("    记录 %s" % claimed)
+    if not ok:
+        lines.append("    复算 %s" % recomputed)
+        # 定位差异：逐字段比对 canonical_json 太粗，给出参与摘要的键集差异
+        skip = ("timestamp_utc", "dest", "dest_sha256", "source")
+        keys = sorted(k for k in rec if k not in skip)
+        lines.append("    （参与摘要的字段 %d 个；摘要不一致说明记录被改过、"
+                     "或用了不同版本的内核）" % len(keys))
+        # 版本提示：`audit_digest` 的口径在 v1.1.5 变过（自指字段 + 计算顺序 +
+        # 链式重算）。旧版本产出的记录**必然**核不过——这要说清，否则用户
+        # 会以为自己手里的文件被篡改了。
+        tv = rec.get("tool_version")
+        if tv and tv < "1.1.5":
+            lines.append("    ⚠ 该记录由 audiocheck %s 产出；`audit_digest` 的"
+                         "计算口径在 **1.1.5** 变过（剔除自指字段 + 全部字段写完后再算"
+                         " + 链式重算）⇒ **旧记录必然核不过**，这不代表文件被篡改。"
+                         "要核对请用产出它的那个版本，或重新渲染生成新记录。" % tv)
+
+    # kernel_digest：实现自证
+    kd_rec = rec.get("kernel_digest")
+    kd_now = kernel_self_digest()
+    if kd_rec:
+        same = kd_rec == kd_now
+        lines.append("    内核 %s（记录 %s… ｜ 本机 %s…）"
+                     % ("**同一实现**" if same else "**不同实现**",
+                        kd_rec[:12], kd_now[:12]))
+    else:
+        lines.append("    内核 （记录里没有 kernel_digest）")
+
+    # 输入内容
+    ss = rec.get("source_sha256")
+    if ss:
+        lines.append("    输入内容 sha256 %s…" % ss[:16])
+
+    return ok, "\n".join(lines)
+
+
+def _main_verify(a) -> int:
+    """`--verify-audit`：核对一份或多份审计 JSON（不渲染任何音频）。
+
+    参数可以是 **JSON 文件**，也可以是**目录**（递归找 `*.json`）——
+    后者是批处理的自然搭配：一轮批处理产出几十份审计，逐份敲路径不现实。
+    """
+    targets: list = []
+    for arg in a.verify_audit:
+        if os.path.isdir(arg):
+            found = sorted(
+                os.path.join(root, f)
+                for root, _dirs, files in os.walk(arg)
+                for f in files if f.lower().endswith(".json"))
+            if not found:
+                print("[!] 目录里没有 .json：%s" % arg)
+            targets.extend(found)
+        else:
+            targets.append(arg)
+
+    if not targets:
+        print("没有可核对的审计记录")
+        return 2
+
+    ok_all = True
+    n_bad = 0
+    for i, path in enumerate(targets):
+        if i:
+            print()
+        ok, msg = _verify_one_audit(path)
+        print(msg)
+        ok_all = ok_all and ok
+        if not ok:
+            n_bad += 1
+    print()
+    print("核对结果：%s（%d 份%s）"
+          % ("全部一致" if ok_all else "**有不一致 %d 份**" % n_bad, len(targets),
+             "，来自目录递归" if any(os.path.isdir(x) for x in a.verify_audit) else ""))
+    return 0 if ok_all else 1
+
+
+#: `--batch` 的 **CLI 级覆盖开关**。作业项里也可以写 `"overwrite": true`；
+#: 两者取"或"（命令行是"这批都允许覆盖"的批量意图）。
+#: ⚠ 必须是**模块级**：`ProcessPoolExecutor` 要把 worker 序列化送进子进程，
+#: 闭包捕获的变量不会跟过去。
+_CLI_OVERWRITE = False
+
+
+def _batch_job_worker(ij) -> tuple:
+    """**模块级** worker（进程池要求可 pickle）。
+
+    ⚠ 不能写成 `_main_batch` 里的闭包：`ProcessPoolExecutor` 需要把可调用对象
+    序列化送进子进程，闭包无法 pickle（会 `AttributeError: Can't pickle local
+    object`）。所以逻辑必须落到模块顶层——这也让串行/并行共用同一份实现。
+    """
+    i, job = ij
+    tag = job.get("dest") or job.get("source") or ("#%d" % i)
+    try:
+        ver = int(job.get("version", 1))
+        if ver not in (1, 2):
+            raise ValueError("不认识的作业版本 %r（支持 1 / 2）" % job.get("version"))
+        ops = job.get("ops", [])
+        proj = Project(job["source"], [_migrate_and_parse(x, ver) for x in ops])
+        audit = render(proj, job["dest"],
+                       subtype=job.get("subtype"),
+                       # 命令行 `--overwrite` 与作业项里的 `"overwrite"` 取**或**：
+                       # 此前只读作业项 ⇒ 用户加了 `--overwrite` 重跑批处理
+                       # **完全无效**（实测：重跑时全部报"目标已存在"）。
+                       # 命令行开关的语义是"这批作业都允许覆盖"，优先级最高。
+                       overwrite=bool(job.get("overwrite", False)) or _CLI_OVERWRITE,
+                       dither=bool(job.get("dither", False)))
+        if job.get("audit"):
+            with open(job["audit"], "w", encoding="utf-8") as fh:
+                json.dump(audit, fh, ensure_ascii=False, indent=2)
+        if job.get("report"):
+            from audiocheck.core.edit.report import write_report
+            write_report(audit, job["report"])
+    except (ValueError, json.JSONDecodeError, FileExistsError, OSError) as e:
+        return False, tag, str(e)
+    except Exception as e:                              # noqa: BLE001
+        return False, tag, "**源读不了**：%s" % e
+    return True, tag, "→ %s（%d 个操作 ｜ %d 帧）" % (
+        audit["dest"], len(audit["ops"]), audit["frames"])
+
+
 def _main_batch(a) -> int:
     """`--batch`：逐项渲染一个作业清单，**互相隔离**（一项失败不影响其余）。
 
@@ -711,6 +941,8 @@ def _main_batch(a) -> int:
     * 任一项抛异常都被**就地接住**，记成该项的失败，继续跑下一项；
     * 末尾汇总"几项成功 / 几项失败 + 失败原因"，让用户一眼看到哪条没跑成。
     """
+    global _CLI_OVERWRITE
+    _CLI_OVERWRITE = bool(getattr(a, "overwrite", False))
     if a.dest is not None and a.source is not None:
         print("参数错误：`--batch` 是清单驱动，不能再用 `<源> <目标>` 位置参数"
               "（把源/目标写进清单每一项）")
@@ -747,7 +979,13 @@ def _main_batch(a) -> int:
     n_ok = 0
     n_fail = 0
     failures = []
-    for i, job in enumerate(jobs):
+
+    def _run_job(i_job):
+        """跑**一项**作业，返回 `(ok, tag, 详情)`。纯函数式：不碰外部计数。
+
+        抽出来是为了让串行/并行走**同一份逻辑**（并行不能改变判定口径）。
+        """
+        i, job = i_job
         tag = job.get("dest") or job.get("source") or ("#%d" % i)
         try:
             # 作业可带 `"version": 1|2`（缺省 1 = 历史清单：denoise 无 track_floor 键
@@ -756,12 +994,14 @@ def _main_batch(a) -> int:
             if ver not in (1, 2):
                 raise ValueError("不认识的作业版本 %r（支持 1 / 2）" % job.get("version"))
             ops = job.get("ops", [])
-            proj = Project(job["source"], [_migrate_and_parse(x, ver) for x in ops])                 if ops else None
-            if proj is None:
-                proj = Project(job["source"], [])  # 空栈（恒等渲染，便于"只转格式"）
+            proj = Project(job["source"], [_migrate_and_parse(x, ver) for x in ops])
             audit = render(proj, job["dest"],
                            subtype=job.get("subtype"),
-                           overwrite=bool(job.get("overwrite", False)),
+                           # 命令行 `--overwrite` 与作业项里的 `"overwrite"` 取**或**：
+                       # 此前只读作业项 ⇒ 用户加了 `--overwrite` 重跑批处理
+                       # **完全无效**（实测：重跑时全部报"目标已存在"）。
+                       # 命令行开关的语义是"这批作业都允许覆盖"，优先级最高。
+                       overwrite=bool(job.get("overwrite", False)) or _CLI_OVERWRITE,
                            dither=bool(job.get("dither", False)))
             if job.get("audit"):
                 with open(job["audit"], "w", encoding="utf-8") as fh:
@@ -770,18 +1010,70 @@ def _main_batch(a) -> int:
                 from audiocheck.core.edit.report import write_report
                 write_report(audit, job["report"])
         except (ValueError, json.JSONDecodeError, FileExistsError, OSError) as e:
-            n_fail += 1
-            failures.append((tag, str(e)))
-            print("✗ [%s] 失败：%s" % (tag, e))
-            continue
+            return False, tag, str(e)
         except Exception as e:                          # noqa: BLE001 —— 源读不了等杂项
-            n_fail += 1
-            failures.append((tag, "**源读不了**：%s" % e))
-            print("✗ [%s] 失败：%s" % (tag, e))
-            continue
-        n_ok += 1
-        print("✓ [%s] 成功 → %s（%d 个操作 ｜ %d 帧）"
-              % (tag, audit["dest"], len(audit["ops"]), audit["frames"]))
+            return False, tag, "**源读不了**：%s" % e
+        return True, tag, "→ %s（%d 个操作 ｜ %d 帧）" % (
+            audit["dest"], len(audit["ops"]), audit["frames"])
+
+    jobs_n = max(1, int(getattr(a, "jobs", 0) or 0))
+    if jobs_n == 0:
+        jobs_n = min(os.cpu_count() or 1, len(jobs))
+
+    if jobs_n <= 1 or len(jobs) == 1:
+        for ij in enumerate(jobs):
+            ok, tag, detail = _run_job(ij)
+            if ok:
+                n_ok += 1
+                print("✓ [%s] 成功 %s" % (tag, detail))
+            else:
+                n_fail += 1
+                failures.append((tag, detail))
+                print("✗ [%s] 失败：%s" % (tag, detail))
+    else:
+        # **并行**：每个作业是独立小工程（各自的源/目标/审计文件），互不共享状态。
+        #
+        # ⚠ **打包环境（PyInstaller / frozen）必须降级为线程池**：
+        # Windows 的 `multiprocessing` 用 spawn 启动子进程——它会**重新执行 exe**。
+        # 未受 `if __name__ == "__main__"` 与 `multiprocessing.freeze_support()`
+        # 保护的入口会在子进程里重新跑一遍主逻辑，PyInstaller 的引导程序随后
+        # 把整个 worker 杀掉：
+        #   `A process in the process pool was terminated abruptly`
+        # （实测：打包后的 exe 跑 `--batch --jobs 3`，3 项**全部**报这个错，
+        #  而源码运行完全正常——只在发布版复现，是最难发现的一类。）
+        #
+        # 渲染是 numpy/scipy 密集：它们**大量释放 GIL**（numpy 线程安全文档：
+        # "Many NumPy operations release the GIL"），所以线程池在这里有真实并行度；
+        # 且 `EditSession` 的前缀缓存已按目录隔离，不会跨线程互删。
+        frozen = bool(getattr(sys, "frozen", False))
+        if frozen:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            print("并行 %d 路（共 %d 项；打包版用线程池——进程池在 frozen 下"
+                  "会 spawn 重启 exe，需 freeze_support）" % (jobs_n, len(jobs)))
+            pool_cls = ThreadPoolExecutor
+        else:
+            from concurrent.futures import ProcessPoolExecutor, as_completed
+            print("并行 %d 路（共 %d 项；每项独立进程）" % (jobs_n, len(jobs)))
+            pool_cls = ProcessPoolExecutor
+        results = {}
+        with pool_cls(max_workers=jobs_n) as ex:
+            futs = {ex.submit(_batch_job_worker, ij): ij[0]
+                    for ij in enumerate(jobs)}
+            for fut in as_completed(futs):
+                i = futs[fut]
+                try:
+                    results[i] = fut.result()
+                except Exception as e:                  # noqa: BLE001
+                    results[i] = (False, "#%d" % i, "worker 崩溃：%s" % e)
+        for i in range(len(jobs)):                      # 按索引收拢（报告顺序稳定）
+            ok, tag, detail = results.get(i, (False, "#%d" % i, "未执行"))
+            if ok:
+                n_ok += 1
+                print("✓ [%s] 成功 %s" % (tag, detail))
+            else:
+                n_fail += 1
+                failures.append((tag, detail))
+                print("✗ [%s] 失败：%s" % (tag, detail))
 
     print("\n批处理汇总：%d 项成功 ／ %d 项失败（共 %d 项）"
           % (n_ok, n_fail, len(jobs)))
@@ -789,9 +1081,14 @@ def _main_batch(a) -> int:
         print("失败明细：")
         for tag, why in failures:
             print("  - %s：%s" % (tag, why))
-    # 全部成功才 0；有失败但清单合法 ⇒ 仍以 0 退出（失败已逐项记录，不阻断其余）；
-    # 只有"清单本身不可用"才 2（上面已 return）。
-    return 0 if n_fail == 0 else 0
+    # 全部成功才 0；**有失败 ⇒ 1**（脚本/CI 靠退出码判断，返回 0 等于把失败吞掉）。
+    # 只有"清单本身不可用"才是 2（上面已 return）。
+    #
+    # ⚠ 这里原本写的是 `return 0 if n_fail == 0 else 0`——**两个分支都是 0**，
+    # 即"无论成败都报成功"。注释写着"全部成功才 0"，实现却永远返回 0：
+    # 清单里 99 项炸掉 98 项，`audiocheck-edit --batch x.json && echo ok`
+    # 照样打印 ok。这是最容易被自动化吞掉的一类缺陷（CI 永远绿）。
+    return 0 if n_fail == 0 else 1
 
 
 def _main_project(a) -> int:
@@ -839,6 +1136,7 @@ def _main_project(a) -> int:
                                             audit["subtype"]))
     _print_dither(audit)
     print("长度  %d 帧（%.3f s）" % (audit["frames"], audit["duration_s"]))
+    _warn_if_noop(audit)
     if audit.get("chained"):
         _print_chain(audit)
     else:

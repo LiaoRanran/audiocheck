@@ -65,3 +65,72 @@ def test_wants_gui_handles_flag_with_value_after_equals():
     m = _load()
     assert m._wants_gui(["--seed=0.5"]) is True
     assert m._wants_gui(["--modes=dark"]) is False   # 前缀相同但不是同一参数
+
+
+# ============================ 编辑 CLI 的分派（v1.1.5 补：此前完全不可达）
+def test_edit_flags_route_to_edit_cli():
+    """★ 编辑专属参数必须走 `edit_cli`（此前全部落到体检 CLI ⇒ unrecognized arguments）。
+
+    2026-10-29 实测：打包 exe 跑
+    `audiocheck.exe 源.wav 目标.wav --gain -3 --at 0-0.5` 报
+    `unrecognized arguments: --gain -3 --at 0-0.5` —— 修复能力对压缩包用户
+    **完全不可达**，而那正是本项目的核心差异化。
+    """
+    m = _load()
+    cases = [
+        ["--gain", "-3", "--at", "0-0.5"],
+        ["--declip", "--at", "0-1", "--ceiling", "0.5"],
+        ["--declick", "--at", "0-1"],
+        ["--dehum", "--hum-f0", "50", "--at", "0-1"],
+        ["--denoise", "--noise-at", "0-0.3", "--at", "0.5-1"],
+        ["--batch", "jobs.json"],
+        ["--verify-audit", "a.json"],
+        ["--chain", "c.json"],
+        ["--poly", "0,100;1,100;1,400"],
+        ["--gain", "-3", "--band", "1000-4000", "--at", "0-1"],
+    ]
+    bad = [c for c in cases if not m._wants_edit(c)]
+    assert not bad, "以下参数应走编辑 CLI：%s" % bad
+
+
+def test_edit_flag_equals_form_is_detected():
+    """`--gain=-3` 这种等号写法也必须被识别（按 `=` 切分）。"""
+    m = _load()
+    assert m._wants_edit(["--gain=-3", "--at=0-1"]) is True
+    assert m._wants_edit(["--verify-audit=a.json"]) is True
+
+
+def test_assessment_flags_do_not_route_to_edit():
+    """★ 体检专属参数**不该**走编辑 CLI（防止误分派）。"""
+    m = _load()
+    for argv in (["--json", "o.json", "a.wav"], ["--csv", "o.csv"],
+                 ["--plot", "d/"], ["--shallow"], ["--list-analyzers"],
+                 ["--only", "spectrum"], ["--config", "c.json"],
+                 ["--cache", "c.json"], ["a.wav"], ["D:/music"]):
+        assert m._wants_edit(argv) is False, "%r 不该走编辑 CLI" % (argv,)
+
+
+def test_gui_flags_still_win_over_edit():
+    """`--seed` 等 GUI 参数优先（即使同时出现编辑参数）。"""
+    m = _load()
+    assert m._wants_gui(["--seed", "0.5", "--gain", "-3"]) is True
+    assert m._wants_gui(["--mode=dark", "--at", "0-1"]) is True
+
+
+def test_no_args_still_opens_gui():
+    """无参数仍开窗口（不能因为加了编辑分派就改掉双击行为）。"""
+    m = _load()
+    assert m._wants_gui([]) is True
+    assert m._wants_edit([]) is False
+
+
+def test_version_and_doctor_are_shared_not_edit():
+    """★ `--version` / `--doctor` **两边都有** ⇒ 不能当编辑判据。
+
+    它们必须落到体检 CLI（先注册的那套），否则编辑 CLI 的 `--version`
+    会覆盖体检的——两者输出格式不同，脚本会读到不一样的东西。
+    """
+    m = _load()
+    assert m._wants_edit(["--version"]) is False
+    assert m._wants_edit(["--doctor"]) is False
+    assert m._wants_gui(["--version"]) is False

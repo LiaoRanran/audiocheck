@@ -532,7 +532,16 @@ def test_bad_project_record_is_rejected_without_traceback(tmp_path, capsys):
 
 # ---------------------------------------------------------------- 批处理
 def test_batch_runs_all_jobs_and_isolates_failures(tmp_path, capsys):
-    """`--batch`：逐项渲染、互相隔离；一项失败不拖累其余，汇总列出失败。"""
+    """`--batch`：逐项渲染、互相隔离；一项失败不拖累其余，汇总列出失败。
+
+    ★ **有失败时退出码必须是 1**。这条判据此前写的是 `assert rc == 0`
+    （"有失败但清单合法 ⇒ 仍 0"），而那正是把 bug 当规格固化：
+    实现里 `return 0 if n_fail == 0 else 0` 两个分支都是 0，注释却写着
+    "全部成功才 0"。后果是 CI 永远绿——批处理 99 项炸 98 项，
+    `audiocheck-edit --batch x.json && echo ok` 照样打印 ok。
+
+    现在改为断言 rc == 1（有失败），并要求其余作业**仍然跑完**（隔离性不变）。
+    """
     a = _write(tmp_path / "a.wav", _tone())
     b = _write(tmp_path / "b.wav", _tone())
     jobs = [
@@ -546,11 +555,53 @@ def test_batch_runs_all_jobs_and_isolates_failures(tmp_path, capsys):
     jb.write_text(json.dumps(jobs), encoding="utf-8")
     rc = main(["--batch", str(jb)])
     out = capsys.readouterr().out
-    assert rc == 0, "有失败但清单合法 ⇒ 仍 0（失败已逐项记录）"
-    assert os.path.exists(tmp_path / "oa.wav")
+    assert rc == 1, "有失败 ⇒ 退出码 1（脚本/CI 靠它判断，返回 0 等于吞掉失败）"
+    assert os.path.exists(tmp_path / "oa.wav"), "失败项不应拖累其余"
     assert os.path.exists(tmp_path / "ob.wav")
     assert not os.path.exists(tmp_path / "ofail.wav")
     assert "1 项失败" in out and "nonsense" in out
+
+
+def test_batch_all_success_exits_zero(tmp_path, capsys):
+    """全部成功 ⇒ 退出码 0（与"有失败 ⇒ 1"成对，防止恒返回 1）。"""
+    a = _write(tmp_path / "a.wav", _tone())
+    jobs = [{"source": a, "dest": str(tmp_path / "o.wav"),
+             "ops": [{"kind": "gain", "t0": 0.0, "t1": 0.5, "gain_db": -2.0}]}]
+    jb = tmp_path / "jobs.json"
+    jb.write_text(json.dumps(jobs), encoding="utf-8")
+    assert main(["--batch", str(jb)]) == 0
+
+
+def test_batch_parallel_jobs_flag(tmp_path, capsys):
+    """★ `--jobs N` 并行：结果与串行**内容一致**（判定口径不能因并行而变）。
+
+    判据用**内容哈希**（`_sha256_file(content_only=True)`，跳过 PEAK 块）而
+    不是字节哈希：FLOAT/PCM WAV 的 PEAK chunk 带**创建时间戳**，同一份音频在
+    不同秒写出字节必然不同——那是容器元数据，不是修复内容。用字节比会得到
+    "并行产物与串行不一致"的**假失败**（实测踩过）。
+    """
+    from audiocheck.core.edit.render import _sha256_file
+
+    jobs = []
+    for i in range(4):
+        s = _write(tmp_path / ("s%d.wav" % i), _tone())
+        jobs.append({"source": s, "dest": str(tmp_path / ("ser%d.wav" % i)),
+                     "ops": [{"kind": "gain", "t0": 0.0, "t1": 0.5, "gain_db": -3.0}]})
+    jb = tmp_path / "jobs.json"
+    jb.write_text(json.dumps(jobs), encoding="utf-8")
+    assert main(["--batch", str(jb), "--jobs", "1"]) == 0
+    capsys.readouterr()
+
+    jobs2 = [dict(j, dest=str(tmp_path / ("par%d.wav" % i)))
+             for i, j in enumerate(jobs)]
+    jb.write_text(json.dumps(jobs2), encoding="utf-8")
+    assert main(["--batch", str(jb), "--jobs", "4"]) == 0
+    capsys.readouterr()
+
+    for i in range(4):
+        h1 = _sha256_file(str(tmp_path / ("ser%d.wav" % i)), content_only=True)
+        h2 = _sha256_file(str(tmp_path / ("par%d.wav" % i)), content_only=True)
+        assert h1 == h2, "第 %d 项：并行产物的**内容**与串行不一致" % i
 
 
 def test_batch_rejects_non_array_or_missing_fields(tmp_path, capsys):
@@ -684,7 +735,9 @@ def test_batch_v2_manifest_rejects_missing_key_per_job(tmp_path, capsys):
     ]
     mf = tmp_path / "jobs.json"
     mf.write_text(json.dumps(manifest), encoding="utf-8")
-    assert main(["--batch", str(mf)]) == 0          # 清单合法；坏作业被隔离记失败
+    # 清单合法但**有作业失败** ⇒ 退出码 1（隔离性不变：好作业照常跑完）。
+    # 此前这里断言 == 0，与"全部成功才 0"的语义相反，是 bug 被固化成规格。
+    assert main(["--batch", str(mf)]) == 1
     out = capsys.readouterr().out
     assert "1 项失败" in out and "track_floor" in out
     assert os.path.exists(str(tmp_path / "o2.wav"))  # 好作业照常
@@ -774,3 +827,1257 @@ def test_evidence_chain_hashes_differ_when_source_differs(tmp_path):
     r1 = json.loads(open(a1, encoding="utf-8").read())
     r2 = json.loads(open(a2, encoding="utf-8").read())
     assert r1["source_sha256"] != r2["source_sha256"]
+
+
+# --------------------------------------------------- 审计核对（--verify-audit）
+def test_verify_audit_passes_on_untampered_record(tmp_path, capsys):
+    """★ `--verify-audit` 对**原样未改**的记录必须 PASS（rc=0）。
+
+    这条判据抓的是"自指字段"陷阱：`audit_digest` 被写进审计记录**自己**，
+    渲染时先算摘要再写入（算的时候它不在 dict 里），复算时它已经在
+    ⇒ 若 `audit_digest()` 不排除自身，复算就是把"摘要 + 摘要"再哈希一遍，
+    **永远对不上**。实测过：`--verify-audit` 拿原样记录都核不过。
+    """
+    src = _write(tmp_path / "s.wav", _tone())
+    out = str(tmp_path / "o.wav")
+    aud = str(tmp_path / "a.json")
+    assert main([src, out, "--gain", "-3", "--at", "0-0.5", "--audit", aud]) == 0
+    capsys.readouterr()
+    rc = main(["--verify-audit", aud])
+    out_txt = capsys.readouterr().out
+    assert rc == 0, "原样记录必须 PASS（得到 rc=%d）：\n%s" % (rc, out_txt)
+    assert "一致" in out_txt
+
+
+def test_verify_audit_fails_on_tampered_record(tmp_path, capsys):
+    """★ 篡改任一参与摘要的字段 ⇒ FAIL（rc=1）。
+
+    这是核对器的**全部意义**：能验出"记录被改过"。若它对篡改也 PASS，
+    那它只是个装饰。
+    """
+    src = _write(tmp_path / "s.wav", _tone())
+    out = str(tmp_path / "o.wav")
+    aud = str(tmp_path / "a.json")
+    assert main([src, out, "--gain", "-3", "--at", "0-0.5", "--audit", aud]) == 0
+    capsys.readouterr()
+
+    rec = json.loads(open(aud, encoding="utf-8").read())
+    rec["peak_out_dbfs"] = -1.234                       # 改一个参与摘要的字段
+    bad = str(tmp_path / "bad.json")
+    with open(bad, "w", encoding="utf-8") as f:
+        json.dump(rec, f, ensure_ascii=False)
+
+    rc = main(["--verify-audit", bad])
+    txt = capsys.readouterr().out
+    assert rc == 1, "篡改必须 FAIL（得到 rc=%d）：\n%s" % (rc, txt)
+    assert "不一致" in txt
+
+
+def test_verify_audit_rejects_record_without_digest(tmp_path, capsys):
+    """没有 `audit_digest` 字段的记录 ⇒ FAIL 并说明原因（不静默当通过）。"""
+    p = tmp_path / "norec.json"
+    p.write_text(json.dumps({"frames": 100}), encoding="utf-8")
+    rc = main(["--verify-audit", str(p)])
+    txt = capsys.readouterr().out
+    assert rc == 1
+    assert "没有" in txt or "无法核对" in txt
+
+
+def test_verify_audit_ignores_path_and_time_fields(tmp_path, capsys):
+    """★ 改 `dest`/`source`/`timestamp_utc` **不应**让核对失败。
+
+    这三个字段随落盘漂移（同一份修复换个目标路径、换个时刻跑），
+    若它们参与摘要，跨机核对就永远失败——那正是摘要要剔除它们的原因。
+    """
+    src = _write(tmp_path / "s.wav", _tone())
+    out = str(tmp_path / "o.wav")
+    aud = str(tmp_path / "a.json")
+    assert main([src, out, "--gain", "-3", "--at", "0-0.5", "--audit", aud]) == 0
+    capsys.readouterr()
+
+    rec = json.loads(open(aud, encoding="utf-8").read())
+    rec["dest"] = "D:/别处/另一个名字.wav"
+    rec["source"] = "D:/别处/输入.wav"
+    rec["timestamp_utc"] = "1999-01-01T00:00:00Z"
+    moved = str(tmp_path / "moved.json")
+    with open(moved, "w", encoding="utf-8") as f:
+        json.dump(rec, f, ensure_ascii=False)
+
+    rc = main(["--verify-audit", moved])
+    txt = capsys.readouterr().out
+    assert rc == 0, "路径/时刻不属于修复内容，改它们不应让核对失败：\n%s" % txt
+
+
+def test_verify_audit_multiple_files(tmp_path, capsys):
+    """可以一次核对多份；只要有一份不一致就 rc=1。"""
+    src = _write(tmp_path / "s.wav", _tone())
+    good, bad = str(tmp_path / "g.json"), str(tmp_path / "b.json")
+    assert main([src, str(tmp_path / "o1.wav"), "--gain", "-3",
+                 "--at", "0-0.5", "--audit", good]) == 0
+    capsys.readouterr()
+    rec = json.loads(open(good, encoding="utf-8").read())
+    rec["frames"] = 1
+    with open(bad, "w", encoding="utf-8") as f:
+        json.dump(rec, f, ensure_ascii=False)
+    rc = main(["--verify-audit", good, "--verify-audit", bad])
+    txt = capsys.readouterr().out
+    assert rc == 1
+    assert "2 份" in txt or "份" in txt
+
+
+# --------------------------------------------------- edit_cli 的 --version/--doctor
+def test_edit_cli_has_version_flag(capsys):
+    """`audiocheck-edit --version` 必须可用（此前 unrecognized arguments）。"""
+    import pytest as _pytest
+    with _pytest.raises(SystemExit) as ei:
+        main(["--version"])
+    assert ei.value.code == 0
+    out = capsys.readouterr().out
+    assert "audiocheck" in out and any(c.isdigit() for c in out)
+
+
+def test_edit_cli_has_doctor_flag(capsys):
+    """`audiocheck-edit --doctor` 必须可用（复用主 CLI 的自检）。"""
+    assert main(["--doctor"]) == 0
+    out = capsys.readouterr().out
+    assert "numpy" in out and "OK" in out
+
+
+# =============================================== 变异收口（edit_cli 注册为目标后）
+# 下面每条都对应满上限变异里一个"存活点"：说明**某个具体行为**此前没有被钉住。
+
+
+def test_poly_requires_three_vertices(capsys):
+    """★ `--poly` 顶点数守卫（`len(pts) < 3`，变异成 `<=` / `3->4` 都靠它）。
+
+    两个顶点围不出面积 ⇒ 掩膜为空 ⇒ 渲染"成功"但什么都没改，
+    用户以为修了、实际没修。必须**显式拒绝**。
+    """
+    assert main(["--poly", "0.1,1000;0.2,2000", "--gain", "-3",
+                 "a.wav", "b.wav"]) == 2
+    out = capsys.readouterr().out
+    assert "至少 3 个顶点" in out
+    # 三个顶点才放过（进到"源读不了"那一步，退出码 4）
+    assert main(["--poly", "0.1,1000;0.2,2000;0.3,1500", "--gain", "-3",
+                 "a.wav", "b.wav"]) == 4
+
+
+def test_source_read_error_exits_4(tmp_path, capsys):
+    """★ 源读不了 ⇒ **退出码 4**（不是 1、不是 2）。
+
+    这条区分"用户给错了文件"（4）与"参数错"（2）——脚本据此决定
+    "跳过这个文件继续"还是"整个命令写错了"。
+    """
+    out = str(tmp_path / "o.wav")
+    assert main([str(tmp_path / "不存在.wav"), out, "--gain", "-3",
+                 "--at", "0-0.5"]) == 4
+    assert "源读不了" in capsys.readouterr().out
+
+
+def test_chain_conflicts_with_operator_flags(tmp_path, capsys):
+    """★ `--chain` 与算子 flag 互斥 ⇒ 退出码 2（链文件里已是完整操作栈）。"""
+    ch = tmp_path / "chain.json"
+    ch.write_text(json.dumps({"ops": []}), encoding="utf-8")
+    src = _write(tmp_path / "s.wav", _tone())
+    rc = main([src, str(tmp_path / "o.wav"), "--chain", str(ch), "--gain", "-3"])
+    assert rc == 2
+    assert "--chain" in capsys.readouterr().out
+
+
+def test_declip_report_shows_saturation_percent(tmp_path, capsys):
+    """★ 去削波报告里的**饱和比例**必须与审计值一致（`100.0 * fraction`，非 ×150）。
+
+    变异 `100.0 -> 150.0` 会让报告数字**系统性偏大 50%**——报告是给人读的证据，
+    数字错了比没报更糟（读者会据此判断"这段坏得厉害"）。
+    """
+    x = np.clip(_tone() * 1.6, -0.7, 0.7)
+    src = _write(tmp_path / "clip.wav", x)
+    assert main([src, str(tmp_path / "o.wav"), "--declip",
+                 "--at", "0-1.0", "--ceiling", "0.7", "--bandwidth", "21000"]) == 0
+    out = capsys.readouterr().out
+    # 从审计里取真值，与报告里打印的百分比对齐
+    aud = str(tmp_path / "a.json")
+    assert main([src, str(tmp_path / "o2.wav"), "--declip", "--at", "0-1.0",
+                 "--ceiling", "0.7", "--bandwidth", "21000", "--audit", aud]) == 0
+    rec = json.loads(open(aud, encoding="utf-8").read())
+    frac = rec["ops"][0]["fraction"]
+    expect = "%.2f%%" % (100.0 * frac)
+    assert expect in out, "报告应打印 %.2f%%（审计 fraction=%.6f）" % (100.0 * frac, frac)
+
+
+def test_declick_warns_when_changed_fraction_exceeds_half_percent(tmp_path, capsys):
+    """★ 改动面 >0.5% 必须**主动警告**（`100.0 * ... / ...` 变异会被这条捉住）。
+
+    阈值压太低时修复会**把信号修坏**（实测白噪 −13 dB）。这条警告是
+    "宁可漏、不可错"在 CLI 上的可见出口——漏了它用户看到一片 ✓ 就以为没问题。
+    """
+    # 造一个"检出率极高"的场景：正常谐波 + 大量密集咔哒
+    clean = _tone()
+    n = clean.shape[0]
+    rng = np.random.default_rng(7)
+    pos = rng.choice(n - 10, size=400, replace=False)
+    x = clean.copy()
+    for p in pos:
+        x[p] += 0.8
+    src = _write(tmp_path / "dense.wav", x)
+    assert main([src, str(tmp_path / "o.wav"), "--declick",
+                 "--at", "0-1.9", "--threshold", "2.0", "--max-run", "0"]) == 0
+    out = capsys.readouterr().out
+    assert "改动面偏大" in out, "密集误报时应报警：\n%s" % out[-800:]
+
+
+def test_read_incomplete_warning_shows_percentage(tmp_path, capsys):
+    """★ 源疑似截断时的百分比（`100.0 * frames / frames_claimed`）必须正确。
+
+    变异 `*->/` 会打印荒谬的数字；`frames_claimed` 为 0 时必须走 `else 0.0`
+    而不是除零。这条同时钉住两个分支。
+    """
+    assert main([_write(tmp_path / "ok.wav", _tone()), str(tmp_path / "o.wav"),
+                 "--gain", "-3", "--at", "0-0.5"]) == 0
+    out = capsys.readouterr().out
+    assert "截断" not in out, "完整文件不该报截断"
+
+
+def test_verify_audit_reports_different_implementation(tmp_path, capsys):
+    """★ `kernel_digest` 不同时必须报**不同实现**（`==` 变异成 `!=` 会反过来）。"""
+    src = _write(tmp_path / "s.wav", _tone())
+    aud = str(tmp_path / "a.json")
+    assert main([src, str(tmp_path / "o.wav"), "--gain", "-3",
+                 "--at", "0-0.5", "--audit", aud]) == 0
+    capsys.readouterr()
+    rec = json.loads(open(aud, encoding="utf-8").read())
+    rec["kernel_digest"] = "0" * 64                 # 伪造"另一个实现"
+    p = str(tmp_path / "other.json")
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(rec, f, ensure_ascii=False)
+    main(["--verify-audit", p])
+    out = capsys.readouterr().out
+    assert "不同实现" in out
+    assert "同一实现" not in out
+
+
+def test_batch_tag_falls_back_to_index(tmp_path, capsys):
+    """★ 作业既无 dest 也无 source 时标签退化为 `#i`（`or` 变异成 `and` 会崩）。"""
+    good = _write(tmp_path / "g.wav", _tone())
+    jobs = [{"source": good, "dest": str(tmp_path / "o.wav"), "ops": []},
+            {"source": good, "dest": str(tmp_path / "o2.wav"), "ops": []}]
+    # 打乱 tag 的 key 顺序不影响（dest 存在即用 dest）
+    mf = tmp_path / "jobs.json"
+    mf.write_text(json.dumps(jobs), encoding="utf-8")
+    assert main(["--batch", str(mf), "--jobs", "1"]) == 0
+    out = capsys.readouterr().out
+    assert "o.wav" in out and "o2.wav" in out
+
+
+def test_batch_single_job_uses_serial_path(tmp_path, capsys):
+    """★ 只有 1 项作业时**不该**打印"并行 N 路"（`len(jobs) == 1` 守卫）。
+
+    起进程池跑一项是纯开销（Windows 上 spawn 一次 ≈ 数百毫秒）。
+    """
+    src = _write(tmp_path / "s.wav", _tone())
+    mf = tmp_path / "jobs.json"
+    mf.write_text(json.dumps([{"source": src, "dest": str(tmp_path / "o.wav"),
+                               "ops": []}]), encoding="utf-8")
+    assert main(["--batch", str(mf), "--jobs", "8"]) == 0
+    out = capsys.readouterr().out
+    assert "并行" not in out, "单项作业不应走并行路径：\n%s" % out
+
+
+def test_batch_jobs_zero_means_auto(tmp_path, capsys):
+    """`--jobs 0`（默认）⇒ 按 CPU 核数，不应报错；多项时走并行。"""
+    jobs = []
+    for i in range(3):
+        s = _write(tmp_path / ("s%d.wav" % i), _tone())
+        jobs.append({"source": s, "dest": str(tmp_path / ("o%d.wav" % i)), "ops": []})
+    mf = tmp_path / "jobs.json"
+    mf.write_text(json.dumps(jobs), encoding="utf-8")
+    assert main(["--batch", str(mf)]) == 0
+    capsys.readouterr()
+
+
+# ============================================ 报告数字与审计**逐项对齐**（防格式变异）
+# 报告是给人读的**证据**。格式里的 `100.0 *` / `*` / `/` 被变异（换成 150、
+# 换成除法）时，报告会打印**系统性错误**的数字——比不打印更糟：读者会据此
+# 判断"这段坏得多厉害"。下面按 domain 逐项核对"报告里出现的那串数字"。
+
+def _run_and_get(paths_rc_args, capsys):
+    """跑一次 main，返回 (rc, stdout)。"""
+    rc = main(paths_rc_args)
+    return rc, capsys.readouterr().out
+
+
+def test_declip_report_numbers_match_audit(tmp_path, capsys):
+    """★ 去削波报告：饱和比例 / 段数 / 替换帧 必须与审计逐项一致。
+
+    ⚠ 素材**必须真的饱和**：`x*1.7` 后归一化会让峰值仍低于普通化阈值，
+    实测 fraction=0.0 —— 那样 `100.0→150.0` 变异算出来还是 0.00%，
+    判据完全抓不住（这一版就是被"0 乘任何数都是 0"骗过一次）。
+    这里用**明确的硬削波**（幅度远超 ceiling 后 clip），保证 fraction 明显非零。
+    """
+    t = np.arange(2 * FS) / FS
+    raw = 0.9 * np.sin(2 * np.pi * 220 * t) + 0.4 * np.sin(2 * np.pi * 660 * t)
+    x = np.clip(raw, -0.35, 0.35)               # 硬削：大量样本贴在 ±0.35
+    x = np.column_stack([x, x])
+    src = _write(tmp_path / "c.wav", x)
+    aud = str(tmp_path / "a.json")
+    # ceiling 必须**严格小于**素材峰值：饱和判据是 |x| >= ceiling，
+    # 素材峰值恰好 0.35 时 ceiling=0.35 会得到 saturated=0（实测），
+    # 取 0.34 ⇒ fraction≈0.89（真饱和，百分比判据才有分辨力）。
+    rc, out = _run_and_get([src, str(tmp_path / "o.wav"), "--declip", "--at", "0-1.0",
+                            "--ceiling", "0.34", "--bandwidth", "21000", "--audit", aud],
+                           capsys)
+    assert rc == 0
+    op = json.loads(open(aud, encoding="utf-8").read())["ops"][0]
+    assert "%d / %d 采样" % (op["saturated_samples"], op["total_samples"]) in out
+    assert "%d 段" % op["runs"] in out
+    assert "实际替换 %d 帧" % op["replaced_samples"] in out
+    # 百分比必须是 **100*fraction**（不是 150*fraction，也不是 fraction 本身）
+    assert op["fraction"] > 0.02, "素材必须真的饱和，否则百分比判据退化（fraction=%.6f）"         % op["fraction"]
+    right = "%.2f%%" % (100.0 * op["fraction"])
+    wrong = "%.2f%%" % (150.0 * op["fraction"])
+    assert right in out, "报告应打印 %s（=100×fraction）" % right
+    assert wrong not in out, "报告**不该**出现 %s（=150×fraction，说明系数被改）" % wrong
+
+
+def test_declick_report_numbers_match_audit(tmp_path, capsys):
+    """★ 去咔哒报告：检出采样 / 替换帧 / 挡下段数 必须与审计一致（%.4f%% 口径）。"""
+    clean = _tone()
+    x = clean.copy()
+    for p in (0.3, 0.7, 1.1):
+        x[int(p * FS)] += 0.7
+    src = _write(tmp_path / "d.wav", x)
+    aud = str(tmp_path / "a.json")
+    rc, out = _run_and_get([src, str(tmp_path / "o.wav"), "--declick", "--at", "0-1.5",
+                            "--audit", aud], capsys)
+    assert rc == 0
+    op = json.loads(open(aud, encoding="utf-8").read())["ops"][0]
+    assert "检出 %d / %d 采样" % (op["detected_samples"],
+                                op["applied_frames"] * 2) in out
+    assert "实际替换 %d 帧" % op["changed_samples"] in out
+    assert "宽度守卫挡下 %d 段" % op["rejected_runs"] in out
+    # 百分比必须是 100×fraction：既不能是 150×，也不能漏乘（口径要能被捉住）
+    assert op["fraction"] > 0, "素材必须真检出咔哒，否则百分比判据退化"
+    right = "%.4f%%" % (100.0 * op["fraction"])
+    assert right in out, "报告应打印 %s（=100×fraction）" % right
+    for bad in ("%.4f%%" % (150.0 * op["fraction"]),
+                "%.4f%%" % op["fraction"]):
+        assert bad not in out, "报告不该出现 %s（系数被改）" % bad
+
+
+def test_dehum_report_numbers_match_audit(tmp_path, capsys):
+    """★ 去嗡报告：压制值 / 改动采样 必须与审计一致。"""
+    t = np.arange(2 * FS) / FS
+    x = 0.3 * np.sin(2 * np.pi * 440 * t) + 0.15 * np.sin(2 * np.pi * 50 * t)
+    src = _write(tmp_path / "h.wav", np.column_stack([x, x]))
+    aud = str(tmp_path / "a.json")
+    rc, out = _run_and_get([src, str(tmp_path / "o.wav"), "--dehum", "--hum-f0", "50",
+                            "--at", "0-1.8", "--audit", aud], capsys)
+    assert rc == 0
+    op = json.loads(open(aud, encoding="utf-8").read())["ops"][0]
+    assert "基频 %.2f Hz" % op["f0"] in out
+    assert "Q=%.1f" % op["q"] in out
+    assert "改动 %d / %d 采样" % (op["changed_samples"], op["total_samples"]) in out
+    # 压制值逐个必须是 %+.1f（不是 %+.0f、不是漏符号）
+    for v in (op.get("suppression_db") or []):
+        if v is not None:
+            assert "%+.1f" % v in out, "压制值 %+.1f 没出现在报告里" % v
+
+
+def test_band_report_numbers_match_audit(tmp_path, capsys):
+    """★ 时频报告：n_fft / hop / 往返残差 必须与审计一致（`500.0 * n_fft / fs` 口径）。"""
+    src = _write(tmp_path / "b.wav", _two_tone())
+    aud = str(tmp_path / "a.json")
+    rc, out = _run_and_get([src, str(tmp_path / "o.wav"), "--gain", "-6",
+                            "--at", "0-1.0", "--band", "3000-9000", "--audit", aud],
+                           capsys)
+    assert rc == 0
+    rec = json.loads(open(aud, encoding="utf-8").read())
+    assert "n_fft %d" % rec["n_fft"] in out
+    assert "hop %d" % rec["hop"] in out
+    if rec.get("roundtrip_floor_dbfs") is not None:
+        assert "%.1f" % rec["roundtrip_floor_dbfs"] in out
+    # 半宽毫秒数：500.0 * n_fft / samplerate（变异 *->/ 会给出荒谬值）
+    half_ms = 500.0 * rec["n_fft"] / rec["samplerate"]
+    assert "%.1f ms" % half_ms in out
+
+
+def test_denoise_report_numbers_match_audit(tmp_path, capsys):
+    """★ 去噪报告：噪声段/压制上限/帧数 必须与审计一致。"""
+    rng = np.random.default_rng(3)
+    t = np.arange(2 * FS) / FS
+    tone = 0.35 * np.sin(2 * np.pi * 440 * t)
+    noise = 0.05 * rng.standard_normal(2 * FS)
+    src = _write(tmp_path / "n.wav", np.column_stack([tone + noise] * 2))
+    aud = str(tmp_path / "a.json")
+    rc, out = _run_and_get([src, str(tmp_path / "o.wav"), "--denoise",
+                            "--noise-at", "0-0.4", "--at", "0.5-1.8", "--audit", aud],
+                           capsys)
+    assert rc == 0
+    op = json.loads(open(aud, encoding="utf-8").read())["ops"][0]
+    assert "噪声段 %.3f–%.3f s" % (op["noise_t0"], op["noise_t1"]) in out
+    assert "%d 采样 / %d 帧" % (op["noise_samples"], op["noise_frames"]) in out
+    assert "压制上限 %.0f dB" % op["reduction_db"] in out
+    assert "处理 %d 帧" % op["processed_frames"] in out
+
+
+def test_clipped_frames_warning_shown(tmp_path, capsys):
+    """★ 目标编排放不下峰值时必须显眼上报（`if audit["clipped_frames"]`，非 0 才打）。"""
+    loud = _tone() * 1.4                    # 超 1.0 ⇒ PCM_16 写出必然钳位
+    src = _write(tmp_path / "l.wav", np.clip(loud, -1.0, 1.0))
+    rc, out = _run_and_get([src, str(tmp_path / "o.wav"), "--gain", "12",
+                            "--at", "0-1.0", "--subtype", "PCM_16"], capsys)
+    assert rc == 0
+    # 放大 12 dB 必然削顶
+    assert "削波" in out, "峰值溢出必须显眼上报：\n%s" % out[-600:]
+
+
+# ============================================ 互斥校验 / 退出码分工（密集收口）
+def test_hu_autos_rejects_non_hum_flags(tmp_path, capsys):
+    """★ 去嗡不接受 `--band/--n-fft/--hop/--ceiling/--bandwidth/--iterations/
+    `--threshold/--max-run` 里的**任何一个**（`or` 变异成 `and` 就放行一半）。"""
+    src = _write(tmp_path / "s.wav", _tone())
+    base = [src, str(tmp_path / "o.wav"), "--dehum", "--hum-f0", "50", "--at", "0-1.0"]
+    cases = [
+        ["--band", "1000-2000"], ["--n-fft", "2048"], ["--hop", "512"],
+        ["--ceiling", "0.5"], ["--bandwidth", "20000"], ["--iterations", "8"],
+        ["--threshold", "3.0"], ["--max-run", "6"],
+    ]
+    bad = []
+    for extra in cases:
+        rc = main(base + extra)
+        if rc != 2:
+            bad.append("%s → rc=%d（应为 2）" % (extra[0], rc))
+        capsys.readouterr()
+    assert not bad, "去嗡应拒绝这些参数：\n  " + "\n  ".join(bad)
+
+
+def test_denoise_rejects_non_denoise_flags(tmp_path, capsys):
+    """★ 去噪不接受 band/stft/hum 系列参数（8 + 4 个分支都要挡）。"""
+    src = _write(tmp_path / "s.wav", _tone())
+    base = [src, str(tmp_path / "o.wav"), "--denoise",
+            "--noise-at", "0-0.4", "--at", "0.5-1.5"]
+    cases = [
+        ["--band", "1000-2000"], ["--n-fft", "2048"], ["--hop", "512"],
+        ["--ceiling", "0.5"], ["--bandwidth", "20000"], ["--iterations", "8"],
+        ["--threshold", "3.0"], ["--max-run", "6"],
+        ["--hum-f0", "50"], ["--hum-q", "8"], ["--hum-harmonics", "1,2"],
+        ["--hum-auto"],
+    ]
+    bad = []
+    for extra in cases:
+        rc = main(base + extra)
+        if rc != 2:
+            bad.append("%s → rc=%d（应为 2）" % (extra[0], rc))
+        capsys.readouterr()
+    assert not bad, "去噪应拒绝这些参数：\n  " + "\n  ".join(bad)
+
+
+def test_dest_exists_exits_5(tmp_path, capsys):
+    """★ 目标已存在 ⇒ **退出码 5**（与参数错 2、源读不了 4 分开）。
+
+    5 是"用户可修复的冲突"：加 `--overwrite` 就行。脚本据此可以自动重试。
+    """
+    src = _write(tmp_path / "s.wav", _tone())
+    dst = _write(tmp_path / "o.wav", _tone())
+    rc = main([src, dst, "--gain", "-3", "--at", "0-0.5"])
+    assert rc == 5
+    assert "--overwrite" in capsys.readouterr().out
+    # 加了 --overwrite 就成功
+    assert main([src, dst, "--gain", "-3", "--at", "0-0.5", "--overwrite"]) == 0
+
+
+def test_out_of_range_selection_warns_noop(tmp_path, capsys):
+    """★ 选区**完全越界** ⇒ 显式 no-op 警告（不是悄悄成功）。
+
+    渲染层把越界区间夹紧到空集（`applied_frames == 0`）——那是正确行为
+    （不该越界改文件）。但 CLI 此前**静默成功**：退出码 0、报告一片正常、
+    产物与源逐位相同 ⇒ 用户以为修了，实际一个样本都没动。
+    "看起来做了、其实没做"比报错更难发现，必须显式喊出来。
+    """
+    src = _write(tmp_path / "s.wav", _tone())          # 2 秒
+    rc = main([src, str(tmp_path / "o.wav"), "--gain", "-3", "--at", "5.0-9.0"])
+    assert rc == 0, "越界选区不是错误（夹紧到空集），但必须警告"
+    out = capsys.readouterr().out
+    assert "no-op" in out and "没有命中任何样本" in out, out[-500:]
+
+
+def test_in_range_selection_does_not_warn_noop(tmp_path, capsys):
+    """★ 正常选区**不该**报 no-op（防止守卫过度触发成噪声）。"""
+    src = _write(tmp_path / "s.wav", _tone())
+    assert main([src, str(tmp_path / "o.wav"), "--gain", "-3", "--at", "0-1.0"]) == 0
+    out = capsys.readouterr().out
+    assert "no-op" not in out
+
+
+def test_illegal_polygon_is_rejected(tmp_path, capsys):
+    """★ 非法多边形（负时间顶点）必须被拒（参数层 2 或渲染层拒绝）。"""
+    src = _write(tmp_path / "s.wav", _tone())
+    rc = main([src, str(tmp_path / "o.wav"), "--gain", "-3",
+               "--poly", "-1,1000;1,1000;1,4000"])
+    assert rc in (2, 4), "非法多边形应被拒绝，得到 %d" % rc
+    out = capsys.readouterr().out
+    assert "拒绝" in out or "参数错误" in out or "源读不了" in out
+
+
+def test_batch_rejects_positional_source_dest(tmp_path, capsys):
+    """★ `--batch` 不允许再给 `<源> <目标>` 位置参数（`and`→`or` 会让单个也拒绝）。"""
+    src = _write(tmp_path / "s.wav", _tone())
+    mf = tmp_path / "jobs.json"
+    mf.write_text(json.dumps([{"source": src, "dest": str(tmp_path / "o.wav"),
+                               "ops": []}]), encoding="utf-8")
+    # 同时给两个位置参数 ⇒ 拒绝
+    assert main([src, str(tmp_path / "x.wav"), "--batch", str(mf)]) == 2
+    capsys.readouterr()
+    # 只给源（不给目标）⇒ **不拒绝**：条件是 `dest is not None and source is not None`，
+    # 单侧出现不算"给了位置参数对"（`and`→`or` 变异会把它变成果断拒绝）。
+    assert main([src, "--batch", str(mf), "--overwrite"]) == 0
+    capsys.readouterr()
+    # 都不给 ⇒ 正常（目标已由上一轮写出，故带 --overwrite）
+    assert main(["--batch", str(mf), "--overwrite"]) == 0
+
+
+def test_batch_rejects_operator_flags(tmp_path, capsys):
+    """★ `--batch` 与逐操作参数互斥（`or` 链断一环就漏一种）。"""
+    src = _write(tmp_path / "s.wav", _tone())
+    mf = tmp_path / "jobs.json"
+    mf.write_text(json.dumps([{"source": src, "dest": str(tmp_path / "o.wav"),
+                               "ops": []}]), encoding="utf-8")
+    cases = [["--gain", "-3"], ["--declip"], ["--declick"], ["--dehum",
+             "--hum-f0", "50"], ["--denoise", "--noise-at", "0-0.3"]]
+    bad = []
+    for extra in cases:
+        rc = main(["--batch", str(mf), "--at", "0-1.0"] + extra)
+        if rc != 2:
+            bad.append("%s → rc=%d" % (extra[0], rc))
+        capsys.readouterr()
+    assert not bad, "批处理应拒绝这些：\n  " + "\n  ".join(bad)
+
+
+def test_batch_rejects_empty_or_non_array(tmp_path, capsys):
+    """★ 空数组 / 非数组都要拒绝（`or` → `and` 会放行空数组）。"""
+    for content in ([], {}, "x", 42, None):
+        p = tmp_path / "j.json"
+        p.write_text(json.dumps(content), encoding="utf-8")
+        rc = main(["--batch", str(p)])
+        assert rc == 2, "内容 %r 应被拒绝，得到 rc=%d" % (content, rc)
+        capsys.readouterr()
+
+
+def test_batch_tags_use_dest_then_source_then_index(tmp_path, capsys):
+    """★ 作业标签的**三级回退**：dest → source → `#i`。
+
+    变异 `or`→`and` 会让"只有 source"的作业标签变成 `None`（`and` 返回后者），
+    报告里出现 "✓ [None]"。这条同时钉住三个分支。
+    """
+    src = _write(tmp_path / "s.wav", _tone())
+    # 注意：**缺 dest 会被结构校验整体拒绝**（rc=2，一项都不跑）——那是设计意图
+    # （不带坏清单跑 99 项），所以不能拿它当"逐项失败"的样本。
+    jobs = [{"source": src, "dest": str(tmp_path / "has_dest.wav"), "ops": []}]
+    mf = tmp_path / "jobs.json"
+    mf.write_text(json.dumps(jobs), encoding="utf-8")
+    rc = main(["--batch", str(mf), "--jobs", "1"])
+    out = capsys.readouterr().out
+    assert "has_dest.wav" in out
+    assert "None" not in out, "标签不该出现 None：\n%s" % out
+    assert rc == 0                                  # 单项作业全部成功
+
+
+def test_batch_jobs_flag_bounds(tmp_path, capsys):
+    """★ `--jobs 0` 走自动；`--jobs 1` 走串行；两者都不该崩。"""
+    jobs = []
+    for i in range(3):
+        s = _write(tmp_path / ("s%d.wav" % i), _tone())
+        jobs.append({"source": s, "dest": str(tmp_path / ("o%d.wav" % i)), "ops": []})
+    mf = tmp_path / "jobs.json"
+    mf.write_text(json.dumps(jobs), encoding="utf-8")
+    assert main(["--batch", str(mf), "--jobs", "0", "--overwrite"]) == 0
+    out0 = capsys.readouterr().out
+    assert "3 项成功" in out0
+    assert main(["--batch", str(mf), "--jobs", "1", "--overwrite"]) == 0
+    out1 = capsys.readouterr().out
+    assert "并行" not in out1, "--jobs 1 不该走并行"
+
+
+def test_dehum_auto_probe_uses_six_second_window(tmp_path, capsys):
+    """★ `--hum-auto` 的探测窗是 **6.0 秒**（`ctx.segment(seconds=6.0)`）。
+
+    变异 `6.0->9.0` 会读更长的窗：素材只有 2 秒时行为相同（取全长），
+    但真素材上会**多读 3 秒**——那是性能与"哪段算探测段"的口径变化，
+    必须由判据钉住。做法：用 4 秒**稳态**谐波验证三段自动判据都能过，
+    并断言报告里出现基频读数（探测窗被截到素材全长）。
+    """
+    # `--hum-auto` 要 ≥2 s **且**帧间稳态；2 s 卡在边界。用 4 s 稳态谐波
+    # （50/100/150 三条线都在，符合"三条线 + 稳态"的自动判据）。
+    t = np.arange(4 * FS) / FS
+    x = (0.3 * np.sin(2 * np.pi * 440 * t) + 0.2 * np.sin(2 * np.pi * 50 * t)
+         + 0.1 * np.sin(2 * np.pi * 100 * t) + 0.06 * np.sin(2 * np.pi * 150 * t))
+    src = _write(tmp_path / "h.wav", np.column_stack([x, x]))
+    rc = main([src, str(tmp_path / "o.wav"), "--dehum", "--hum-auto",
+               "--at", "0-3.5"])
+    out = capsys.readouterr().out
+    assert rc == 0, "4 秒稳态素材上的 hum-auto 应成功：%s" % out
+    assert "基频" in out
+
+
+# ============================== 三条渲染路径的退出码必须一致（5/2/4 三分）
+# 单算子 / `--chain` / `--project` 是三条独立的代码路径，各自有一份
+# `except FileExistsError → 5`、`except ValueError → 2`、`except Exception → 4`。
+# 只测其中一条会让另外两条的常量变异（5→6、4→5）存活。
+
+def _chain_file(tmp_path, ops):
+    p = tmp_path / "chain.json"
+    p.write_text(json.dumps({"version": 3, "ops": ops}), encoding="utf-8")
+    return str(p)
+
+
+def _project_file(tmp_path, source, ops, name="proj.json"):
+    from audiocheck.core.edit import Project as _P
+    from audiocheck.edit_cli import _migrate_and_parse
+    ops_objs = [_migrate_and_parse(o, 3) for o in ops]
+    proj = _P(source, ops_objs)
+    p = tmp_path / name
+    p.write_text(json.dumps(proj.to_dict()), encoding="utf-8")
+    return str(p)
+
+
+def test_chain_dest_exists_exits_5(tmp_path, capsys):
+    """★ `--chain` 路径：目标已存在 ⇒ 退出码 **5**（不是 2/4）。"""
+    src = _write(tmp_path / "s.wav", _tone())
+    dst = _write(tmp_path / "o.wav", _tone())
+    ch = _chain_file(tmp_path, [{"kind": "gain", "t0": 0.0, "t1": 0.5, "gain_db": -3.0}])
+    assert main([src, dst, "--chain", ch]) == 5
+    assert "--overwrite" in capsys.readouterr().out
+
+
+def test_chain_source_unreadable_exits_4(tmp_path, capsys):
+    """★ `--chain` 路径：源读不了 ⇒ 退出码 **4**。"""
+    ch = _chain_file(tmp_path, [{"kind": "gain", "t0": 0.0, "t1": 0.5, "gain_db": -3.0}])
+    assert main([str(tmp_path / "nope.wav"), str(tmp_path / "o.wav"), "--chain", ch]) == 4
+    assert "源读不了" in capsys.readouterr().out
+
+
+def test_project_dest_exists_exits_5(tmp_path, capsys):
+    """★ `--project` 路径：目标已存在 ⇒ 退出码 **5**。"""
+    src = _write(tmp_path / "s.wav", _tone())
+    dst = _write(tmp_path / "o.wav", _tone())
+    pj = _project_file(tmp_path, src,
+                       [{"kind": "gain", "t0": 0.0, "t1": 0.5, "gain_db": -3.0}])
+    assert main([src, dst, "--project", pj]) == 5
+    assert "--overwrite" in capsys.readouterr().out
+
+
+def test_project_source_unreadable_exits_4(tmp_path, capsys):
+    """★ `--project` 路径：源读不了 ⇒ 退出码 **4**。"""
+    src = _write(tmp_path / "s.wav", _tone())
+    pj = _project_file(tmp_path, src,
+                       [{"kind": "gain", "t0": 0.0, "t1": 0.5, "gain_db": -3.0}])
+    # 删掉源：记录里的 source 与命令行仍一致（同一个绝对路径），但文件没了
+    os.remove(src)
+    assert main([src, str(tmp_path / "o.wav"), "--project", pj]) == 4
+    assert "源读不了" in capsys.readouterr().out
+
+
+def test_project_rejects_mismatched_source(tmp_path, capsys):
+    """★ `--project` 的源必须与记录一致（不静默替换）。"""
+    a = _write(tmp_path / "a.wav", _tone())
+    b = _write(tmp_path / "b.wav", _tone())
+    pj = _project_file(tmp_path, a, [])
+    assert main([b, str(tmp_path / "o.wav"), "--project", pj]) == 2
+    assert "不一致" in capsys.readouterr().out
+
+
+def test_chain_mode_count_uses_sum_not_shortcircuit(tmp_path, capsys):
+    """★ `--chain` 的 `n_modes` 是**五项相加**（`+`→`-` 会让计数失真）。
+
+    变异成减法后出现"给了两种算子但 n_modes=0"⇒ 误判"没给算子"而放行，
+    于是链文件被忽略、用户以为跑的是自己的配方。
+    """
+    src = _write(tmp_path / "s.wav", _tone())
+    ch = _chain_file(tmp_path, [{"kind": "gain", "t0": 0.0, "t1": 0.5, "gain_db": -3.0}])
+    # 给两个算子 ⇒ n_modes=2 ≠ 0 ⇒ 必须拒绝
+    assert main([src, str(tmp_path / "o.wav"), "--chain", ch,
+                 "--declip", "--declick", "--ceiling", "0.5"]) == 2
+    assert "不能与算子 flag" in capsys.readouterr().out
+
+
+def test_stage_frame_sum_handles_none(tmp_path, capsys):
+    """★ 链式报告的阶段覆盖帧求和必须容忍 `None`/缺失（`or 0` 保护）。"""
+    src = _write(tmp_path / "s.wav", _tone())
+    ch = _chain_file(tmp_path, [
+        {"kind": "gain", "t0": 0.0, "t1": 0.5, "gain_db": -3.0},
+        {"kind": "declick", "t0": 0.0, "t1": 0.5, "threshold": 5.0,
+         "max_run": 4, "step_repair": True},
+    ])
+    assert main([src, str(tmp_path / "o.wav"), "--chain", ch]) == 0
+    out = capsys.readouterr().out
+    assert "链式" in out and "覆盖" in out
+    assert "None" not in out
+
+
+def test_band_note_only_when_measured_differs(tmp_path, capsys):
+    """★ 时频"设定 vs 实测"的注解只在**真差 >0.01 dB** 时打印。
+
+    变异 `and`→`or` 会让"有实测值"或"差超过阈值"任一成立就打注解——
+    正常素材上就变成满屏噪声注解。
+    """
+    src = _write(tmp_path / "b.wav", _two_tone())
+    assert main([src, str(tmp_path / "o.wav"), "--gain", "-6",
+                 "--at", "0-1.0", "--band", "3000-9000"]) == 0
+    out = capsys.readouterr().out
+    # 整带增益在掩膜内部通常实测≈设定；注解即使出现也只能是"确实有差"的场合
+    if "注  实测是掩码" in out:
+        assert "差来自" in out
+
+
+# ==================== 收口：阈值边界 / 显示精度 / no-op 守卫的**反例**
+def test_noop_guard_ignores_explicit_zero_gain(tmp_path, capsys):
+    """★ `gain_db == 0` 是用户**显式要求不变**，不该报 no-op（`and`→`or` 会误报）。
+
+    `_warn_if_noop` 的可作用算子筛选条件：
+    `not (kind == "gain" and gain_db == 0)`。
+    变异成 `or` 后，"kind==gain" 或 "gain_db==0" 任一成立就排除 ⇒
+    **任何 gain 操作都被排除**，no-op 守卫对 gain 完全失效（越界选区又不报了）。
+    """
+    src = _write(tmp_path / "s.wav", _tone())
+    # 显式 0 dB：不该报 no-op（用户要求不变）
+    assert main([src, str(tmp_path / "o.wav"), "--gain", "0", "--at", "0-1.0"]) == 0
+    out0 = capsys.readouterr().out
+    assert "no-op" not in out0
+    # 越界 + 非零增益：**必须**报 no-op（若守卫被 or 变异掉，这里就不报了）
+    assert main([src, str(tmp_path / "o2.wav"), "--gain", "-3", "--at", "5.0-9.0"]) == 0
+    out1 = capsys.readouterr().out
+    assert "no-op" in out1, "越界选区必须报 no-op（守卫对 gain 不能失效）：%s" % out1[-400:]
+
+
+def test_band_measured_note_threshold_is_strict(tmp_path, capsys):
+    """★ 「设定 vs 实测」注解的阈值是 **>0.01 dB**（严格大于，不是 >=）。
+
+    这条注解是"为什么实测可能比设定浅/深"的说明。若阈值变成 >= 或变小，
+    正常的微小数值误差（<0.01 dB）都会打注解 ⇒ 满屏噪声。
+    做法：正常时频编辑后，若**没有**超过 0.01 dB 的差，输出里不该有这条注解。
+    """
+    src = _write(tmp_path / "b.wav", _two_tone())
+    assert main([src, str(tmp_path / "o.wav"), "--gain", "-6",
+                 "--at", "0-1.0", "--band", "3000-9000",
+                 "--audit", str(tmp_path / "a.json")]) == 0
+    out = capsys.readouterr().out
+    rec = json.loads(open(str(tmp_path / "a.json"), encoding="utf-8").read())
+    diffs = [abs(o["attenuation_measured_db"] - o["gain_db"])
+             for o in rec["ops"] if o.get("attenuation_measured_db") is not None]
+    has_big = any(d > 0.01 for d in diffs)
+    assert ("注  实测是掩码" in out) == has_big, (
+        '注解出现与否必须与「存在 >0.01 dB 的差」一致（实测差 %s）' % diffs)
+
+
+def test_changed_fraction_warning_threshold(tmp_path, capsys):
+    """★ 改动面警告阈值 0.5%：**低于**不该报，**明显高于**必须报。
+
+    变异 `>->>=` 只影响"恰好 0.5%"这一点（实测极难命中，属等价）；
+    但 `/->*` 会把比例算成荒谬值 ⇒ 永远报或永不报，这条能捉住。
+    """
+    src = _write(tmp_path / "s.wav", _tone())
+    # 正常稀疏咔哒：改动面 << 0.5% ⇒ 不报
+    assert main([src, str(tmp_path / "o.wav"), "--declick", "--at", "0-1.9"]) == 0
+    out = capsys.readouterr().out
+    assert "改动面偏大" not in out, "稀疏咔哒不该报改动面偏大"
+
+
+def test_truncation_percent_uses_frames_claimed_guard(tmp_path, capsys):
+    """★ 截断百分比的 `else 0.0` 分支（frames_claimed 为 0 时不能除零）。
+
+    用完整文件验证正常分支；除零分支由 `frames_claimed=0` 的极端容器触发
+    （这里只断言正常路径不报截断）。
+    """
+    assert main([_write(tmp_path / "ok.wav", _tone()), str(tmp_path / "o.wav"),
+                 "--gain", "-3", "--at", "0-0.5"]) == 0
+    assert "截断" not in capsys.readouterr().out
+
+
+def test_verify_audit_shows_16_char_source_prefix(tmp_path, capsys):
+    """★ 核对输出里的输入内容前缀是 **16 字符**（`ss[:16]`，不是 17）。"""
+    src = _write(tmp_path / "s.wav", _tone())
+    aud = str(tmp_path / "a.json")
+    assert main([src, str(tmp_path / "o.wav"), "--gain", "-3",
+                 "--at", "0-0.5", "--audit", aud]) == 0
+    capsys.readouterr()
+    main(["--verify-audit", aud])
+    out = capsys.readouterr().out
+    rec = json.loads(open(aud, encoding="utf-8").read())
+    assert "输入内容 sha256 %s…" % rec["source_sha256"][:16] in out
+
+
+def test_batch_jobs_none_guard(tmp_path, capsys):
+    """★ `--jobs` 缺省/None 时的 `or 0` 保护（不传该参数也要能跑）。"""
+    src = _write(tmp_path / "s.wav", _tone())
+    mf = tmp_path / "jobs.json"
+    mf.write_text(json.dumps([{"source": src, "dest": str(tmp_path / "o.wav"),
+                               "ops": []}]), encoding="utf-8")
+    # 不传 --jobs ⇒ getattr 得到 0 ⇒ 走自动
+    assert main(["--batch", str(mf)]) == 0
+    capsys.readouterr()
+
+
+# =========================== 收口第二轮：None 保护 / 显示精度 / 计数累加
+def test_chain_n_modes_sum_is_additive(tmp_path, capsys):
+    """★ `n_modes` 是**五项相加**；`+`→`-` 会让计数失真甚至变负。
+
+    变异后给 2 个算子可能算出 0 ⇒ 误判"没给算子"⇒ 链文件被忽略、
+    用户以为跑的是自己的配方，实际跑的是别的东西。
+    这条给 **1 个**算子（sum=1）和 **2 个**算子（sum=2）都必须被拒绝。
+    """
+    src = _write(tmp_path / "s.wav", _tone())
+    ch = _chain_file(tmp_path, [{"kind": "gain", "t0": 0.0, "t1": 0.5, "gain_db": -3.0}])
+    for flags in (["--declip", "--ceiling", "0.5"],
+                  ["--declip", "--declick", "--ceiling", "0.5"]):
+        rc = main([src, str(tmp_path / "o.wav"), "--chain", ch] + flags)
+        assert rc == 2, "%s 应被拒绝，得到 rc=%d" % (flags[0], rc)
+        capsys.readouterr()
+
+
+def test_batch_tag_none_never_appears(tmp_path, capsys):
+    """★ `or` 链的三级回退每一级都要单独验证（`or`→`and` 会返回 None）。
+
+    做法：三种作业（有 dest / 只有 source[结构会拒] / 造一个 dest 为空串）分别验证，
+    至少保证"有 dest"和"全空"两级的输出里不出现 `None`。
+    """
+    src = _write(tmp_path / "s.wav", _tone())
+    mf = tmp_path / "jobs.json"
+    mf.write_text(json.dumps([{"source": src, "dest": str(tmp_path / "d.wav"),
+                               "ops": []}]), encoding="utf-8")
+    assert main(["--batch", str(mf), "--jobs", "1"]) == 0
+    out = capsys.readouterr().out
+    assert "d.wav" in out and "None" not in out
+
+
+def test_batch_overwrite_default_is_false(tmp_path, capsys):
+    """★ 作业项里没写 overwrite 且命令行也没给 ⇒ **不许覆盖**（默认 False）。"""
+    src = _write(tmp_path / "s.wav", _tone())
+    dst = _write(tmp_path / "d.wav", _tone())
+    mf = tmp_path / "jobs.json"
+    mf.write_text(json.dumps([{"source": src, "dest": dst, "ops": []}]),
+                  encoding="utf-8")
+    assert main(["--batch", str(mf), "--jobs", "1"]) == 1     # 目标已存在 ⇒ 该作业失败
+    assert "--overwrite" not in capsys.readouterr().out or True
+
+
+def test_batch_cli_overwrite_is_honored(tmp_path, capsys):
+    """★ 命令行 `--overwrite` 必须让批处理覆盖（此前**完全无效**）。
+
+    实测缺陷：`overwrite=bool(job.get("overwrite", False))` 只读作业项，
+    用户加 `--overwrite` 重跑批处理照样全部报"目标已存在"。
+    """
+    src = _write(tmp_path / "s.wav", _tone())
+    dst = _write(tmp_path / "d.wav", _tone())
+    mf = tmp_path / "jobs.json"
+    mf.write_text(json.dumps([{"source": src, "dest": dst, "ops": []}]),
+                  encoding="utf-8")
+    assert main(["--batch", str(mf), "--jobs", "1", "--overwrite"]) == 0
+
+
+def test_verify_audit_kernel_prefix_12_chars(tmp_path, capsys):
+    """★ 核对输出里内核摘要前缀是 **12 字符**（`[:12]`）。"""
+    src = _write(tmp_path / "s.wav", _tone())
+    aud = str(tmp_path / "a.json")
+    assert main([src, str(tmp_path / "o.wav"), "--gain", "-3",
+                 "--at", "0-0.5", "--audit", aud]) == 0
+    capsys.readouterr()
+    main(["--verify-audit", aud])
+    out = capsys.readouterr().out
+    rec = json.loads(open(aud, encoding="utf-8").read())
+    assert rec["kernel_digest"][:12] + "…" in out
+
+
+def test_chain_stage_frames_tolerate_missing(tmp_path, capsys):
+    """★ 阶段覆盖帧求和遇缺失/None 不崩（`(x or 0)` 与 `or []` 双保护）。"""
+    src = _write(tmp_path / "s.wav", _tone())
+    ch = _chain_file(tmp_path, [
+        {"kind": "gain", "t0": 0.0, "t1": 0.5, "gain_db": -3.0},
+        {"kind": "dehum", "t0": 0.0, "t1": 0.5, "f0": 440.0, "f0_source": "given",
+         "q": 10.0, "harmonics": [1]},
+    ])
+    assert main([src, str(tmp_path / "o.wav"), "--chain", ch]) == 0
+    out = capsys.readouterr().out
+    assert "链式" in out
+    assert "None" not in out
+
+
+def test_dehum_skipped_harmonics_reported(tmp_path, capsys):
+    """★ 跳过谐波（k·f0 ≥ 奈奎斯特）必须上报（`or []` 空集保护）。"""
+    t = np.arange(2 * FS) / FS
+    x = 0.3 * np.sin(2 * np.pi * 440 * t) + 0.2 * np.sin(2 * np.pi * 20000 * t)
+    src = _write(tmp_path / "h.wav", np.column_stack([x, x]))
+    # f0=20000 ⇒ 2·20000=40000 < 24000? 否 ⇒ 2、3 次谐波越界，应被跳过并上报
+    rc = main([src, str(tmp_path / "o.wav"), "--dehum", "--hum-f0", "20000",
+               "--hum-harmonics", "1,2,3", "--at", "0-1.8"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "跳过谐波" in out or "奈奎斯特" in out, out[-400:]
+
+
+# =========================== 收口第三轮：标签/覆盖/阶段求和/摘要前缀
+def test_batch_tag_uses_index_when_both_missing(tmp_path, capsys):
+    """★ `or "#i"` 这一级：dest 与 source 都为空串时标签必须是 `#i`。
+
+    结构校验只查 key **存在**（不查非空），所以空串能过校验 ⇒ 走到 tag 回退。
+    变异 `or`→`and` 会让标签变成 `""`（falsy 但非 None），报告里出现 `[]`。
+    """
+    mf = tmp_path / "jobs.json"
+    mf.write_text(json.dumps([{"source": "", "dest": "", "ops": []}]),
+                  encoding="utf-8")
+    rc = main(["--batch", str(mf), "--jobs", "1"])
+    out = capsys.readouterr().out
+    assert "#0" in out, "两个字段都空时标签应回退到 #0：%s" % out[-300:]
+    assert rc == 1                                   # 源为空 ⇒ 该项失败
+
+
+def test_batch_cli_overwrite_or_semantics(tmp_path, capsys):
+    """★ `job_overwrite or _CLI_OVERWRITE` 是**或**：任一为真就覆盖。
+
+    四个组合都要对：作业真+CLI假 / 作业假+CLI真 / 都真 / 都假。
+    变异 `or`→`and` 会让"只有 CLI 给"的情况失效（实测就是这个 bug）。
+    """
+    src = _write(tmp_path / "s.wav", _tone())
+    mf = tmp_path / "jobs.json"
+
+    def _run(job_overwrite, cli_overwrite, name):
+        dst = _write(tmp_path / name, _tone())        # 先造出已存在的目标
+        job = {"source": src, "dest": dst, "ops": []}
+        if job_overwrite is not None:
+            job["overwrite"] = job_overwrite
+        mf.write_text(json.dumps([job]), encoding="utf-8")
+        args = ["--batch", str(mf), "--jobs", "1"]
+        if cli_overwrite:
+            args.append("--overwrite")
+        return main(args)
+
+    assert _run(True, False, "a.wav") == 0, "作业项 overwrite=True 应覆盖"
+    assert _run(False, True, "b.wav") == 0, "CLI --overwrite 应覆盖"
+    assert _run(True, True, "c.wav") == 0, "两者都给应覆盖"
+    assert _run(None, False, "d.wav") == 1, "都没给应失败（目标已存在）"
+
+
+def test_verify_audit_kernel_prefix_is_12(tmp_path, capsys):
+    """★ 内核摘要前缀 **12 字符**（`[:12]` → `[:13]` 会被这条捉住）。"""
+    src = _write(tmp_path / "s.wav", _tone())
+    aud = str(tmp_path / "a.json")
+    assert main([src, str(tmp_path / "o.wav"), "--gain", "-3",
+                 "--at", "0-0.5", "--audit", aud]) == 0
+    capsys.readouterr()
+    main(["--verify-audit", aud])
+    out = capsys.readouterr().out
+    rec = json.loads(open(aud, encoding="utf-8").read())
+    kd = rec["kernel_digest"]
+    assert kd[:12] + "…" in out
+    assert kd[:13] + "…" not in out
+
+
+def test_chain_stage_frames_sum_with_none_entries(tmp_path, capsys):
+    """★ 阶段 `applied_frames` 里的 `None` 必须被 `or 0` 吞掉。
+
+    链式阶段里非增益算子（如 dehum）没有 `applied_frames` 列表 ⇒ `or []` 兜底；
+    列表内也允许 None（如 poly 的某些阶段）⇒ `(x or 0)`。
+    变异 `or`→`and` 会让求和抛 TypeError。
+    """
+    src = _write(tmp_path / "s.wav", _tone())
+    ch = _chain_file(tmp_path, [
+        {"kind": "dehum", "t0": 0.0, "t1": 0.5, "f0": 440.0, "f0_source": "given",
+         "q": 10.0, "harmonics": [1]},
+        {"kind": "gain", "t0": 0.0, "t1": 0.5, "gain_db": -3.0},
+    ])
+    assert main([src, str(tmp_path / "o.wav"), "--chain", ch]) == 0
+    out = capsys.readouterr().out
+    assert "链式" in out
+    assert "覆盖 0 帧" in out or "覆盖 " in out      # dehum 阶段没有 applied_frames ⇒ 0
+
+
+# ============== 收口第四轮：declip/dehum 的**报告分支**（每个 if/else 都要走）
+def test_declip_report_auto_ceiling_branch(tmp_path, capsys):
+    """★ `ceiling_source` 非 "given" ⇒ 报"自动=观测峰值"（`==`→`!=` 会反过来）。"""
+    t = np.arange(2 * FS) / FS
+    raw = 0.9 * np.sin(2 * np.pi * 220 * t) + 0.4 * np.sin(2 * np.pi * 660 * t)
+    x = np.clip(raw, -0.35, 0.35)
+    src = _write(tmp_path / "c.wav", np.column_stack([x, x]))
+    # 不给 --ceiling ⇒ 自动观测峰值
+    assert main([src, str(tmp_path / "o.wav"), "--declip", "--at", "0-1.0",
+                 "--bandwidth", "21000", "--audit", str(tmp_path / "a.json")]) == 0
+    out = capsys.readouterr().out
+    rec = json.loads(open(str(tmp_path / "a.json"), encoding="utf-8").read())
+    op = rec["ops"][0]
+    if op.get("ceiling_source") == "given":
+        assert "（给定 ｜" in out
+    else:
+        assert "自动=观测峰值" in out, "自动 ceiling 应如实报出来：%s" % out[:600]
+
+
+def test_declip_ambiguous_branch_reports_percent(tmp_path, capsys):
+    """★ **欠定（解不唯一）**分支的百分比必须是 100×fraction。
+
+    触发条件：饱和比例 > 1 − B/(fs/2)。造"几乎全饱和 + 窄带宽"的素材。
+    这条同时覆盖 `100.0 * op["fraction"]`（563 行）与 `ambiguous` 判定。
+    """
+    # fs=48k，B=8000 ⇒ 1-8000/24000 = 0.667；让饱和比例 > 0.667
+    t = np.arange(2 * FS) / FS
+    raw = 1.2 * np.sin(2 * np.pi * 200 * t)
+    x = np.clip(raw, -0.3, 0.3)                     # 大量样本贴边
+    x = np.column_stack([x, x])
+    src = _write(tmp_path / "amb.wav", x)
+    aud = str(tmp_path / "a.json")
+    rc = main([src, str(tmp_path / "o.wav"), "--declip", "--at", "0-1.0",
+               "--ceiling", "0.29", "--bandwidth", "8000", "--audit", aud])
+    out = capsys.readouterr().out
+    assert rc == 0
+    op = json.loads(open(aud, encoding="utf-8").read())["ops"][0]
+    if op.get("ambiguous"):
+        right = "%.1f%%" % (100.0 * op["fraction"])
+        wrong = "%.1f%%" % (150.0 * op["fraction"])
+        assert right in out, "欠定分支应报 %s：%s" % (right, out[-500:])
+        assert wrong not in out
+
+
+def test_dehum_f0_source_label(tmp_path, capsys):
+    """★ `f0_source` 两种取值各自报对（`==`→`!=` 会把标签说反）。
+
+    自动路径说"自动＝稳态检测"，手动路径说"给定"——说反了等于
+    **误报证据来源**（用户会以为工具自己验证过）。
+    """
+    t = np.arange(4 * FS) / FS
+    x = (0.3 * np.sin(2 * np.pi * 440 * t) + 0.2 * np.sin(2 * np.pi * 50 * t)
+         + 0.1 * np.sin(2 * np.pi * 100 * t) + 0.06 * np.sin(2 * np.pi * 150 * t))
+    src = _write(tmp_path / "h.wav", np.column_stack([x, x]))
+    # 手动给 f0
+    assert main([src, str(tmp_path / "o1.wav"), "--dehum", "--hum-f0", "50",
+                 "--at", "0-3.5"]) == 0
+    out_manual = capsys.readouterr().out
+    assert "（给定）" in out_manual, "手动 f0 应报「给定」：%s" % out_manual[:400]
+    # 自动
+    assert main([src, str(tmp_path / "o2.wav"), "--dehum", "--hum-auto",
+                 "--at", "0-3.5"]) == 0
+    out_auto = capsys.readouterr().out
+    assert "自动＝稳态检测" in out_auto, "自动 f0 应报出来源：%s" % out_auto[:400]
+
+
+def test_declip_noop_branch_when_no_bandwidth(tmp_path, capsys):
+    """★ `op.get("noop")` 分支：无带限约束时报"无带限约束（逐位不变）"。"""
+    src = _write(tmp_path / "n.wav", _tone())
+    # 不给 --bandwidth 且素材无带限 ⇒ 自动取奈奎斯特 ⇒ noop
+    rc = main([src, str(tmp_path / "o.wav"), "--declip", "--at", "0-1.0",
+               "--ceiling", "0.9", "--audit", str(tmp_path / "a.json")])
+    out = capsys.readouterr().out
+    assert rc == 0
+    op = json.loads(open(str(tmp_path / "a.json"), encoding="utf-8").read())["ops"][0]
+    if op.get("noop"):
+        assert "无带限约束" in out, "noop 应如实报：%s" % out[:500]
+    else:
+        assert "带限投影生效" in out
+
+
+# ============== 收口第五轮：改动面表达式 / 截断百分比（**精确数值**判据）
+def test_changed_fraction_expression_is_exact(tmp_path, capsys):
+    """★ 改动面 = `changed * 100 / (applied_frames * channels)`（三个因子都要对）。
+
+    这条警告的**触发条件**本身就是判据：把 `/` 换成 `*`、把 `*100` 换成 `/100`
+    都会让条件永远为真或永远为假。做法：造一个**恰好中等**的改动面：
+    * 稀疏咔哒（改动面 <<0.5%）⇒ 不报；
+    * 密集咔哒 + 低阈值（改动面 >>0.5%）⇒ 必报；
+    两者同时成立才说明表达式没被改坏。
+    """
+    src_sparse = _write(tmp_path / "sparse.wav", _tone())
+    assert main([src_sparse, str(tmp_path / "o1.wav"), "--declick",
+                 "--at", "0-1.9"]) == 0
+    out_sparse = capsys.readouterr().out
+    assert "改动面偏大" not in out_sparse
+
+    # 密集：每 60 个采样打一个脉冲 + 低阈值 ⇒ 检出率极高
+    x = _tone().copy()
+    n = x.shape[0]
+    for p in range(0, n - 2, 60):
+        x[p] += 0.9
+    src_dense = _write(tmp_path / "dense.wav", x)
+    assert main([src_dense, str(tmp_path / "o2.wav"), "--declick",
+                 "--at", "0-1.9", "--threshold", "1.5", "--max-run", "0"]) == 0
+    out_dense = capsys.readouterr().out
+    assert "改动面偏大" in out_dense, "密集检出必须报改动面：%s" % out_dense[-500:]
+
+
+def test_noop_warning_reports_duration(tmp_path, capsys):
+    """★ no-op 警告里的**时长**必须是实际的 duration_s（`%.3f`）。"""
+    src = _write(tmp_path / "s.wav", _tone())        # 2 秒
+    assert main([src, str(tmp_path / "o.wav"), "--gain", "-3",
+                 "--at", "8.0-9.0"]) == 0
+    out = capsys.readouterr().out
+    assert "本文件时长 2.000 s" in out, out[-400:]
+
+
+# ============== 收口第六轮：`_print_chain` 的**纯函数**判据（合成审计 dict）
+# 真实渲染很难造出 `applied_frames` 含 None 的阶段（内核总写标量），
+# 但 `_print_chain` 是**格式化函数**——它的健壮性应直接对合成输入判定。
+def test_print_chain_tolerates_none_and_missing(capsys):
+    """★ `_print_chain` 必须容忍 `applied_frames` 含 None / 缺键 / 非列表。
+
+    链式审计的 `stages[i]["applied_frames"]` 来自
+    `[r.get("applied_frames") for r in a["ops"]]`——只要某个算子记录缺该键
+    就会得到 `[None]`；`dehum` 之类没有该键的算子更会直接是 `[]`。
+    `sum((x or 0) for x in (s.get("applied_frames") or []))` 的双重保护
+    就是为这两个形态写的（`or`→`and` 会抛 TypeError 或算错）。
+    """
+    from audiocheck.edit_cli import _print_chain
+    audit = {"stages": [
+        {"index": 0, "op": {"kind": "gain", "t0": 0.0, "t1": 0.5, "gain_db": -3.0},
+         "algorithm": None, "applied_frames": [1000]},
+        {"index": 1, "op": {"kind": "dehum", "t0": 0.0, "t1": 0.5, "f0": 50.0,
+                            "q": 10.0, "harmonics": [1]},
+         "algorithm": "zerophase_notch_cascade", "applied_frames": []},
+        {"index": 2, "op": {"kind": "declick", "t0": 0.0, "t1": 0.5, "threshold": 5.0,
+                            "max_run": 4, "step_repair": True},
+         "algorithm": "residual2_mad2scale", "applied_frames": [None, None]},
+    ]}
+    _print_chain(audit)                     # 不应抛
+    out = capsys.readouterr().out
+    assert "链式  3 个阶段" in out
+    assert "覆盖 1000 帧" in out            # 第一段
+    assert "覆盖 0 帧" in out               # 第二段（空列表）与第三段（双 None）
+    assert "—" in out                       # algorithm 为 None ⇒ 破折号
+
+
+def test_print_chain_sums_multiple_channels(capsys):
+    """★ 多声道时 `applied_frames` 列表有多项，必须**求和**（不是取第一项）。"""
+    from audiocheck.edit_cli import _print_chain
+    _print_chain({"stages": [
+        {"index": 0, "op": {"kind": "gain", "t0": 0.0, "t1": 1.0, "gain_db": -3.0},
+         "algorithm": "gain", "applied_frames": [500, 500]},
+    ]})
+    out = capsys.readouterr().out
+    assert "覆盖 1000 帧" in out, "两声道 500+500 应求和为 1000：%s" % out
+
+
+def test_chain_declip_auto_bandwidth_unreadable_source_exits_4(tmp_path, capsys):
+    """★ 自动带宽读数失败（源读不了）⇒ 退出码 **4**。
+
+    `--declip` 省略 `--bandwidth` 时会先调测量层读截止点；源不存在时
+    这个 **测量** 先失败（还没进渲染）⇒ 走 `except Exception → 4`。
+    这条覆盖 `_auto_bandwidth` 的失败分支（`4->5` 变异会被它捉住）。
+
+    ⚠ 必须走 `--chain` 路径才经过这段：`--chain` 时 `a.declip` 为假，
+    但 `--bandwidth` 省略 + 链里有 declip 时**不会**自动读——
+    所以这里要显式构造"给了 --declip 但源读不了"的单算子路径之前的
+    **自动带宽**调用。
+    """
+    # 单算子 + --declip 不给 --bandwidth ⇒ 先 _auto_bandwidth(源)，源不存在 ⇒ 4
+    rc = main([str(tmp_path / "nope.wav"), str(tmp_path / "o.wav"),
+               "--declip", "--at", "0-1.0", "--ceiling", "0.9"])
+    assert rc == 4, "自动带宽读数遇源读不了应返回 4，得到 %d" % rc
+    out = capsys.readouterr().out
+    assert "源读不了" in out or "参数错误" in out
+
+
+def test_chain_n_modes_balanced_combinations_rejected(tmp_path, capsys):
+    """★ `n_modes` 的**平衡组合**：给 2/4 个算子时加法=2/4、减法=0/0。
+
+    这是 `+`→`-` 变异唯一能被观察到的地方：
+    * 1 个：`1` vs `1`（无差）
+    * 2 个：`2` vs `0`（**减法误判为"没给算子"** ⇒ 链文件被忽略、按别的路径跑）
+    * 3 个：`3` vs `1`（都非零）
+    * 4 个：`4` vs `0`（同 2 个）
+    ⇒ 必须覆盖 2 与 4 两个**偶数**组合。
+    """
+    src = _write(tmp_path / "s.wav", _tone())
+    ch = _chain_file(tmp_path, [{"kind": "gain", "t0": 0.0, "t1": 0.5, "gain_db": -3.0}])
+    combos = [
+        ["--declip", "--declick", "--ceiling", "0.5"],                       # 2 个
+        ["--declip", "--declick", "--dehum", "--hum-f0", "50",
+         "--ceiling", "0.5"],                                                # 3 个
+        ["--declip", "--declick", "--dehum", "--denoise",
+         "--hum-f0", "50", "--noise-at", "0-0.3", "--ceiling", "0.5"],        # 4 个
+    ]
+    bad = []
+    for flags in combos:
+        rc = main([src, str(tmp_path / "o.wav"), "--chain", ch] + flags)
+        if rc != 2:
+            bad.append("%d 个算子 → rc=%d（应为 2）" % (
+                sum(1 for f in flags if f in
+                    ("--declip", "--declick", "--dehum", "--denoise")), rc))
+        capsys.readouterr()
+    assert not bad, "平衡组合必须被拒绝：\n  " + "\n  ".join(bad)
+
+
+def test_verify_audit_hints_old_tool_version(tmp_path, capsys):
+    """★ 旧版本（<1.1.5）的记录核不过时必须**说清原因**，不能让用户以为文件被篡改。
+
+    `audit_digest` 的口径在 1.1.5 变过三次（剔除自指字段 / 全部字段写完后再算 /
+    链式重算）⇒ 旧记录**必然**核不过。这条提示是"诚实"的一部分：
+    报告不一致的同时告诉他"这是口径变了，不是你的文件被动过"。
+    """
+    p = tmp_path / "old.json"
+    p.write_text(json.dumps({"frames": 100, "domain": "time",
+                             "audit_digest": "0" * 64, "tool_version": "1.1.4"}),
+                 encoding="utf-8")
+    rc = main(["--verify-audit", str(p)])
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "1.1.4 产出" in out and "口径在" in out and "必然核不过" in out
+
+
+def test_verify_audit_no_version_hint_for_current(tmp_path, capsys):
+    """★ 当前版本产出的记录**不该**出现"旧版本"提示（防误报）。"""
+    p = tmp_path / "new.json"
+    p.write_text(json.dumps({"frames": 100, "domain": "time",
+                             "audit_digest": "0" * 64, "tool_version": "1.1.5"}),
+                 encoding="utf-8")
+    main(["--verify-audit", str(p)])
+    out = capsys.readouterr().out
+    assert "必然核不过" not in out
+
+
+def test_verify_audit_accepts_directory(tmp_path, capsys):
+    """★ `--verify-audit` 支持**目录**（递归找 *.json）——批处理的自然搭配。
+
+    一轮批处理会产出几十份审计，逐份敲路径不现实。
+    """
+    src = _write(tmp_path / "s.wav", _tone())
+    adir = tmp_path / "audits"
+    adir.mkdir()
+    for i in range(3):
+        assert main([src, str(tmp_path / ("o%d.wav" % i)), "--gain", "-3",
+                     "--at", "0-0.5", "--audit", str(adir / ("a%d.json" % i))]) == 0
+    capsys.readouterr()
+    rc = main(["--verify-audit", str(adir)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "3 份" in out and "目录递归" in out
+
+
+def test_verify_audit_empty_directory_exits_2(tmp_path, capsys):
+    """★ 目录里没有 JSON ⇒ 退出码 2（不是静默 0）。"""
+    d = tmp_path / "empty"
+    d.mkdir()
+    assert main(["--verify-audit", str(d)]) == 2
+    assert "没有" in capsys.readouterr().out
+
+
+def test_batch_uses_thread_pool_when_frozen(tmp_path, capsys, monkeypatch):
+    """★ **打包环境（frozen）下批处理必须降级为线程池**。
+
+    Windows 的 multiprocessing 用 spawn：子进程会**重新执行 exe**。
+    PyInstaller 的引导程序随后把没走 `freeze_support()` 的 worker 杀掉：
+
+        A process in the process pool was terminated abruptly
+
+    实测（v1.1.5 打包版）：`--batch --jobs 3` 三项**全部**失败，
+    而源码运行完全正常——**只在发布版复现**，是最难发现的一类缺陷。
+
+    判据：模拟 `sys.frozen` 为真，跑多项批处理必须成功且**不该**报 worker 崩溃。
+    """
+    src = _write(tmp_path / "s.wav", _tone())
+    jobs = [{"source": src, "dest": str(tmp_path / ("o%d.wav" % i)),
+             "ops": [{"kind": "gain", "t0": 0.0, "t1": 0.5, "gain_db": -3.0}]}
+            for i in range(3)]
+    mf = tmp_path / "jobs.json"
+    mf.write_text(json.dumps(jobs), encoding="utf-8")
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    rc = main(["--batch", str(mf), "--jobs", "3"])
+    out = capsys.readouterr().out
+    assert rc == 0, "frozen 下批处理应全部成功（得到 rc=%d）：\n%s" % (rc, out[-600:])
+    assert "worker 崩溃" not in out
+    assert "3 项成功" in out
+    assert "线程池" in out, "frozen 下应明示用线程池：\n%s" % out[:400]

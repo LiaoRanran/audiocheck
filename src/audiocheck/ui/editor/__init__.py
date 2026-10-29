@@ -30,8 +30,10 @@ def main(argv=None) -> int:
     构建与 import 都不会报错，只有真正启动才炸——由
     `tests/test_packaging_meta.py` 的入口点判据兜住。
 
-    支持 `--theme dark|light`（默认 dark，与 `python -m audiocheck --edit` 一致）。
+    支持 `--theme dark|light`（默认 dark），其余位置参数当作**待载入的音频文件**
+    （`audiocheck-edit a.wav b.wav` —— 与 `audiocheck --edit a.wav` 同一行为）。
     """
+    import os
     import sys
 
     from PySide6.QtWidgets import QApplication
@@ -40,6 +42,7 @@ def main(argv=None) -> int:
 
     args = list(sys.argv[1:] if argv is None else argv)
     name = "dark"
+    paths: list = []
     i = 0
     while i < len(args):
         a = args[i]
@@ -51,11 +54,15 @@ def main(argv=None) -> int:
             name = a.split("=", 1)[1]
             i += 1
             continue
+        paths.append(a)
         i += 1
 
     app = QApplication.instance() or QApplication(sys.argv[:1])
     T.init_fonts(app)
     w = EditorWindow(T.active_theme(name))
     w.resize(1280, 800)
+    for p in paths:
+        if os.path.isfile(p):
+            w.open_file(p)
     w.show()
     return app.exec()

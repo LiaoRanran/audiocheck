@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import math
 import os
+import time
 
 import numpy as np
 import soundfile as sf
@@ -336,9 +337,26 @@ def _render_chained(project: Project, dest: str, *, subtype: str | None,
         if [id(o) for o in ordered] != [id(o) for o in given]:
             # 顺序被规范化了：如实记账（原始顺序与规范顺序都要能查）
             final["reordered_from"] = [o.to_dict() for o in given]
+        # ⚠ **摘要必须在这里重算**：`final` 是**最后一段**的审计，它的
+        # `audit_digest` 只覆盖那一段（算的时候 `ops`/`stages`/`chained`/
+        # `reordered_from` 都还没并进来）。上面这几行把链级信息写进去之后，
+        # 记录已经和摘要不对应了 —— 复算必然不一致。
+        # 实测症状：`--verify-audit` 对**原样未改**的链式审计报"不一致"
+        # （22 个参与字段 vs 摘要当时只覆盖 18 个）。
+        final["audit_digest"] = audit_digest(final)
         return final
     finally:
-        shutil.rmtree(work, ignore_errors=True)
+        # ⚠ **必须重试**：Windows 上 libsndfile 的 C 层句柄释放在 with 退出后
+        # 有一点延迟 ⇒ rmtree 跑的时候 stage 文件可能仍被占用，删除被静默跳过
+        # （`ignore_errors=True`）⇒ tempdir 里残留 `ac_chain_*` 目录。
+        # 实测：tempdir 里躺着 10-27 的三个历史残留，且测试
+        # `test_chaining_leaves_no_temp_directory` 间歇性失败——
+        # 单进程也会（与并发无关），就是句柄延迟。重试给句柄释放留窗口。
+        for _ in range(4):
+            shutil.rmtree(work, ignore_errors=True)
+            if not os.path.exists(work):
+                break
+            time.sleep(0.15)
 
 
 def _render_time(project: Project, dest: str, *, subtype: str | None,
@@ -971,16 +989,22 @@ def canonical_json(obj) -> str:
 def audit_digest(audit: dict) -> str:
     """审计记录的 **SHA256 摘要**（确定性序列化后）——"同一份修复"的可核对锚。
 
-    ⚠ 摘要**不含**三类随落盘漂移的字段（实测抓到：不剔除会让同一修复的两份记录摘要不同）：
+    ⚠ 摘要**不含**这些字段：
+    * `audit_digest` —— **摘要自身**。渲染时先算摘要再写进记录，所以算的时候
+      它不在 dict 里；但**复算**（核对已落盘的记录）时它已经在 ⇒ 若不排除，
+      复算就是把"摘要 + 摘要"再哈希一遍，**永远对不上**。
+      （2026-10-28 实测：`--verify-audit` 拿原样未改的记录都核不过，根因就是这条。
+      这是"自指字段"的经典陷阱——凡是把摘要写进被摘要对象的场景都会遇到。）
     * `timestamp_utc` —— 墙钟；
     * `dest` / `dest_sha256` —— 目标路径与**产物字节哈希**（FLOAT WAV 的 PEAK 块带
       创建时间戳 ⇒ 跨秒渲染的 dest_sha256 必然不同，这不是修复内容的一部分）；
     * `source` —— 按给定路径原样存，同一文件的两个挂载点应同摘要。
     其余字段全部参与（含 `source_sha256` —— **内容**哈希才是"同一份输入"的证据）。
-    判据：`test_audit_digest_is_stable_and_path_independent`。
+    判据：`test_audit_digest_is_stable_and_path_independent` +
+    `test_audit_digest_is_recomputable_from_stored_record`（复算自洽）。
     """
     import hashlib
-    skip = ("timestamp_utc", "dest", "dest_sha256", "source")
+    skip = ("audit_digest", "timestamp_utc", "dest", "dest_sha256", "source")
     d = {k: v for k, v in audit.items() if k not in skip}
     return hashlib.sha256(canonical_json(d).encode("utf-8")).hexdigest()
 
@@ -1131,8 +1155,12 @@ def _audit(project: Project, dest: str, domain: str, fs: int, ch: int, sub: str,
     audit["evidence_levels"] = {f: evidence_level(f) for f in sorted(fields)
                                 if f not in ("ops", "stages", "reordered_from",
                                              "evidence_levels", "audit_digest")}
-    # 记录自身的确定性摘要（不含 dest/timestamp）——两份相同修复的跨机核对锚
-    audit["audit_digest"] = audit_digest(audit)
+    # ⚠ **摘要必须最后算**：下面还有一大段按 domain 追加字段
+    # （`algorithm`/`n_fft`/`hop`/`window`/`roundtrip_floor_*`）。
+    # 早先这一行写在这里、那些字段在它**之后**追加 ⇒ 摘要漏掉了它们：
+    # 复算时（记录已含全部字段）必然算出不同的值 ⇒ `--verify-audit` 对
+    # **原样未改**的记录报"不一致"（实测：链式渲染路径 22 字段 vs 摘要覆盖的 18 个）。
+    # 顺序错误的代价不是崩溃，而是**核对器一上线就全是假失败**——最坏的一类 bug。
     if domain == "band":
         audit["n_fft"] = n_fft
         audit["hop"] = hop
@@ -1162,6 +1190,10 @@ def _audit(project: Project, dest: str, domain: str, fs: int, ch: int, sub: str,
         tracked = any(getattr(o, "track_floor", False) for o in project.ops
                       if isinstance(o, DenoiseOp))
         audit["algorithm"] = "wiener_dd_floor_tracked" if tracked else "wiener_dd_profile"
+
+    # **最后**才算摘要：此时 audit 已含全部字段（含上面按 domain 追加的那些）。
+    # 这是"可核对"能成立的唯一顺序——见上面那条注释里的实测教训。
+    audit["audit_digest"] = audit_digest(audit)
     return audit
 
 

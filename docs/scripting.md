@@ -10,8 +10,11 @@ audiocheck 的编辑内核是**纯 Python 公开 API**——不装插件、不�
 | 层 | 入口 | 适合 |
 |---|---|---|
 | **内核 API** | `from audiocheck.core.edit import …` | 脚本/批处理/研究；本文主体 |
-| **CLI** | `python -m audiocheck.edit_cli <源> <目标> …`（含 `--batch`/`--project`/`--chain`） | 命令行/工作流编排 |
-| **GUI** | `python -m audiocheck.ui.editor`（REAPER 式工作站） | 交互修复 |
+| **CLI** | `audiocheck-edit-cli`（或 `python -m audiocheck.edit_cli`）；含 `--batch`/`--project`/`--chain`/`--verify-audit`/`--version`/`--doctor` | 命令行/工作流编排 |
+| **GUI** | `audiocheck-edit`（或 `python -m audiocheck.ui.editor`，REAPER 式工作站） | 交互修复 |
+
+> 发布包（`audiocheck-1.1.4-win64.zip`）里只有 **`audiocheck.exe` 一个文件**：
+> 无参数开界面、带参数走 CLI（v1.1.3 及更早没有这个分派，任何参数都会卡死）。
 
 三层走**同一个内核**：GUI 应用一个算子与脚本里 `session.apply(op)` 是同一份代码、
 同一份审计口径。
@@ -62,10 +65,67 @@ write_report(audit, "clean.report.md")
 ```
 
 ```bash
-python -m audiocheck.edit_cli --batch jobs.json
+python -m audiocheck.edit_cli --batch jobs.json --jobs 8
 ```
 
 `--chain` 可把同一份修复配方套到每个文件；`--project` 复算一个保存过的完整工程。
+
+**`--jobs N` 并行**（v1.1.4）：每项作业在**独立进程**里跑（渲染是 CPU 密集的
+numpy/scipy，进程隔离既避开 GIL 也避开前缀缓存的跨线程共享面）。
+串行与并行走**同一份作业逻辑**，产物内容逐项一致（判据比对内容哈希）。
+`--jobs 0`（默认）= 按 CPU 核数；`1` = 串行。
+
+**退出码**（v1.1.5 修正）：`0` = 全部成功；`1` = **有作业失败**（其余照常跑完）；
+`2` = 清单本身不可用（结构性错误，一项都没跑）。
+
+**`--overwrite` 对批处理生效**（v1.1.5 修）：命令行开关与作业项里的
+`"overwrite": true` **取或**——此前只读作业项，用户加 `--overwrite` 重跑完全无效。
+
+> ⚠ v1.1.3 及更早的实现是 `return 0 if n_fail == 0 else 0`——两个分支都是 0，
+> 即"无论成败都报成功"。批处理里 99 项炸 98 项，`&& echo ok` 照样打印 ok。
+
+## no-op 不代表成功
+
+选区完全落在素材之外时，渲染层把区间夹紧到空集（`applied_frames = 0`）——
+这是**正确行为**（不该越界改文件），但命令退出码仍是 0、报告里会出现：
+
+```
+⚠ **选区没有命中任何样本（no-op）**：目标文件与源逐位相同。
+   检查 `--at`/`--band`/`--poly` 是否落在素材范围内（本文件时长 2.000 s）
+```
+
+脚本要用退出码判断"有没有真的改东西"时，**还得看这一行**（或比对
+`audit["ops"][i]["applied_frames"]`）。显式 `--gain 0` 是用户要求不变，
+**不会**触发这条警告。
+
+## 核对审计（跨机验证）
+
+```bash
+python -m audiocheck.edit_cli --verify-audit 对方给的审计.json
+python -m audiocheck.edit_cli --verify-audit a.json --verify-audit b.json
+```
+
+**不渲染任何音频**，只重算摘要并比对。退出码 `0` = 全部一致，`1` = 有不一致。
+
+三个摘要各证明一件事，别混：
+
+| 字段 | 证明什么 | 参与摘要的字段 |
+|---|---|---|
+| `audit_digest` | **同一份修复**（同输入内容 + 同操作栈 + 同产物特征） | 除 `audit_digest` 自身、`timestamp_utc`、`dest`、`dest_sha256`、`source` 之外全部 |
+| `kernel_digest` | **同一份实现**（渲染模块文件自身的 SHA256） | — |
+| `source_sha256` | **同一份输入内容**（WAV 跳过 PEAK 块） | — |
+
+剔除 `timestamp_utc`/`dest`/`dest_sha256`/`source` 的理由：它们随落盘漂移
+（换个目标路径、换个时刻跑）。剔除 `audit_digest` 自身的理由是**自指**——
+渲染时先算摘要再写入记录，复算时它已在 dict 里。
+
+Python 侧同样可用：
+
+```python
+from audiocheck.core.edit.render import audit_digest, kernel_self_digest
+assert audit_digest(rec) == rec["audit_digest"]
+same_impl = rec["kernel_digest"] == kernel_self_digest()
+```
 
 ## 纪律（脚本作者同样受约束）
 
@@ -73,4 +133,5 @@ python -m audiocheck.edit_cli --batch jobs.json
 * 改参数 = 改判据对象：每个默认值（阈值/Q/压制上限/跟踪开关）都有实测表；
   脚本里覆盖它们之前，先在 `docs/editor_research.md` 里找到那张表。
 * 审计 dict 与报告**不要手工修饰**——它们是机器产物；要引用数字，引用探针
-  （`packaging/*_probe.py`）复算。
+  （`packaging/*_probe.py`）复算。手工改过的记录会被 `--verify-audit` 判为不一致
+  （这是设计意图，不是误报）。

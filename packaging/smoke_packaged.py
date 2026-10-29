@@ -129,6 +129,43 @@ def main() -> int:
             print("     → JSON %d 条结果，字段 %d 个"
                   % (len(res), len(res[0]) if res else 0))
 
+    # ---- 层 2.5：**编辑 CLI** 通路（v1.1.5 补：此前完全不可达）----
+    # 2026-10-29 实测：打包 exe 跑 `…… --gain -3 --at 0-0.5` 报
+    # `unrecognized arguments` —— 入口只分派到体检 CLI，修复能力对压缩包用户
+    # 完全不可达。这一层专门守它。
+    with tempfile.TemporaryDirectory(prefix="ac_smoke_edit_") as d:
+        wav = os.path.join(d, "in.wav")
+        out = os.path.join(d, "out.wav")
+        aud = os.path.join(d, "a.json")
+        _make_wav(wav)
+        p, dt = _run(exe, [wav, out, "--gain", "-3", "--at", "0-0.5",
+                           "--audit", aud])
+        ok = p.returncode == 0 and os.path.exists(out) and os.path.exists(aud)
+        print("[%s] 编辑 CLI         %.2fs rc=%d" % ("OK" if ok else "FAIL", dt,
+                                                    p.returncode))
+        if not ok:
+            fails.append("编辑 CLI rc=%d err=%s" % (p.returncode,
+                                                   (p.stderr or "")[:400]))
+        else:
+            # 核对器：原样应 PASS、篡改应 FAIL
+            p2, _ = _run(exe, ["--verify-audit", aud])
+            if p2.returncode != 0:
+                fails.append("--verify-audit 原样应 PASS，得到 rc=%d：%s"
+                             % (p2.returncode, (p2.stdout or "")[:300]))
+            else:
+                print("[OK] --verify-audit  原样 PASS")
+            import json as _json
+            rec = _json.loads(open(aud, encoding="utf-8").read())
+            rec["frames"] = 1
+            badp = os.path.join(d, "bad.json")
+            with open(badp, "w", encoding="utf-8") as f:
+                _json.dump(rec, f, ensure_ascii=False)
+            p3, _ = _run(exe, ["--verify-audit", badp])
+            if p3.returncode != 1:
+                fails.append("--verify-audit 篡改应 FAIL，得到 rc=%d" % p3.returncode)
+            else:
+                print("[OK] --verify-audit  篡改 FAIL")
+
     # ---- 层 3：GUI 通路（覆盖 PySide6 插件）----
     # ⚠ **不能用 `-c`**：发布包是 PyInstaller 的 exe，不是 Python 解释器——
     # `-c` 会被 argparse 当未知参数拒绝（实测 rc=2）。

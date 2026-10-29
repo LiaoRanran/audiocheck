@@ -11,11 +11,16 @@
 > **差异化：可审计的修复（auditable repair）。** iZotope RX 点了"De-noise"你不知道它改了什么；
 > 这里每一次渲染都返回机器审计（改了什么 / 依据什么 / 实测多少）+ 人读 Markdown 报告
 > + SHA256 证据链 + 可复算的项目/修复链 JSON。
+>
+> **审计能核对，不只是能生成。** `audiocheck-edit --verify-audit 对方给的审计.json`
+> 一条命令重算三个摘要并比对：**同一份修复**（`audit_digest`，剔除路径/时刻/产物哈希）、
+> **同一份实现**（`kernel_digest`，渲染模块自身哈希）、**同一份输入内容**
+> （`source_sha256`，跳过 PEAK 的 WAV 内容哈希）。退出码 0/1 可直接进 CI。
 
 [![CI](https://github.com/LiaoRanran/audiocheck/actions/workflows/ci.yml/badge.svg)](https://github.com/LiaoRanran/audiocheck/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-1383%20passed-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-1545%20passed-brightgreen)](tests/)
 
 ![界面](shots/dark_1_总览.png)
 
@@ -50,6 +55,33 @@ pip install "audiocheck[dev]"          # 开发（pytest + ruff）
 
 ## 使用
 
+### 压缩包用户（无需 Python）
+
+发布包 `audiocheck-1.1.4-win64.zip` 解压后只有 **`audiocheck.exe` 一个可执行文件**，
+它**同时是界面和命令行工具**：
+
+| 调用方式 | 行为 |
+|---|---|
+| 双击 / 无参数 / `--seed` 等 | 开桌面界面 |
+| 带**修复**参数（`--gain`/`--declip`/`--batch`/`--verify-audit` …） | 走编辑 CLI |
+| 其余参数 | 走体检 CLI |
+
+> 同一个 exe 覆盖**全部三种能力**。v1.1.4 及更早只分派到体检 CLI
+> ——修复能力对压缩包用户**不可达**（`--gain` 会报 `unrecognized arguments`），
+> v1.1.5 起修复。
+
+```bat
+audiocheck.exe --version
+audiocheck.exe --doctor
+audiocheck.exe "D:\Music" --json out.json --quiet
+audiocheck.exe --edit                      :: 编辑工作站
+```
+
+> ⚠ v1.1.3 及更早的压缩包**没有**这个分派：任何参数都会开窗口进主循环，
+> `--help` 会卡死。v1.1.4 起修复。
+
+### pip 安装
+
 ```bash
 audiocheck "D:/Music/专辑"                     # 分析整个目录
 audiocheck a.flac b.flac --json out.json       # 导出 JSON
@@ -57,19 +89,41 @@ audiocheck "D:/Music" --csv list.csv --plot 图/ # 导出 CSV + 频谱图
 audiocheck --list-analyzers                    # 列出所有分析器（含扩展点）
 audiocheck --only spectrum,loudness a.flac     # 只跑部分分析器（调试用）
 audiocheck --config my_thresholds.json a.flac  # 自定义判定阈值
+audiocheck --doctor                            # 环境自检
+audiocheck --edit                              # 编辑工作站
 
 audiocheck-gui                                 # 桌面版（可直接拖文件夹进窗口）
 
 # 修复（非破坏；源文件只读）
-# pip 安装后有短命令 `audiocheck-edit-cli`；`python -m audiocheck.edit_cli` 完全等价
-# （发布包 zip 里只有 audiocheck.exe：无参数开界面，带参数走 CLI，两者同一个 exe）
-python -m audiocheck.edit_cli 源.wav 出.wav --declick --at 0.5-2.0 --audit 审计.json
-python -m audiocheck.edit_cli 源.wav 出.wav --gain -6 --poly "0.3,1000;1.5,1000;1.5,4500;0.3,4500"
-python -m audiocheck.edit_cli 源.wav 出.wav --chain 修复链.json --report 报告.md
-python -m audiocheck.edit_cli --batch 作业清单.json   # 批量，逐项隔离
-python -m audiocheck.ui.editor                          # 编辑工作站（套索/矩形选区 + A/B）
+# 短命令：audiocheck-edit-cli（等价 python -m audiocheck.edit_cli）
+audiocheck-edit-cli --version                  # 版本
+audiocheck-edit-cli --doctor                   # 环境自检
+audiocheck-edit-cli 源.wav 出.wav --declick --at 0.5-2.0 --audit 审计.json
+audiocheck-edit-cli 源.wav 出.wav --gain -6 --poly "0.3,1000;1.5,1000;1.5,4500;0.3,4500"
+audiocheck-edit-cli 源.wav 出.wav --chain 修复链.json --report 报告.md
+audiocheck-edit-cli --batch 作业清单.json --jobs 8   # 批量，逐项隔离 + 并行
+
+# ★ 核对审计（跨机核对同一份修复）
+audiocheck-edit-cli --verify-audit 对方给的审计.json
+audiocheck-edit-cli --verify-audit a.json --verify-audit b.json   # 可给多次
+#   退出码 0 = 全部一致；1 = 有不一致（可直接进 CI）
+
+python -m audiocheck.ui.editor                 # 编辑工作站（套索/矩形选区 + A/B）
 python -m audiocheck.summarize out.json 报告.md # 汇总成曲库特性报告
 ```
+
+### 退出码约定（脚本 / CI 用）
+
+| 码 | 含义 |
+|---|---|
+| 0 | 成功；`--batch` 时表示**全部**作业成功；`--verify-audit` 时表示全部一致 |
+| 1 | `--batch` 有作业失败（其余照常跑完）；`--verify-audit` 有摘要不一致 |
+| 2 | 参数/清单本身不可用（结构性错误，一项都没跑） |
+| 4 | 源文件读不了 |
+
+> **no-op 不算错误**：选区完全落在素材之外时退出码仍是 0（渲染层把区间夹紧到空集
+> 是正确的），但报告会显式打印 `⚠ 选区没有命中任何样本（no-op）` 并给出文件时长。
+> 这是"看起来做了、其实没做"的唯一可见出口——**别只看退出码**。
 
 Python API：
 
@@ -83,6 +137,13 @@ audit = render(Project("in.wav", [DeclickOp(0.5, 2.0), DeclipOp(0.5, 2.0, 21000.
 print(audit["audit_digest"])          # 同一修复 ⇒ 同摘要（跨机可核对）
 write_report(audit, "report.md")      # 人读报告（每个数值标〔实测〕〔推导〕〔设定〕）
 
+# 核对审计（三个摘要各证明一件事）
+from audiocheck.core.edit.render import audit_digest, kernel_self_digest
+assert audit_digest(audit) == audit["audit_digest"]     # 记录未被改动
+print(audit["kernel_digest"] == kernel_self_digest())   # 是否同一份渲染实现
+print(audit["source_sha256"])                            # 输入内容（跳过 PEAK）
+print(audit["evidence_levels"])                          # 每个数字的可信度分级
+
 # 体检
 import audiocheck
 
@@ -92,6 +153,11 @@ print(r["causes"])       # C4 成因候选：[{key: '升频', strength, evidence
 print(r["usability"]["频响延伸/空气感"])   # {'level': '不可用', 'reason': '…'}
 print(r["lufs"], r["lra"], r["true_peak_dbfs"])
 print(r["meta"]["fields"]["label"])   # 出版商 / 厂牌
+
+# 崩溃诊断（本地、不上传；给支持人员）
+from audiocheck import diagnostics
+diagnostics.install()                     # 轮转日志 + faulthandler + 三钩子
+diagnostics.export_diagnostics("诊断包.zip", extra={"note": "用户描述的现象"})
 ```
 
 > C4（2026-10-15）起判定分三层：现象 `verdict`/`phenomena` → 成因 `causes`
@@ -341,17 +407,43 @@ class PolarityAnalyzer(Analyzer):
 
 ## 测试
 
-94 → **100** 个用例，**全部基于合成音频**，可离线跑、可回归：
+**1545 个用例**，全部基于**合成音频**，可离线跑、可回归：
 
 ```bash
-pytest -q                 # 约 25 秒
+pytest -q                 # 约 5 分钟
 pytest --cov=audiocheck
+
+# 量具（自研，不依赖外部框架）
+python packaging/mutation_probe.py --only src/audiocheck/core/edit/render.py --jobs 10
+python packaging/mutation_probe.py --audit-registry     # 等价体白名单行号巡检
+python packaging/docs_number_audit.py                   # 文档数字 vs 实测复算
+python packaging/smoke_packaged.py                      # 打包产物三层冒烟
 ```
 
 策略：
 - 截止点用「白噪声 + FFT 砖墙」——频谱平坦，截止点就是标准答案（实测误差 <1%）；
 - 响度用「同一正弦、幅度减半」验证 **6.02 LU 标度不变性**（比断言绝对值稳）；
 - 缓滚降用 2 阶巴特沃斯，专门验证「不被误判为截止」。
+
+**量具本身也要被验证**（踩过的坑）：
+- **变异测试**：AST 注入故障，看测试能不能杀死。`render.py` 满上限 **0.975**、
+  `session.py` **1.000**。并行跑（`--jobs`）时每个 worker 用独立工作区 +
+  独立前缀缓存目录——否则缓存竞态会让同一个变异体跑出不同结果（实测 8 路并发
+  得到 killed×7 / survived×1）。
+- **文档数字对账**：文档里的实测值必须能被脚本复算出来，容差按数量级设定
+  （dB 类 ±0.15 / ±0.5）。容差放水等于删掉判据。
+- **打包冒烟**：构建成功 ≠ 能跑。三层（CLI 通路 / 真实分析 / GUI 窗口）
+  抓过三次"excludes 砍掉加载期必需模块"的启动即崩。
+
+## 无障碍
+
+- **高对比度**：系统开启时自动改用 `QPalette` 系统色（Qt 在 Windows 上把
+  `colorScheme()` 返回 `Unknown` 表示高对比度——本项目的主题是硬编码调色板，
+  不跟随就等于让低视力用户的无障碍功能失效）。
+- **可访问名称**：每个可聚焦控件都有 `accessibleName` 或 text/toolTip
+  （判据 `test_focusable_controls_have_accessible_name` 会逐个数）。
+- **键盘全覆盖**：Tab 链无黑洞、命令面板 Ctrl+K 可达所有视图。
+- 细节见 `docs/accessibility.md`。
 
 ---
 

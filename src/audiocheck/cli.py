@@ -208,7 +208,7 @@ def main(argv=None) -> int:
         return doctor()
 
     if args.edit:
-        return _run_editor()
+        return _run_editor(list(args.targets))
 
     if args.list_analyzers:
         print("%-14s %-26s %-7s %s" % ("key", "说明", "order", "依赖"))
@@ -414,8 +414,12 @@ def _plot(r, outdir):
         print("   (出图失败: %s)" % e)
 
 
-def _run_editor() -> int:
-    """启动编辑工作站（REAPER 式可审计修复 GUI）。需 gui 依赖。"""
+def _run_editor(paths=None) -> int:
+    """启动编辑工作站（REAPER 式可审计修复 GUI）。需 gui 依赖。
+
+    `paths` 非空时逐个载入（`audiocheck --edit a.wav b.wav`）——
+    此前位置参数被静默忽略，用户"选中文件拖命令行"的预期落空。
+    """
     try:
         from PySide6.QtWidgets import QApplication
 
@@ -427,8 +431,13 @@ def _run_editor() -> int:
         return 2
     app = QApplication.instance() or QApplication([])
     T.init_fonts(app)
-    w = EditorWindow(T.THEMES["dark"])
+    w = EditorWindow(T.active_theme("dark"))
     w.resize(1280, 800)
+    for p in (paths or []):
+        if os.path.isfile(p):
+            w.open_file(p)
+        else:
+            print("[!] 文件不存在，跳过：%s" % p, file=sys.stderr)
     w.show()
     return app.exec()
 

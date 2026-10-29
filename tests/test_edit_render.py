@@ -279,6 +279,38 @@ def test_audit_digest_is_stable_and_path_independent(tmp_path):
     assert len(a1["kernel_digest"]) == 64 and a1["kernel_digest"] == a3["kernel_digest"]
 
 
+def test_audit_digest_is_recomputable_from_stored_record(tmp_path):
+    """★ **自指字段**：对已落盘的记录复算 `audit_digest` 必须得到同一个值。
+
+    这是"核对"能成立的前提。陷阱在于：渲染时先算摘要、再把它写进记录
+    （算的时候 `audit_digest` 不在 dict 里），而复算时它**已经在** ⇒
+    若 `audit_digest()` 不排除自身，复算就是"摘要 + 摘要"再哈希，**永远对不上**。
+
+    实测症状（2026-10-28）：`--verify-audit` 拿**原样未改**的记录都核不过，
+    报"摘要不一致"——核对器一上线就全是假失败，等于不可用。
+    """
+    import numpy as np
+
+    from audiocheck.core.edit import GainOp, Project, render
+    from audiocheck.core.edit.render import audit_digest
+
+    src = str(tmp_path / "a.wav")
+    sf.write(src, (0.4 * np.sin(2 * np.pi * 440 * np.arange(FS) / FS))[:, None]
+             .astype(np.float32), FS, subtype="FLOAT")
+    a = render(Project(src, [GainOp(0.2, 0.8, -3.0)]), str(tmp_path / "o.wav"))
+    assert audit_digest(a) == a["audit_digest"], (
+        "对已落盘记录复算摘要必须一致（自指字段没被排除？）")
+
+
+def test_audit_digest_ignores_self_field():
+    """`audit_digest()` 必须**排除自身**：往 dict 里塞不同的 digest 值不影响复算。"""
+    from audiocheck.core.edit.render import audit_digest
+    base = {"frames": 100, "domain": "time", "ops": []}
+    d1 = dict(base, audit_digest="0" * 64)
+    d2 = dict(base, audit_digest="f" * 64)
+    assert audit_digest(d1) == audit_digest(d2) == audit_digest(base)
+
+
 def test_canonical_json_is_deterministic():
     """★ `canonical_json`：键序无关、紧凑、非 ASCII 直出（跨平台同字节）。"""
     from audiocheck.core.edit.render import canonical_json
@@ -375,3 +407,96 @@ def test_non_overlapping_same_domain_still_single_pass(tmp_path):
     audit = render(Project(src, [DeclickOp(0.0, 0.4), DeclickOp(1.0, 1.4)]),
                    str(tmp_path / "o.wav"))
     assert not audit.get("chained"), "不重叠应保持单趟"
+
+
+def test_audit_digest_recomputable_for_chained_render(tmp_path):
+    """★ **链式渲染**（`_render_chained`）的摘要也必须可复算。
+
+    链式路径有自己的一套收尾：它拿**最后一段**的审计当 `final`，
+    然后往里并 `ops`/`stages`/`chained`/`source`/`reordered_from`。
+    这些字段在最后一段算摘要时**都还不存在** ⇒ 若不在并完之后重算，
+    记录与摘要就永久不对应。
+
+    实测症状：`--verify-audit` 对**原样未改**的链式审计报"不一致"
+    （22 个参与字段 vs 摘要当时只覆盖 18 个）。这条判据钉住"并完必须重算"。
+    """
+    import numpy as np
+
+    from audiocheck.core.edit import DeclickOp, DeclipOp, DehumOp, Project, render
+    from audiocheck.core.edit.render import audit_digest
+
+    src = str(tmp_path / "a.wav")
+    t = np.arange(FS) / FS
+    x = 0.4 * np.sin(2 * np.pi * 440 * t) + 0.15 * np.sin(2 * np.pi * 50 * t)
+    x = np.clip(x, -0.7, 0.7)
+    for pos in (0.2, 0.5):
+        x[int(pos * FS)] += 0.5
+    sf.write(src, x.astype(np.float32), FS, subtype="FLOAT")
+
+    audit = render(Project(src, [DehumOp(0.1, 0.9, 50.0),
+                                 DeclipOp(0.1, 0.9, 21000.0),
+                                 DeclickOp(0.1, 0.9)]),
+                   str(tmp_path / "o.wav"), overwrite=True)
+    assert audit.get("chained") is True, "三个不同算子应走链式路径"
+    assert audit_digest(audit) == audit["audit_digest"], (
+        "链式审计的摘要必须覆盖 `ops`/`stages`/`chained` 等链级字段")
+
+
+def test_audit_digest_recomputable_for_band_render(tmp_path):
+    """★ **时频路径**的摘要也必须可复算（`algorithm`/`n_fft`/`roundtrip_*` 在其后追加）。"""
+    import numpy as np
+
+    from audiocheck.core.edit import BandGainOp, Project, render
+    from audiocheck.core.edit.render import audit_digest
+
+    src = str(tmp_path / "b.wav")
+    x = (0.4 * np.sin(2 * np.pi * 440 * np.arange(FS) / FS)).astype(np.float32)
+    sf.write(src, x[:, None], FS, subtype="FLOAT")
+    audit = render(Project(src, [BandGainOp(0.1, 0.5, 1000.0, 4000.0, -6.0)]),
+                   str(tmp_path / "bo.wav"), overwrite=True)
+    assert "n_fft" in audit and "roundtrip_floor_dbfs" in audit
+    assert audit_digest(audit) == audit["audit_digest"], (
+        "时频审计的摘要必须覆盖 `n_fft`/`roundtrip_floor_*` 等后续追加字段")
+
+
+def test_audit_digest_recomputable_for_each_domain(tmp_path):
+    """每个 domain 的审计都要能复算（防止某个分支把字段加在摘要之后）。"""
+    import numpy as np
+
+    from audiocheck.core.edit import (
+        BandGainOp,
+        DeclickOp,
+        DeclipOp,
+        DehumOp,
+        DenoiseOp,
+        GainOp,
+        Project,
+        render,
+    )
+    from audiocheck.core.edit.render import audit_digest
+
+    src = str(tmp_path / "s.wav")
+    t = np.arange(FS) / FS
+    x = (0.4 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+    sf.write(src, x[:, None], FS, subtype="FLOAT")
+
+    cases = [
+        ("time", [GainOp(0.1, 0.5, -3.0)]),
+        ("band", [BandGainOp(0.1, 0.5, 1000.0, 4000.0, -6.0)]),
+        ("declip", [DeclipOp(0.1, 0.5, 21000.0)]),
+        ("declick", [DeclickOp(0.1, 0.5)]),
+        ("dehum", [DehumOp(0.1, 0.5, 440.0)]),
+        # 噪声段需 ≥1 个窗长（4096/48k ≈ 0.085 s）
+        ("denoise", [DenoiseOp(0.3, 0.9, 0.0, 0.2)]),
+    ]
+    bad = []
+    for name, ops in cases:
+        try:
+            a = render(Project(src, ops), str(tmp_path / ("o_%s.wav" % name)),
+                       overwrite=True)
+        except Exception as e:                                 # noqa: BLE001
+            bad.append("%s：渲染失败 %s" % (name, e))
+            continue
+        if audit_digest(a) != a["audit_digest"]:
+            bad.append("%s：摘要不可复算" % name)
+    assert not bad, "以下 domain 的审计摘要不可复算：\n  " + "\n  ".join(bad)

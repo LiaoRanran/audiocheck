@@ -72,8 +72,34 @@ def main() -> int:
     print("\n人读报告已生成：%s" % report)
     print("（每个数值标〔实测〕〔推导〕〔设定〕——量具可靠性一眼可见）")
 
-    ok = same_digest and same_kernel
-    print("\n结论：%s" % ("✅ 可复算成立" if ok else "❌ 摘要不一致——实现有问题"))
+    # ---- 第 3 步：用**发布版同样的 CLI 核对器**验证这份审计 ----
+    # 这是 v1.1.4 新增的能力：拿到别人给的审计 JSON，一条命令就能验
+    # "是不是同一份修复 / 同一份实现 / 同一份输入"。这里直接调 CLI 主函数，
+    # 保证示例与用户手上的 `--verify-audit` 走同一份代码（示例即判据）。
+    import json as _json
+
+    audit_json = os.path.join(work, "audit.json")
+    with open(audit_json, "w", encoding="utf-8") as f:
+        _json.dump(audits[0], f, ensure_ascii=False, indent=2)
+
+    from audiocheck.edit_cli import main as edit_main
+
+    print("\n" + "=" * 52)
+    print("CLI 核对器（--verify-audit，与发布版同一份代码）：")
+    rc_good = edit_main(["--verify-audit", audit_json])
+
+    # 篡改一个参与摘要的字段，证明核对器真的能验出改动
+    tampered = os.path.join(work, "tampered.json")
+    rec = _json.loads(open(audit_json, encoding="utf-8").read())
+    rec["peak_out_dbfs"] = -1.234
+    with open(tampered, "w", encoding="utf-8") as f:
+        _json.dump(rec, f, ensure_ascii=False)
+    print("\n改掉 peak_out_dbfs 一个字段后再核（应当失败）：")
+    rc_bad = edit_main(["--verify-audit", tampered])
+
+    ok = same_digest and same_kernel and rc_good == 0 and rc_bad == 1
+    print("\n结论：%s" % ("✅ 可复算成立，且核对器能验出篡改" if ok
+                        else "❌ 有问题——摘要不一致或核对器失灵"))
     return 0 if ok else 1
 
 

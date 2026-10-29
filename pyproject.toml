@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "audiocheck"
-version = "1.1.4"
+version = "1.1.5"
 description = "音源质量检测：看内容不看标签 —— 带宽/升频/有损溯源判定 + EBU R128 响度 + 元数据取证"
 readme = "README.md"
 requires-python = ">=3.9"
