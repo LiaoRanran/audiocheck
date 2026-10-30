@@ -334,6 +334,12 @@ def main(argv=None) -> int:
         for r in unreadable[:5]:
             print("      %-34s %s" % (r["file"][:34], (r.get("verdict") or "")[:80]),
                   file=sys.stderr)
+        # ⚠ **必须报余数**：这里原先截断到 5 条却不报"另有 N 个"——
+        # 用户看到 5 行就以为只有 5 个文件读不了，而实际可能 50 个。
+        # 与下面"有告警"分支不对称，违反本项目最核心的一条纪律：
+        # **不许静默少报**（查不到必须与没问题可区分）。
+        if len(unreadable) > 5:
+            print("      ……另有 %d 个" % (len(unreadable) - 5), file=sys.stderr)
         return 4
     errs = [r for r in rows if r.get("errors")]
     if errs:

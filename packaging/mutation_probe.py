@@ -157,6 +157,21 @@ TARGETS: dict[str, list[str]] = {
     # `--batch` 并行都在这里，全是"错了会静默吞掉用户作业"的逻辑
     # （实测：批处理退出码 `0 if n_fail==0 else 0` 这种 bug 就潜伏在这里）。
     "src/audiocheck/edit_cli.py": ["tests/test_edit_cli.py"],
+    # 阈值配置（2026-10-29 注册）：**所有判定的输入**都在这里解析。
+    # 阈值错了不是"某个分析器算错"，而是**每一条结论都建立在错误的门限上**
+    # ——它是最该被钉住的模块，却一直不在变异目标里（有测试 ≠ 量过判据强度）。
+    "src/audiocheck/config.py": ["tests/test_config.py",
+                                 "tests/test_c1_threshold_survey.py"],
+    # 体检 CLI 主入口（2026-10-29 注册）：批量扫描 / JSON-CSV 导出 / 清单 BOM /
+    # 目录递归 / 退出码分工。此前 446 行几乎没有直接判据。
+    "src/audiocheck/cli.py": ["tests/test_cli_main.py"],
+    # 绘图（2026-10-29 注册）：2766 行，是全项目最大的模块。图错了用户
+    # **看不出来**（不像数字会被人质疑），所以更依赖判据。
+    "src/audiocheck/ui/charts.py": ["tests/test_ui_b9_chart.py",
+                                    "tests/test_ui_chart_norms.py",
+                                    "tests/test_ui_views.py",
+                                    "tests/test_views_coverage.py",
+                                    "tests/test_views_dualres.py"],
     # 播放引擎（P1 柱子）：状态机 + 选区段 + A/B 换缓冲。注册后 `mutation_probe
     # --only playback.py` 才能覆盖（规格 §门禁）。新增的 `set_source_data` 走同一
     # 状态机，归一由 change/advance 判据捕获。
