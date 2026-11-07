@@ -40,7 +40,7 @@ SHOTS = os.path.join(_ROOT, "shots", "b92")
 
 def _win(r=None):
     """建窗 + 造一份真数据（**建了必须拆**，B7 两次踩坑的纪律）。"""
-    import perf_probe
+    import qt_pump as perf_probe
 
     from audiocheck.core.engine import analyze as analyze_file
     p = os.path.join(_ROOT, "out", "demo", "demo2.wav")
@@ -88,7 +88,7 @@ class TestMetricCardsCollapse(unittest.TestCase):
         # ⚠ 必须走 `pump`：`_cards` 用 `deleteLater` 拆旧卡，而
         # `processEvents()` **不派发 DeferredDelete**（本项目的既有坑）——
         # 于是旧卡还挂在控件树上，`findChildren` 数到 36 张。
-        import perf_probe
+        import qt_pump as perf_probe
         perf_probe.pump(APP, 0.15)
 
     def test_default_shows_four_key_numbers(self):
@@ -104,7 +104,7 @@ class TestMetricCardsCollapse(unittest.TestCase):
         self._rebuild()
         self.assertFalse(w._more_open, "展开区默认必须是收起的")
         w._toggle_more()
-        import perf_probe
+        import qt_pump as perf_probe
         perf_probe.pump(APP, 0.15)
         vis = [c for c in w.findChildren(W.StatCard) if c.isVisible()]
         self.assertEqual(len(vis), 18, "展开后可见卡 %d 张，应为 18" % len(vis))

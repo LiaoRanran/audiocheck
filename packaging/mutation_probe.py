@@ -172,6 +172,17 @@ TARGETS: dict[str, list[str]] = {
                                     "tests/test_ui_views.py",
                                     "tests/test_views_coverage.py",
                                     "tests/test_views_dualres.py"],
+    # 设计系统（2026-10-29 夜间注册）：palette 是**色彩数学**（OKLCH/对比度），
+    # theme 是它的语义层 + QSS 生成。这两个错了是**全局性的**（每个控件都错），
+    # 且此前从未量化。伴生测试挑最核心的（全挂会让变异轮慢一个量级）。
+    "src/audiocheck/ui/palette.py": ["tests/test_ui_b7_color.py",
+                                     "tests/test_ui_theme_consistency.py",
+                                     "tests/test_ui_b9_chart.py"],
+    "src/audiocheck/ui/theme.py": ["tests/test_ui_b7_color.py",
+                                    "tests/test_ui_b7_material.py",
+                                    "tests/test_ui_theme_consistency.py",
+                                    "tests/test_a11y_high_contrast.py",
+                                    "tests/test_i18n.py"],
     # 播放引擎（P1 柱子）：状态机 + 选区段 + A/B 换缓冲。注册后 `mutation_probe
     # --only playback.py` 才能覆盖（规格 §门禁）。新增的 `set_source_data` 走同一
     # 状态机，归一由 change/advance 判据捕获。

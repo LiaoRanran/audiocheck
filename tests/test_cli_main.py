@@ -793,3 +793,330 @@ def test_plot_returns_early_without_curve(tmp_path, capsys):
     outdir.mkdir()
     C._plot({"file": "x.wav", "sr": 44100}, str(outdir))
     assert not list(outdir.glob("*.png"))
+
+
+# ============ 收口 cli.py 的 9 个存活点（每个都有明确的可观测缺口）
+def test_loudness_truncation_at_exactly_seven(capsys):
+    """★ total=7 是 `>6`→`>7` 变异的**唯一可观测点**。
+
+    打印用 `- 6`（不变），条件用 `> 6`。total=8 时变异版打印"另有 2"
+    与原版相同（条件多含一个数、但减法没变）⇒ 只有 total=7 能区分：
+    原版 7>6 打印"另有 1"；变异版 7>7 不打印。
+    （教训：切片 `[:N]` 与条件 `> N` / 减法 `- N` 是三处独立的 N，
+    判据的 total 必须含 N、N+1、N+2 三个点。）
+    """
+    import re
+
+    loud = [{"text": "L%d" % i} for i in range(7)]
+    C.show({"file": "x.wav", "level": "warn", "format": "WAV", "sr": 44100,
+            "bits": "PCM_16", "seconds": 1.0, "size_mb": 0.1, "channels": 2,
+            "timeline_loudness_problems": loud}, quiet=True)
+    out = capsys.readouterr().out
+    m = re.search(r"另有 (\d+) 段真峰值", out)
+    assert m and int(m.group(1)) == 1, "total=7 应打印'另有 1'（%s）" % out[-200:]
+
+
+def test_ambiguous_with_names_rendered(capsys):
+    """★ `ambiguous_with` 的名单必须出现在"无法区分"行里。
+
+    变异 `or`→`and`：名单真值时 `truthy and []` 返回 **空列表** ⇒
+    "与「%s」无法区分"里的名字全部消失。判据用**不含**在 counter 里的名字
+    （否则反证段里的同名文字会把断言骗绿）。
+    """
+    C.show({
+        "file": "z.wav", "level": "warn", "format": "WAV", "sr": 44100,
+        "bits": "PCM_16", "seconds": 10.0, "size_mb": 1.0, "channels": 2,
+        "causes": [{"key": "升频", "strength": 0.8, "prov": "工程估计",
+                    "evidence": ["e1"], "counter": ["反证文字甲"],
+                    "ambiguous": True, "ambiguous_with": ["独有名A", "独有名B"]}],
+    }, quiet=True)
+    out = capsys.readouterr().out
+    assert "无法区分" in out
+    assert "独有名A" in out and "独有名B" in out, \
+        "并列候选名单必须渲染出来（%s）" % out
+
+
+def test_list_analyzers_no_requirements_shows_dash(capsys):
+    """★ `--list-analyzers`：无依赖的分析器必须显示 `-`（`or`→`and` 会打 "[]"）。"""
+    rc = C.main(["--list-analyzers"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "-" in out, "无依赖分析器应显示 '-'（%s）" % out[:400]
+    assert "[]" not in out
+
+
+def test_summary_warn_count_exact_in_shallow(tmp_path, capsys):
+    """★ 浅模式汇总的**四个数全部精确**（`==`→`!=` 会把 warn 数错报成 1）。"""
+    a = _write(tmp_path / "a.wav")
+    C.main([a, "--quiet", "--shallow"])
+    out = capsys.readouterr().out
+    assert "汇总：1 个文件 ｜ 合格 0 ｜ 有疑 0 ｜ 不达标 0 ｜ **未判定 1**" in out, out[-300:]
+
+
+def test_summary_undecided_not_inflated_by_levels(tmp_path, capsys, monkeypatch):
+    """★ `undecided = n - ok - warn - bad` 的**减法**：有等级结果时未判定必须是 0。
+
+    变异 `-`→`+`：全 undecided 时输出不变（n+0+0+0 == n-0-0-0），
+    唯一可观测点是**有等级**的结果——变异会打印"未判定 n+ok"这种膨胀数。
+    """
+    a = _write(tmp_path / "a.wav")
+    real_analyze = C.analyze
+
+    def patched(path, **kw):
+        r = real_analyze(path, **kw)
+        r["level"] = "ok"                       # 强制已知等级
+        return r
+
+    monkeypatch.setattr(C, "analyze", patched)
+    C.main([a, "--only", "basic", "--quiet", "--shallow"])
+    out = capsys.readouterr().out
+    assert "合格 1" in out, out[-300:]
+    assert "未判定" not in out, "已知等级不应再算未判定（%s）" % out[-300:]
+
+
+def test_error_remainder_not_printed_at_exactly_five(tmp_path, capsys, monkeypatch):
+    """★ 告警清单在**恰好 5 条**时不能打"另有 0 个"（`>5`→`>=5` 变异）。"""
+    d = tmp_path / "five"
+    d.mkdir()
+    real_analyze = C.analyze
+
+    def patched(path, **kw):
+        r = real_analyze(path, **kw)
+        r["errors"] = ["模拟告警"]
+        return r
+
+    monkeypatch.setattr(C, "analyze", patched)
+    files = []
+    for i in range(5):
+        files.append(_write(d / ("f%d.wav" % i)))
+    rc = C.main(["--only", "basic", "--quiet"] + files)
+    err = capsys.readouterr().err
+    assert rc == 3
+    assert "另有" not in err, "恰好 5 条不该有'另有'行（%s）" % err[-300:]
+
+
+def test_error_listing_truncates_filename_at_34(tmp_path, capsys, monkeypatch):
+    """★ 告警清单的文件名截断到 **34** 字符（`[:34]`→`[:35]` 变异）。"""
+    d = tmp_path / "names"
+    d.mkdir()
+    real_analyze = C.analyze
+
+    def patched(path, **kw):
+        r = real_analyze(path, **kw)
+        r["errors"] = ["模拟告警"]
+        return r
+
+    monkeypatch.setattr(C, "analyze", patched)
+    a = _write(d / ("y" * 50 + ".wav"))
+    C.main([a, "--only", "basic", "--quiet"])
+    err = capsys.readouterr().err
+    line = [ln for ln in err.splitlines() if "yyy" in ln][0]
+    assert "y" * 35 not in line, "文件名应截断到 34（%s）" % line
+    assert "y" * 34 in line
+
+
+def test_plot_figsize_aspect_ratio(tmp_path, capsys):
+    """★ 图的宽高比钉在 `figsize=(10, 7)`（`7→8` 会把高度撑大 14%）。
+
+    dpi=120 ⇒ PNG 像素 1200×840。判据直接读像素尺寸（容差 2% 吸收坐标轴裁边）。
+    """
+    import numpy as np
+    from PIL import Image
+
+    t = np.arange(int(1.0 * FS)) / FS
+    x = (0.4 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+    p = str(tmp_path / "a.wav")
+    sf.write(p, x[:, None], FS, subtype="PCM_16")
+    from audiocheck.core.engine import analyze as _an
+    r = _an(p, deep=True)
+    outdir = tmp_path / "sz"
+    outdir.mkdir()
+    C._plot(r, str(outdir))
+    png = next(outdir.glob("*.png"))
+    w, h = Image.open(png).size
+    ratio = h / w
+    assert abs(ratio - 0.7) < 0.03, "宽高比应 ≈ 7/10 = 0.70（实际 %.3f）" % ratio
+
+
+def test_plot_tolerates_missing_bands_pct(tmp_path, capsys):
+    """★ `_plot` 在没有 `bands_pct` 时**不许崩**（`or`→`and` 会拿 None 去 .get）。"""
+    import numpy as np
+    from PIL import Image
+
+    t = np.arange(int(1.0 * FS)) / FS
+    x = (0.4 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+    p = str(tmp_path / "a.wav")
+    sf.write(p, x[:, None], FS, subtype="PCM_16")
+    from audiocheck.core.engine import analyze as _an
+    r = _an(p, deep=True)
+    r.pop("bands_pct", None)                     # 刻意删掉
+    outdir = tmp_path / "nb"
+    outdir.mkdir()
+    C._plot(r, str(outdir))                      # 不应抛 AttributeError
+    assert list(outdir.glob("*.png"))
+
+
+def test_plot_png_filename_truncates_at_60(tmp_path, capsys):
+    """★ PNG 文件名截断到 **60** 字符（`[:60]`→`[:61]` 变异）。"""
+    import numpy as np
+
+    t = np.arange(int(1.0 * FS)) / FS
+    x = (0.4 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+    long_name = "n" * 80 + ".wav"
+    p = str(tmp_path / long_name)
+    sf.write(p, x[:, None], FS, subtype="PCM_16")
+    from audiocheck.core.engine import analyze as _an
+    r = _an(p, deep=True)
+    outdir = tmp_path / "fn"
+    outdir.mkdir()
+    C._plot(r, str(outdir))
+    png = next(outdir.glob("*.png"))
+    stem = png.stem
+    assert len(stem) <= 60, "PNG 名应截断到 60（实际 %d）" % len(stem)
+    assert "n" * 61 not in stem
+
+
+# ============ 第二轮收口（真存活 19 个里可观测的部分）
+def test_show_sr_divides_by_1000_exactly(tmp_path, capsys):
+    """★ kHz 渲染的除数是 **1000**：用 96000 Hz 让 /1000 与 /1001 在一位小数上分叉。
+
+    44100/1001 = 44.056 → "%.1f" 仍渲染 44.1（舍入吞差异，实测踩过）；
+    96000/1000 = 96.0 vs 96000/1001 = 95.904 → 96.0 vs 95.9，可区分。
+    """
+    C.show({"file": "x.wav", "level": "ok", "format": "WAV", "sr": 96000,
+            "bits": "PCM_24", "seconds": 1.0, "size_mb": 0.3, "channels": 2},
+           quiet=True)
+    assert "96.0kHz" in capsys.readouterr().out
+
+
+def test_show_nyquist_divides_by_2000_exactly(capsys):
+    """★ 奈奎斯特 = `sr / 2000`：192000 Hz 让 /2000 与 /2001 分叉（96.0 vs 95.9）。"""
+    C.show({"file": "x.wav", "level": "ok", "format": "WAV", "sr": 192000,
+            "bits": "PCM_24", "seconds": 1.0, "size_mb": 0.5, "channels": 2,
+            "cutoff_hz": 40000.0, "cutoff_khz": 40.0, "cutoff_ratio": 0.83},
+           quiet=True)
+    out = capsys.readouterr().out
+    assert "奈奎斯特 96.0kHz" in out, out
+
+
+def test_show_tag_value_truncates_at_70(capsys):
+    """★ 标签值截断到 **70** 字符（`[:70]`→`[:71]`）。"""
+    long_val = "v" * 90
+    C.show({"file": "x.wav", "level": "ok", "format": "WAV", "sr": 44100,
+            "bits": "PCM_16", "seconds": 1.0, "size_mb": 0.1, "channels": 2,
+            "meta": {"vendor": "Lavf58", "fields": {"comment": long_val}}},
+           quiet=True)
+    out = capsys.readouterr().out
+    assert "v" * 71 not in out, "标签值应截断到 70"
+    assert "v" * 70 in out
+
+
+def test_show_metadata_rows_truncate_at_6(capsys):
+    """★ 标签行数截断到 **6** 行（`tag_rows(md)[:6]`→`[:7]` 变异）。"""
+    # tag_rows 只透传 FIELD_MAP 里的键（vendor 一行 + N 个字段行 + 封面/总数）
+    fields = {"title": "甲", "artist": "乙", "album": "丙", "date": "2024",
+              "genre": "流行", "track": "3", "publisher": "丁", "isrc": "戊"}
+    C.show({"file": "x.wav", "level": "ok", "format": "WAV", "sr": 44100,
+            "bits": "PCM_16", "seconds": 1.0, "size_mb": 0.1, "channels": 2,
+            "meta": {"vendor": "Lavf58", "fields": fields, "pictures": 1,
+                     "tags_total": 8}}, quiet=True)
+    out = capsys.readouterr().out
+    # vendor(1) + 8 字段 + 封面(1) + 总数(1) = 11 行候选 ⇒ 只显示 6
+    indented = [ln for ln in out.splitlines() if ln.startswith("            ")]
+    assert len(indented) == 6, "标签应只显示 6 行（实际 %d）：%s" % (
+        len(indented), [ln.strip()[:16] for ln in indented])
+
+
+def test_listfile_skips_comment_lines_with_hashes(tmp_path, capsys):
+    """★ `--list` 的行过滤是 `strip() and not startswith('#')`（`and`→`or` 放行注释行）。"""
+    a = _write(tmp_path / "a.wav")
+    lst = tmp_path / "list.txt"
+    lst.write_text("## 全是井号的注释行\n%s\n#普通注释\n" % a, encoding="utf-8")
+    js = tmp_path / "o.json"
+    rc = C.main(["--list", str(lst), "--json", str(js), "--quiet", "--shallow"])
+    assert rc == 0
+    assert len(json.loads(js.read_text(encoding="utf-8")).get("results") or []) == 1
+
+
+def test_doctor_shows_cpu_count(capsys):
+    """★ doctor 打印 CPU 核数（`os.cpu_count() or 1` → `and 1` 会在 0 核时打 0）。"""
+    C.doctor()
+    assert "CPU 核心" in capsys.readouterr().out
+
+
+def test_plot_bands_section_defaults_empty(tmp_path, capsys):
+    """★ `_plot` 的 `b = r.get("bands_pct") or {}`：缺键时**不崩**且画出空柱。"""
+    import numpy as np
+    from PIL import Image
+
+    t = np.arange(int(1.0 * FS)) / FS
+    x = (0.4 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+    p = str(tmp_path / "a.wav")
+    sf.write(p, x[:, None], FS, subtype="PCM_16")
+    from audiocheck.core.engine import analyze as _an
+    r = _an(p, deep=True)
+    r.pop("bands_pct", None)
+    outdir = tmp_path / "nb2"
+    outdir.mkdir()
+    C._plot(r, str(outdir))                      # 变异 `or`→`and` 会 AttributeError
+    png = next(outdir.glob("*.png"))
+    assert Image.open(png).size[0] > 0
+
+
+def test_analyzer_error_listing_caps_at_five_files(tmp_path, capsys, monkeypatch):
+    """★ 告警清单**最多列 5 个文件**（`for r in errs[:5]`→`[:6]` 变异）。"""
+    import re
+
+    d = tmp_path / "six"
+    d.mkdir()
+    real_analyze = C.analyze
+
+    def patched(path, **kw):
+        r = real_analyze(path, **kw)
+        r["errors"] = ["模拟告警"]
+        return r
+
+    monkeypatch.setattr(C, "analyze", patched)
+    files = [_write(d / ("g%d.wav" % i)) for i in range(6)]
+    rc = C.main(["--only", "basic", "--quiet"] + files)
+    err = capsys.readouterr().err
+    assert rc == 3
+    shown = len(re.findall(r"g\d\.wav", err))
+    assert shown == 5, "应只列 5 个文件（实际 %d）" % shown
+    assert "另有 1 个" in err, err[-300:]
+
+
+def test_analyzer_error_remainder_at_six(tmp_path, capsys, monkeypatch):
+    """★ 6 个文件时"另有 1 个"（`- 5`→`+ 5` 变异会打出 11）。"""
+    d = tmp_path / "six2"
+    d.mkdir()
+    real_analyze = C.analyze
+
+    def patched(path, **kw):
+        r = real_analyze(path, **kw)
+        r["errors"] = ["模拟告警"]
+        return r
+
+    monkeypatch.setattr(C, "analyze", patched)
+    files = [_write(d / ("h%d.wav" % i)) for i in range(6)]
+    C.main(["--only", "basic", "--quiet"] + files)
+    err = capsys.readouterr().err
+    assert "另有 1 个" in err, err[-300:]
+
+
+def test_analyzer_error_requires_six_to_show_remainder(tmp_path, capsys, monkeypatch):
+    """★ 5 个文件**不该**有"另有"行（`>5`→`>=5` 变异会打"另有 0 个"）。"""
+    d = tmp_path / "five2"
+    d.mkdir()
+    real_analyze = C.analyze
+
+    def patched(path, **kw):
+        r = real_analyze(path, **kw)
+        r["errors"] = ["模拟告警"]
+        return r
+
+    monkeypatch.setattr(C, "analyze", patched)
+    files = [_write(d / ("k%d.wav" % i)) for i in range(5)]
+    C.main(["--only", "basic", "--quiet"] + files)
+    err = capsys.readouterr().err
+    assert "另有" not in err, err[-300:]

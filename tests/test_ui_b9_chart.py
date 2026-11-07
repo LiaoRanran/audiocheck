@@ -35,7 +35,7 @@ T.init_fonts(APP)
 
 def pump(ms: int = 0) -> None:
     """走事件循环（**必须派发 DeferredDelete**——B9.2 的计数坑）。"""
-    import perf_probe
+    import qt_pump as perf_probe
     perf_probe.pump(APP, ms / 1000.0 if ms else 0.05)
 CHARTS = os.path.join(_SRC, "audiocheck", "ui", "charts.py")
 

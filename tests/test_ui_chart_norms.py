@@ -102,7 +102,7 @@ class TestChartTickHasLanding(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        import perf_probe
+        import qt_pump as perf_probe
 
         from audiocheck.core.engine import analyze as analyze_file
         d = os.path.join(_ROOT, "out", "memprobe")
@@ -231,7 +231,7 @@ class TestDataInkCalibration(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         import numpy as np
-        import perf_probe
+        import qt_pump as perf_probe
 
         from audiocheck.core.engine import analyze as analyze_file
         cls.np = np
