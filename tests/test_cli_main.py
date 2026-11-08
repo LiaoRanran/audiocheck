@@ -31,7 +31,7 @@ import soundfile as sf
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
-from audiocheck import cli as C          # noqa: E402
+from audiocheck import cli as C  # noqa: E402
 
 FS = 44100
 
@@ -941,7 +941,6 @@ def test_plot_figsize_aspect_ratio(tmp_path, capsys):
 def test_plot_tolerates_missing_bands_pct(tmp_path, capsys):
     """★ `_plot` 在没有 `bands_pct` 时**不许崩**（`or`→`and` 会拿 None 去 .get）。"""
     import numpy as np
-    from PIL import Image
 
     t = np.arange(int(1.0 * FS)) / FS
     x = (0.4 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
@@ -1120,3 +1119,255 @@ def test_analyzer_error_requires_six_to_show_remainder(tmp_path, capsys, monkeyp
     C.main(["--only", "basic", "--quiet"] + files)
     err = capsys.readouterr().err
     assert "另有" not in err, err[-300:]
+
+
+# ═══ R305b 变异收口第二批（钉 15 存活：0.873 → ≥0.90）═══
+
+def test_loudness_lra_missing_falls_back_to_zero(capsys):
+    """108: lra 缺失 → or 0 → 'LRA 0.0'（and 变异会 None 崩格式化）。"""
+    C.show({"file": "z.wav", "level": "ok", "format": "WAV", "sr": 44100,
+            "bits": "PCM_16", "seconds": 1.0, "size_mb": 0.1,
+            "channels": 2, "lufs": -14.0, "verdict": "合格"}, quiet=True)
+    out = capsys.readouterr().out
+    assert "LRA 0.0" in out
+
+
+def test_meta_fields_only_still_shows_tag_section(capsys):
+    """115: vendor 缺失但 fields 有货 → or 保证标签段仍出现。"""
+    C.show({"file": "z.wav", "level": "ok", "format": "WAV", "sr": 44100,
+            "bits": "PCM_16", "seconds": 1.0, "size_mb": 0.1,
+            "channels": 2, "verdict": "合格",
+            "meta": {"fields": {"title": "T"}}, "quiet": True}, quiet=True)
+    out = capsys.readouterr().out
+    assert "标签" in out
+
+
+def test_cause_missing_prov_and_strength_defaults(capsys):
+    """126: prov 缺省'工程估计'、strength 缺省 0.00（or 兜底双杀）。"""
+    C.show({"file": "z.wav", "level": "warn", "format": "WAV", "sr": 44100,
+            "bits": "PCM_16", "seconds": 1.0, "size_mb": 0.1,
+            "channels": 2, "verdict": "有疑",
+            "causes": [{"key": "升频", "evidence": ["e1"]}]}, quiet=True)
+    out = capsys.readouterr().out
+    assert "工程估计" in out and "强度 0.00" in out
+
+
+def test_list_analyzers_empty_requires_shows_dash(capsys, monkeypatch):
+    """217: requires 空列表 → join('') 走 or 兜底显示 '-'。"""
+    monkeypatch.setattr(C, "list_analyzers",
+                        lambda: [{"key": "k", "label": "L", "order": 1,
+                                  "requires": []}])
+    rc = C.main(["--list-analyzers"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "-" in out and "k" in out
+
+
+def test_listfile_skips_blank_and_comment_lines(tmp_path, capsys,
+                                                monkeypatch):
+    """226: and 语义——空行与 # 注释行不得混进 targets。"""
+    wav = tmp_path / "a.wav"
+    import numpy as np
+    import soundfile as sf
+    sf.write(str(wav), np.zeros(100, dtype="int16"), 8000, subtype="PCM_16")
+    lf = tmp_path / "list.txt"
+    lf.write_text(f"{wav}\n\n# 注释行\n", encoding="utf-8")
+    monkeypatch.setattr(C, "analyze", lambda r, **k: {
+        "file": r, "level": "ok", "format": "WAV", "sr": 8000,
+        "bits": "PCM_16", "seconds": 0.0, "size_mb": 0.0,
+        "channels": 1, "verdict": "合格"})
+    rc = C.main(["--shallow", "--list", str(lf)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "汇总：1 个文件" in out, "空行/注释行必须被剔除"
+
+
+def test_shallow_undecided_count_exact(tmp_path, capsys):
+    """285: undecided = n-ok-warn-bad 的减法链必须精确。
+    浅模式 2 个真 wav：无判定 → '**未判定 2**'。
+    （-→+ 变异会让汇总行出现负数/崩格式，即被杀。）"""
+    import numpy as np
+    import soundfile as sf
+    for i in (1, 2):
+        sf.write(str(tmp_path / f"f{i}.wav"),
+                 np.zeros(100, dtype="int16"), 8000, subtype="PCM_16")
+    rc = C.main(["--shallow", str(tmp_path / "f1.wav"),
+                 str(tmp_path / "f2.wav")])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "未判定 2" in out
+
+
+def test_unreadable_truncates_file34_verdict80(tmp_path, capsys,
+                                               monkeypatch):
+    """335: file 截 34、verdict 截 80（双常量双杀）。"""
+    long_name = "x" * 40 + ".wav"
+    long_verdict = "V" * 90
+    monkeypatch.setattr(C, "collect_files",
+                        lambda targets: [long_name])
+    # 串行分支（--only）走模块级 analyze——返回 level=error 即进
+    # unreadable 清单（cli.py:331 level=="error" 过滤）
+    monkeypatch.setattr(
+        C, "analyze", lambda path, **k: {
+            "file": path, "level": "error", "verdict": long_verdict})
+    rc = C.main(["--only", "whatever"])
+    assert rc == 4, "unreadable 分支的真实出口是 return 4"
+    err = capsys.readouterr().err
+    assert ("x" * 34) in err and ("x" * 35) not in err
+    assert ("V" * 80) in err and ("V" * 81) not in err
+
+
+def test_plot_annotation_offset_exact(tmp_path, monkeypatch):
+    """401: xytext=(6, -12) 精确钉（捕获 Axes.annotate）。"""
+    captured = {}
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    orig = plt.Axes.annotate
+
+    def spy(self, *a, **k):
+        if "xytext" in k:
+            captured["xytext"] = k["xytext"]
+        return orig(self, *a, **k)
+
+    monkeypatch.setattr(plt.Axes, "annotate", spy)
+    r = {"file": "f.wav", "verdict": "合格", "sr": 8000,
+         "cutoff_hz": 3000.0, "cutoff_khz": 3.0,
+         "curve": [[1, 2], [2, 3], [3, 1]],
+         "bands_pct": {}}
+    C._plot(r, str(tmp_path))
+    assert captured.get("xytext") == (6, -12)
+
+
+def test_plot_ylim_window_exact(tmp_path, monkeypatch):
+    """406: set_ylim(top-92, top+6) 双常量钉（+/92 三个变异全杀）。"""
+    captured = {}
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    orig = plt.Axes.set_ylim
+
+    def spy(self, *a, **k):
+        if len(a) == 2:
+            captured.setdefault("ylim", a)
+        return orig(self, *a, **k)
+
+    monkeypatch.setattr(plt.Axes, "set_ylim", spy)
+    r = {"file": "f.wav", "verdict": "合格", "sr": 8000,
+         "curve": [[1, 2], [2, 3], [3, 1]],
+         "bands_pct": {}}
+    C._plot(r, str(tmp_path))
+    lo, hi = captured["ylim"]
+    assert hi - lo == 98, "窗口高度 92+6=98（+/- 或 92 变异即崩）"
+
+
+def test_plot_savefig_dpi_120(tmp_path, monkeypatch):
+    """417: dpi=120 精确钉（HANDOFF：PNG 宽=figsize×dpi）。"""
+    captured = {}
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    orig = plt.Figure.savefig
+
+    def spy(self, *a, **k):
+        captured.update(k)
+        return orig(self, *a, **k)
+
+    monkeypatch.setattr(plt.Figure, "savefig", spy)
+    r = {"file": "f.wav", "verdict": "合格", "sr": 8000,
+         "curve": [[1, 2], [2, 3], [3, 1]],
+         "bands_pct": {}}
+    C._plot(r, str(tmp_path))
+    assert captured.get("dpi") == 120
+
+
+def test_editor_resize_exact_1280x800(monkeypatch, tmp_path):
+    """441: resize(1280, 800) 精确钉（可测就不登记 EQUIVALENT）。"""
+    import sys as _sys
+    fake_qt = __import__("types").ModuleType("PySide6.QtWidgets")
+    created = {}
+
+    class _App:
+        def __init__(self, *a):
+            created["app_ctor"] = a
+        def exec(self):
+            return 0
+        @staticmethod
+        def instance():
+            return None
+
+    class _Win:
+        def __init__(self, theme):
+            created["theme"] = theme
+        def resize(self, w, h):
+            created["resize"] = (w, h)
+        def open_file(self, p):
+            created["opened"] = p
+        def show(self):
+            created["shown"] = True
+
+    fake_qt.QApplication = _App
+    fake_pkg = __import__("types").ModuleType("PySide6")
+    fake_pkg.QtWidgets = fake_qt
+    monkeypatch.setitem(_sys.modules, "PySide6", fake_pkg)
+    monkeypatch.setitem(_sys.modules, "PySide6.QtWidgets", fake_qt)
+    fake_theme = __import__("types").ModuleType("audiocheck.ui.theme")
+    fake_theme.init_fonts = lambda app: None
+    fake_theme.active_theme = lambda name: f"theme:{name}"
+    # from .ui import theme as T 走父包属性而非 sys.modules——
+    # 必须直接 setattr 包对象（相对导入语义）
+    from audiocheck import ui as _ui_pkg
+    monkeypatch.setattr(_ui_pkg, "theme", fake_theme, raising=False)
+    fake_editor = __import__("types").ModuleType("audiocheck.ui.editor")
+    fake_editor.EditorWindow = _Win
+    monkeypatch.setitem(_sys.modules, "audiocheck.ui.editor", fake_editor)
+    real = tmp_path / "real.wav"
+    real.write_bytes(b"RIFF")
+    rc = C._run_editor([str(real)])
+    assert rc == 0
+    assert created["resize"] == (1280, 800)
+    assert created["theme"] == "theme:dark"
+    assert created["opened"] == str(real) and created["shown"]
+
+
+def test_editor_reuses_existing_qapp_instance(monkeypatch):
+    """438: instance() 真值时必须复用（or 语义），不得新建。"""
+    import sys as _sys
+    fake_qt = __import__("types").ModuleType("PySide6.QtWidgets")
+    new_calls = []
+
+    class _App:
+        def __init__(self, *a):
+            new_calls.append(a)
+        def exec(self):
+            return 0
+    prebuilt = _App()                        # 构造本身会记一次——清零
+    new_calls.clear()
+
+    class _AppStatic:
+        @staticmethod
+        def instance():
+            return prebuilt
+
+    fake_qt.QApplication = _AppStatic
+    fake_pkg = __import__("types").ModuleType("PySide6")
+    fake_pkg.QtWidgets = fake_qt
+    monkeypatch.setitem(_sys.modules, "PySide6", fake_pkg)
+    monkeypatch.setitem(_sys.modules, "PySide6.QtWidgets", fake_qt)
+    fake_theme = __import__("types").ModuleType("audiocheck.ui.theme")
+    got = {}
+    fake_theme.init_fonts = lambda app: got.setdefault("app", app)
+    fake_theme.active_theme = lambda name: name
+    from audiocheck import ui as _ui_pkg
+    monkeypatch.setattr(_ui_pkg, "theme", fake_theme, raising=False)
+    fake_editor = __import__("types").ModuleType("audiocheck.ui.editor")
+    fake_editor.EditorWindow = lambda theme: type("W", (), {
+        "resize": lambda self, w, h: None, "show": lambda self: None,
+        "open_file": lambda self, p: None, "exec": lambda self: 0})()
+    monkeypatch.setitem(_sys.modules, "audiocheck.ui.editor", fake_editor)
+    from audiocheck import ui as _ui_pkg2
+    monkeypatch.setattr(_ui_pkg2, "editor", fake_editor, raising=False)
+    rc = C._run_editor([])
+    assert rc == 0
+    assert got["app"] is prebuilt, "必须复用 instance()，不新建 QApplication"
+    assert not new_calls, "or 语义：已有实例时不得再构造"
